@@ -1,0 +1,6 @@
+secrets.json
+config.yaml
+config.local.yaml
+data/
+*.log
+.DS_Store

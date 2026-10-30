@@ -1,0 +1,32 @@
+{
+  "name": "denops",
+  "version": "0.1.0",
+  "tasks": {
+    "start": "deno run --unstable-worker-options --allow-read=config.yaml,secrets.json --allow-run=deno scripts/start.ts",
+    "test": "deno test --unstable-worker-options --allow-all tests/",
+    "check": "deno check src/server.ts tests/",
+    "fmt": "deno fmt",
+    "lint": "deno lint"
+  },
+  "imports": {
+    "@modelcontextprotocol/sdk/server/mcp.js": "npm:@modelcontextprotocol/sdk@1.32.2/server/mcp.js",
+    "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js": "npm:@modelcontextprotocol/sdk@1.32.2/server/webStandardStreamableHttp.js",
+    "zod": "npm:zod@4.6.7"
+  },
+  "compilerOptions": {
+    "strict": true
+  },
+  "fmt": {
+    "lineWidth": 100
+  },
+  "lint": {
+    "rules": {
+      "tags": [
+        "recommended"
+      ],
+      "include": [
+        "no-explicit-any"
+      ]
+    }
+  }
+}
