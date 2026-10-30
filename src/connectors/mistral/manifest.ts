@@ -1,4 +1,4 @@
-import { compose, optStr, rejectUnknown, str } from "../../harness/args.ts";
+import { compose, oneOf, optStr, rejectUnknown, str } from "../../harness/args.ts";
 import type { Connector, HostContext } from "../../harness/types.ts";
 import { MistralClient } from "./client.ts";
 
@@ -67,6 +67,36 @@ export function mistralConnector(
         argSchema: compose(rejectUnknown(), str("libraryId"), str("documentId")),
       },
       {
+        name: "mistral.libraries.share",
+        tier: "approval",
+        doc:
+          "Share a Library with a User/Workspace/Org. args: { id, shareWithType: 'User'|'Workspace'|'Org', shareWithUuid, level: 'Viewer'|'Editor' }",
+        argSchema: compose(
+          rejectUnknown(),
+          str("id"),
+          oneOf("shareWithType", ["User", "Workspace", "Org"]),
+          str("shareWithUuid"),
+          oneOf("level", ["Viewer", "Editor"]),
+        ),
+      },
+      {
+        name: "mistral.libraries.unshare",
+        tier: "approval",
+        doc: "Remove a share from a Library. args: { id, shareWithType, shareWithUuid }",
+        argSchema: compose(
+          rejectUnknown(),
+          str("id"),
+          oneOf("shareWithType", ["User", "Workspace", "Org"]),
+          str("shareWithUuid"),
+        ),
+      },
+      {
+        name: "mistral.libraries.shares.list",
+        tier: "open",
+        doc: "List access entries of a Library. args: { id }",
+        argSchema: compose(rejectUnknown(), str("id")),
+      },
+      {
         name: "mistral.connectors.list",
         tier: "open",
         doc:
@@ -101,6 +131,15 @@ export function mistralConnector(
         return await client.deleteDocument(r.libraryId, r.documentId);
       },
       "connectors.list": () => client.listConnectors(),
+      "libraries.share": (a) => {
+        const r = a as { id: string; shareWithType: string; shareWithUuid: string; level: string };
+        return client.shareLibrary(r.id, r.shareWithType, r.shareWithUuid, r.level);
+      },
+      "libraries.unshare": (a) => {
+        const r = a as { id: string; shareWithType: string; shareWithUuid: string };
+        return client.unshareLibrary(r.id, r.shareWithType, r.shareWithUuid);
+      },
+      "libraries.shares.list": (a) => client.listShares(String((a as { id: string }).id)),
     }),
     validateStartup: async (ctx: HostContext) => {
       await client.listModels();

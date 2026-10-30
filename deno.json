@@ -3,11 +3,12 @@
   "version": "0.1.0",
   "tasks": {
     "start": "deno run --unstable-worker-options --allow-read=config.yaml,secrets.json --allow-run=deno scripts/start.ts",
-    "test": "deno test --unstable-worker-options --allow-all tests/",
+    "test": "DENOPS_ALLOW_MOCK_ORIGIN=1 deno test --unstable-worker-options --allow-all tests/",
     "check": "deno check src/server.ts tests/",
     "fmt": "deno fmt",
     "lint": "deno lint",
-    "pending": "deno run --unstable-worker-options --allow-all scripts/pending.ts"
+    "pending": "deno run --unstable-worker-options --allow-all scripts/pending.ts",
+    "smoke:live": "deno run --allow-all scripts/live_smoke.ts"
   },
   "imports": {
     "@modelcontextprotocol/sdk/server/mcp.js": "npm:@modelcontextprotocol/sdk@1.32.2/server/mcp.js",

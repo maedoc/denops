@@ -13,7 +13,8 @@ export class MistralClient {
   constructor(opts: MistralClientOptions) {
     this.base = `${opts.origin}${opts.apiPath}`;
     this.apiKey = opts.apiKey;
-    if (!this.base.startsWith("https://api.mistral.ai/")) {
+    const allowMock = Deno.env.get("DENOPS_ALLOW_MOCK_ORIGIN") === "1";
+    if (!allowMock && !this.base.startsWith("https://api.mistral.ai/")) {
       throw new Error(`refusing non-pinned mistral origin: ${opts.origin}`);
     }
   }
@@ -88,6 +89,37 @@ export class MistralClient {
       method: "POST",
       body: JSON.stringify({ file_id: fileId, name: fileName }),
     });
+  }
+
+  async shareLibrary(
+    libraryId: string,
+    shareWithType: string,
+    shareWithUuid: string,
+    level: string,
+  ): Promise<JsonValue> {
+    return await this.req(`/libraries/${encodeURIComponent(libraryId)}/share`, {
+      method: "PUT",
+      body: JSON.stringify({
+        level,
+        share_with_type: shareWithType,
+        share_with_uuid: shareWithUuid,
+      }),
+    });
+  }
+
+  async unshareLibrary(
+    libraryId: string,
+    shareWithType: string,
+    shareWithUuid: string,
+  ): Promise<JsonValue> {
+    return await this.req(`/libraries/${encodeURIComponent(libraryId)}/share`, {
+      method: "DELETE",
+      body: JSON.stringify({ share_with_type: shareWithType, share_with_uuid: shareWithUuid }),
+    });
+  }
+
+  async listShares(libraryId: string): Promise<JsonValue> {
+    return await this.req(`/libraries/${encodeURIComponent(libraryId)}/share`);
   }
 
   async listConnectors(): Promise<JsonValue> {

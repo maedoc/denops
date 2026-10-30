@@ -20,6 +20,17 @@ export interface RunOutcome {
 export interface ReplayState {
   resultsByOpSeq: Map<string, JsonValue>;
   approvedOps: Set<string>;
+  runState?: RunState;
+}
+
+export type TierOverride = (
+  op: string,
+  args: JsonValue,
+  runState: RunState,
+) => "open" | "approval" | null;
+
+export interface RunState {
+  createdLibraryIds: Set<string>;
 }
 
 interface ResolvedOp {
@@ -36,7 +47,12 @@ export class Harness {
     private budgets: Budgets,
     private searchFn: (query: string, connector?: string) => string,
     private describeFn: (op: string) => string,
+    private tierOverride?: TierOverride,
   ) {}
+
+  private newRunState(): RunState {
+    return { createdLibraryIds: new Set<string>() };
+  }
 
   setConnectorIds(ids: string[]): void {
     this.connectorIds = ids;
@@ -46,6 +62,15 @@ export class Harness {
     const started = Date.now();
     let opCount = 0;
     let awaiting: PendingApproval | null = null;
+    const runState = replay?.runState ?? this.newRunState();
+    if (replay) {
+      for (const [op, result] of replay.resultsByOpSeq) {
+        if (op === "mistral.libraries.create") {
+          const id = (result as { id?: unknown })?.id;
+          if (typeof id === "string") runState.createdLibraryIds.add(id);
+        }
+      }
+    }
 
     const guest = guestSource(this.connectorIds, code);
 
@@ -133,7 +158,8 @@ export class Harness {
       }
       opCount += 1;
 
-      if (spec.tier === "approval" && !(replay && replay.approvedOps.has(op))) {
+      const effectiveTier = this.tierOverride?.(op, args, runState) ?? spec.tier;
+      if (effectiveTier === "approval" && !(replay && replay.approvedOps.has(op))) {
         const pendingId = crypto.randomUUID();
         awaiting = { pendingId, runId, op, args };
         await log.recordOp({ op, args, status: "pending" });
@@ -164,6 +190,10 @@ export class Harness {
         }
         await log.recordOp({ op, args, status: "ok", result });
         if (replay) replay.resultsByOpSeq.set(op, result);
+        if (op === "mistral.libraries.create") {
+          const id = (result as { id?: unknown })?.id;
+          if (typeof id === "string") runState.createdLibraryIds.add(id);
+        }
         reply(callId, { result });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);

@@ -125,7 +125,7 @@ Deno.test("imap: unknown account id produces actionable error through the bounda
   }
 });
 
-Deno.test("mistral manifest: tiers correct, no share ops in v1 index", () => {
+Deno.test("mistral manifest: tiers correct, share ops present at approval tier", () => {
   const registry = new Registry();
   registry.register(
     mistralConnector({ apiKey: "k", origin: "https://api.mistral.ai", apiPath: "/v1" }),
@@ -146,7 +146,9 @@ Deno.test("mistral manifest: tiers correct, no share ops in v1 index", () => {
   }
   assertEquals(registry.tierOf("mistral.libraries.delete"), "approval");
   assertEquals(registry.tierOf("mistral.documents.delete"), "approval");
-  assertEquals(registry.tierOf("mistral.libraries.share"), "absent");
+  assertEquals(registry.tierOf("mistral.libraries.share"), "approval");
+  assertEquals(registry.tierOf("mistral.libraries.unshare"), "approval");
+  assertEquals(registry.tierOf("mistral.libraries.shares.list"), "open");
 });
 
 Deno.test("pending store: survives reload, add/remove/list round-trip", async () => {

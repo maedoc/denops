@@ -106,7 +106,8 @@ access scope ("Private and shared connectors" in Studio).
 deno task pending data list                                  # list pending approvals
 deno task pending data approve <pendingId> config.yaml secrets.json   # replay + execute live
 deno task pending data reject <pendingId>                   # terminate + record rejection
-deno task test    # unit + MCP smoke tests (mock/debug connector only)
+deno task test    # unit + mock-API + MCP smoke tests (no live calls)
+deno task smoke:live  # read-only live smoke per enabled connector (needs real secrets)
 deno task check   # typecheck
 deno task lint && deno fmt --check
 ```

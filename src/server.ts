@@ -30,6 +30,22 @@ export interface AppContext {
 export async function buildApp(configPath: string, secretsPath: string): Promise<AppContext> {
   const config = await loadConfig(configPath);
   const secrets = await loadSecrets(secretsPath);
+  try {
+    const info = await Deno.stat(secretsPath);
+    if (Deno.build.os !== "windows" && (info.mode ?? 0) & 0o077) {
+      console.error(
+        `[denops] warning: ${secretsPath} is group/other-accessible (mode ${
+          info.mode?.toString(8)
+        }); run: chmod 600 ${secretsPath}`,
+      );
+    }
+  } catch { /* stat failure surfaces at read */ }
+  if (
+    config.server.token === undefined && typeof secrets.serverToken === "string" &&
+    secrets.serverToken
+  ) {
+    config.server.token = secrets.serverToken;
+  }
   const registry = new Registry();
   const startupLogs: string[] = [];
   const log = (entry: Record<string, unknown>) => startupLogs.push(JSON.stringify(entry));
@@ -123,6 +139,14 @@ export async function buildApp(configPath: string, secretsPath: string): Promise
     config.budgets,
     (q, c) => search(registry, q, c),
     (op) => describe(registry, op),
+    (op, args, runState) => {
+      if (op === "mistral.libraries.delete" || op === "mistral.documents.delete") {
+        const id = (args as { id?: string; libraryId?: string }).id ??
+          (args as { libraryId?: string }).libraryId;
+        if (id && runState.createdLibraryIds.has(id)) return "open";
+      }
+      return null;
+    },
   );
   harness.setConnectorIds(registry.list().map((c: Connector) => c.id));
 
