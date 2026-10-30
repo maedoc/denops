@@ -6,6 +6,7 @@ export interface ImapAccountConfig {
   host: string;
   port: number;
   tls: boolean;
+  allowSelfSigned?: boolean;
   user: string;
   password: string;
   draftsMailbox: string;
@@ -21,12 +22,18 @@ export class ImapAccountClient {
   private connected = false;
 
   constructor(private cfg: ImapAccountConfig) {
-    this.client = new ImapFlow({
+    this.client = this.newClient();
+  }
+
+  private newClient(): ImapFlow {
+    const cfg = this.cfg;
+    return new ImapFlow({
       host: cfg.host,
       port: cfg.port,
       secure: cfg.tls,
       auth: { user: cfg.user, pass: cfg.password },
       logger: false,
+      ...(cfg.allowSelfSigned ? { tls: { rejectUnauthorized: false } } : {}),
     });
   }
 
@@ -37,7 +44,8 @@ export class ImapAccountClient {
   }
 
   async connect(): Promise<void> {
-    if (this.connected) return;
+    if (this.connected && !(this.client as unknown as { closed?: boolean }).closed) return;
+    this.client = this.newClient();
     await this.client.connect();
     this.connected = true;
   }
@@ -96,6 +104,11 @@ export class ImapAccountClient {
             } as JsonValue);
           }
         }
+        messages.sort((a, b) => {
+          const da = (a as { date?: string | null }).date ?? "";
+          const db = (b as { date?: string | null }).date ?? "";
+          return db.localeCompare(da);
+        });
         return { mailbox, total, page, limit, messages };
       } finally {
         lock.release();
@@ -114,7 +127,7 @@ export class ImapAccountClient {
       try {
         const uids: number[] = [];
         for await (
-          const msg of this.client.fetch({ ...query, uid: true } as never, { uid: true })
+          const msg of this.client.fetch({ ...query } as never, { uid: true })
         ) {
           uids.push(msg.uid);
           if (uids.length >= limit) break;
@@ -238,12 +251,120 @@ export class ImapAccountClient {
     });
   }
 
+  async moveMessages(mailbox: string, uids: number[], destMailbox: string): Promise<JsonValue> {
+    return await this.enqueue(async () => {
+      await this.connect();
+      const lock = await this.client.getMailboxLock(mailbox);
+      try {
+        await this.client.messageMove(uids.join(","), destMailbox, { uid: true });
+        return { moved: uids.length, from: mailbox, to: destMailbox };
+      } finally {
+        lock.release();
+      }
+    });
+  }
+
+  async fetchRaw(mailbox: string, uid: number): Promise<{ raw: string; internalDate: Date | null }> {
+    return await this.enqueue(async () => {
+      await this.connect();
+      const lock = await this.client.getMailboxLock(mailbox);
+      try {
+        const msg = (await this.client.fetchOne(
+          String(uid),
+          { source: true, internalDate: true },
+          { uid: true },
+        )) as
+          | { source?: { toString(enc: string): string }; internalDate?: Date }
+          | false
+          | null;
+        if (!msg || !msg.source) throw new Error(`message uid ${uid} not found in ${mailbox}`);
+        return { raw: msg.source.toString("utf-8"), internalDate: msg.internalDate ?? null };
+      } finally {
+        lock.release();
+      }
+    });
+  }
+
+  async appendRaw(mailbox: string, raw: string, idate?: Date | null): Promise<number | null> {
+    return await this.enqueue(async () => {
+      await this.connect();
+      const res = await this.client.append(mailbox, raw, undefined, idate ?? undefined);
+      return res && typeof res === "object" ? (res as { uid?: number }).uid ?? null : null;
+    });
+  }
+
+  async fingerprint(mailbox: string, uid: number): Promise<JsonValue> {
+    return await this.enqueue(async () => {
+      await this.connect();
+      const lock = await this.client.getMailboxLock(mailbox);
+      try {
+        const msg = await this.client.fetchOne(
+          String(uid),
+          { envelope: true, bodyStructure: true, bodyParts: ["HEADER", "TEXT"] },
+          { uid: true },
+        );
+        if (!msg) throw new Error(`message uid ${uid} not found in ${mailbox}`);
+        const env = msg.envelope ?? {};
+        const leaves: { part: string; type: string }[] = [];
+        const walk = (bs: unknown) => {
+          if (!bs || typeof bs !== "object") return;
+          const node = bs as { part?: string; type?: string; parts?: unknown };
+          if (typeof node.part === "string" && node.type) {
+            leaves.push({ part: node.part, type: String(node.type).toLowerCase() });
+          } else if (Array.isArray(node.parts)) {
+            for (const c of node.parts) walk(c);
+          }
+        };
+        walk(msg.bodyStructure);
+        const parts: { type: string; sha256: string }[] = [];
+        for (const leaf of leaves) {
+          if (leaf.type !== "text/plain") continue;
+          const m = (await this.client.fetchOne(String(uid), { bodyParts: [leaf.part] }, { uid: true })) as
+            | { bodyParts?: Map<string, Uint8Array> }
+            | false
+            | null;
+          const buf = m && m.bodyParts ? m.bodyParts.get(leaf.part) : undefined;
+          const raw = buf ? ImapAccountClient.textDecoder.decode(buf) : "";
+          parts.push({ type: leaf.type, sha256: await sha256Hex(raw) });
+        }
+        parts.sort((a, b) => a.type.localeCompare(b.type));
+        return {
+          subject: env.subject ?? null,
+          from: (env.from ?? []).map((a) => a.address ?? ""),
+          to: (env.to ?? []).map((a) => a.address ?? ""),
+          date: env.date ? new Date(env.date as string | Date).toISOString() : null,
+          parts,
+        } as JsonValue;
+      } finally {
+        lock.release();
+      }
+    });
+  }
+
+  async deleteAndExpunge(mailbox: string, uids: number[]): Promise<JsonValue> {
+    return await this.enqueue(async () => {
+      await this.connect();
+      const lock = await this.client.getMailboxLock(mailbox);
+      try {
+        await this.client.messageDelete(uids.join(","), { uid: true });
+        return { deleted: uids.length, mailbox };
+      } finally {
+        lock.release();
+      }
+    });
+  }
+
   async close(): Promise<void> {
     try {
       await this.client.logout();
     } catch { /* already closed */ }
     this.connected = false;
   }
+}
+
+async function sha256Hex(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 export class ImapHost {
@@ -268,6 +389,46 @@ export class ImapHost {
       );
     }
     return c;
+  }
+
+  async moveMessages(
+    fromAccount: string,
+    mailbox: string,
+    uids: number[],
+    toAccount: string,
+    toMailbox: string,
+  ): Promise<JsonValue> {
+    const src = this.get(fromAccount);
+    const dst = this.get(toAccount);
+    if (fromAccount === toAccount) {
+      return await src.moveMessages(mailbox, uids, toMailbox);
+    }
+    const mapping: { uid: number; newUid: number | null; sha256: string; verified: boolean }[] = [];
+    for (const uid of uids) {
+      const { raw, internalDate } = await src.fetchRaw(mailbox, uid);
+      const sha256 = await sha256Hex(raw);
+      const newUid = await dst.appendRaw(toMailbox, raw, internalDate);
+      let verified = false;
+      if (newUid !== null) {
+        const srcFp = (await src.fingerprint(mailbox, uid)) as Record<string, unknown>;
+        const dstFp = (await dst.fingerprint(toMailbox, newUid)) as Record<string, unknown>;
+        verified = JSON.stringify(srcFp) === JSON.stringify(dstFp);
+      }
+      mapping.push({ uid, newUid, sha256, verified });
+    }
+    if (mapping.some((m) => !m.verified)) {
+      throw new Error(
+        `verification failed for uids: ${mapping.filter((m) => !m.verified).map((m) => m.uid).join(",")} — source messages left untouched`,
+      );
+    }
+    const deleted = await src.deleteAndExpunge(mailbox, uids);
+    return {
+      moved: mapping.length,
+      from: `${fromAccount}/${mailbox}`,
+      to: `${toAccount}/${toMailbox}`,
+      mapping,
+      deleted,
+    };
   }
 
   async validateAll(): Promise<void> {

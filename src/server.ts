@@ -89,6 +89,7 @@ export async function buildApp(configPath: string, secretsPath: string): Promise
       host: String(a.host),
       port: Number(a.port ?? 993),
       tls: a.tls !== false,
+      allowSelfSigned: a.allowSelfSigned === true,
       user: String(a.user ?? ""),
       password: String(
         ((mailSecrets[String(a.id)] ?? {}) as Record<string, unknown>).password ?? "",
@@ -119,7 +120,11 @@ export async function buildApp(configPath: string, secretsPath: string): Promise
   for (const l of startupLogs) console.error(`[startup] ${l}`);
 
   const clients = new Map<string, Record<string, (args: JsonValue) => Promise<JsonValue>>>();
-  const hostCtx = { config: config.connectors as unknown as Record<string, unknown>, secrets, log };
+  const hostCtx = {
+    config: config.connectors as unknown as Record<string, unknown>,
+    secrets,
+    log: (entry: Record<string, unknown>) => console.error("[connector]", JSON.stringify(entry)),
+  };
   for (const c of registry.list()) {
     clients.set(c.id, c.client(hostCtx));
   }

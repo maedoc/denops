@@ -1,4 +1,4 @@
-import { arr, compose, num, optNum, rejectUnknown, str } from "../../harness/args.ts";
+import { arr, compose, num, optNum, optStr, rejectUnknown, str } from "../../harness/args.ts";
 import type { Connector, HostContext, JsonValue } from "../../harness/types.ts";
 import { type ImapAccountConfig, ImapHost } from "./client.ts";
 
@@ -10,52 +10,79 @@ export function imapConnector(deps: ImapConnectorDeps): Connector {
   const host = new ImapHost(deps.accounts);
   const acc = str("account");
 
-  const client = (_ctx: HostContext) => ({
-    "accounts": (): Promise<JsonValue> => Promise.resolve({ accounts: host.ids() } as JsonValue),
-    "mailboxes.list": async (a: JsonValue) => {
-      const account = host.get(String((a as { account: string }).account));
-      return await account.listMailboxes();
-    },
-    "messages.list": async (a: JsonValue) => {
-      const r = a as { account: string; mailbox: string; limit?: number; page?: number };
-      return await host.get(r.account).listMessages(r.mailbox, r.limit ?? 50, r.page ?? 1);
-    },
-    "messages.search": async (a: JsonValue) => {
-      const r = a as {
-        account: string;
-        mailbox: string;
-        query: Record<string, unknown>;
-        limit?: number;
-      };
-      return await host.get(r.account).searchMessages(r.mailbox, r.query, r.limit ?? 50);
-    },
-    "messages.get": async (a: JsonValue) => {
-      const r = a as { account: string; mailbox: string; uid: number; maxBytes?: number };
-      return await host.get(r.account).getMessage(r.mailbox, r.uid, r.maxBytes);
-    },
-    "messages.getPart": async (a: JsonValue) => {
-      const r = a as {
-        account: string;
-        mailbox: string;
-        uid: number;
-        part: string;
-        maxBytes?: number;
-      };
-      return await host.get(r.account).getMessagePart(r.mailbox, r.uid, r.part, r.maxBytes);
-    },
-    "messages.flags.get": async (a: JsonValue) => {
-      const r = a as { account: string; mailbox: string; uid: number };
-      return await host.get(r.account).getFlags(r.mailbox, r.uid);
-    },
-    "messages.raw": async (a: JsonValue) => {
-      const r = a as { account: string; mailbox: string; uid: number };
-      return await host.get(r.account).getMessage(r.mailbox, r.uid, 100 * 1024 * 1024);
-    },
-    "drafts.save": async (a: JsonValue) => {
-      const r = a as { account: string; subject: string; to: string[]; body: string };
-      return await host.get(r.account).saveDraft(r.subject, r.to, r.body);
-    },
-  });
+  const client = (ctx: HostContext) => {
+    const wrap = <A extends JsonValue>(
+      op: string,
+      fn: (a: A) => Promise<JsonValue>,
+    ): ((a: JsonValue) => Promise<JsonValue>) =>
+    async (a: JsonValue) => {
+      ctx.log({ connector: "mail", op: `mail.${op}`, args: a });
+      return await fn(a as A);
+    };
+    return {
+      "accounts": wrap("accounts", (): Promise<JsonValue> =>
+        Promise.resolve({ accounts: host.ids() } as JsonValue)),
+      "mailboxes.list": wrap("mailboxes.list", async (a) => {
+        const account = host.get(String((a as { account: string }).account));
+        return await account.listMailboxes();
+      }),
+      "messages.list": wrap("messages.list", async (a) => {
+        const r = a as { account: string; mailbox: string; limit?: number; page?: number };
+        return await host.get(r.account).listMessages(r.mailbox, r.limit ?? 50, r.page ?? 1);
+      }),
+      "messages.search": wrap("messages.search", async (a) => {
+        const r = a as {
+          account: string;
+          mailbox: string;
+          query: Record<string, unknown>;
+          limit?: number;
+        };
+        return await host.get(r.account).searchMessages(r.mailbox, r.query, r.limit ?? 50);
+      }),
+      "messages.get": wrap("messages.get", async (a) => {
+        const r = a as { account: string; mailbox: string; uid: number; maxBytes?: number };
+        return await host.get(r.account).getMessage(r.mailbox, r.uid, r.maxBytes);
+      }),
+      "messages.getPart": wrap("messages.getPart", async (a) => {
+        const r = a as {
+          account: string;
+          mailbox: string;
+          uid: number;
+          part: string;
+          maxBytes?: number;
+        };
+        return await host.get(r.account).getMessagePart(r.mailbox, r.uid, r.part, r.maxBytes);
+      }),
+      "messages.flags.get": wrap("messages.flags.get", async (a) => {
+        const r = a as { account: string; mailbox: string; uid: number };
+        return await host.get(r.account).getFlags(r.mailbox, r.uid);
+      }),
+      "messages.raw": wrap("messages.raw", async (a) => {
+        const r = a as { account: string; mailbox: string; uid: number };
+        return await host.get(r.account).getMessage(r.mailbox, r.uid, 100 * 1024 * 1024);
+      }),
+      "drafts.save": wrap("drafts.save", async (a) => {
+        const r = a as { account: string; subject: string; to: string[]; body: string };
+        return await host.get(r.account).saveDraft(r.subject, r.to, r.body);
+      }),
+      "messages.move": wrap("messages.move", async (a) => {
+        const r = a as {
+          account: string;
+          mailbox: string;
+          uids: number[];
+          toAccount?: string;
+          toMailbox: string;
+        };
+        return await host.moveMessages(
+          r.account,
+          r.mailbox,
+          r.uids,
+          r.toAccount ?? r.account,
+          r.toMailbox,
+        );
+      }),
+    };
+  };
 
   return {
     id: "mail",
@@ -142,6 +169,22 @@ export function imapConnector(deps: ImapConnectorDeps): Connector {
         tier: "approval",
         doc: "Full raw RFC822 source of a message (uncapped). args: { account, mailbox, uid }",
         argSchema: compose(rejectUnknown(), acc, str("mailbox"), num("uid")),
+      },
+      {
+        name: "mail.messages.move",
+        tier: "approval",
+        doc:
+          "Move message(s) to another mailbox, optionally on another account (cross-account = COPY + SHA-256 verification of the landed copy + delete/expunge on source). args: { account, mailbox, uids: number[], toMailbox, toAccount? }",
+        argSchema: compose(
+          rejectUnknown(),
+          acc,
+          str("mailbox"),
+          arr("uids", (v) =>
+            typeof v === "number" && Number.isFinite(v) && v > 0 ? null : "expected positive uid"
+          ),
+          str("toMailbox"),
+          optStr("toAccount"),
+        ),
       },
     ],
     client,

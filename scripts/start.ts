@@ -2,20 +2,40 @@ const configPath = Deno.args[0] ?? "config.yaml";
 
 function parseYaml(text: string): Record<string, unknown> {
   const root: Record<string, unknown> = {};
-  const stack: { indent: number; obj: Record<string, unknown> }[] = [{ indent: -1, obj: root }];
+  const stack: {
+    indent: number;
+    obj: Record<string, unknown> | unknown[];
+    parent?: Record<string, unknown>;
+    key?: string;
+  }[] = [{ indent: -1, obj: root }];
   for (const raw of text.split("\n")) {
     const noComment = raw.replace(/\s+#.*$/, "");
     if (!noComment.trim()) continue;
     const indent = noComment.length - noComment.trimStart().length;
     const line = noComment.trim();
     while (stack.length > 1 && indent <= stack[stack.length - 1].indent) stack.pop();
-    const parent = stack[stack.length - 1].obj;
+    const top = stack[stack.length - 1];
+    if (line.startsWith("- ")) {
+      if (!Array.isArray(top.obj)) {
+        if (top.parent === undefined || Object.keys(top.obj).length > 0) continue;
+        const arr: unknown[] = [];
+        top.parent[top.key as string] = arr;
+        top.obj = arr;
+      }
+      const item: Record<string, unknown> = {};
+      (top.obj as unknown[]).push(item);
+      const im = line.slice(2).match(/^([A-Za-z0-9_.-]+):\s*(.*)$/);
+      if (im) item[im[1]] = im[2] === "" ? {} : im[2].replace(/^"(.*)"$/, "$1");
+      stack.push({ indent: indent + 1, obj: item });
+      continue;
+    }
+    const parent = top.obj as Record<string, unknown>;
     const m = line.match(/^([A-Za-z0-9_.-]+):\s*(.*)$/);
     if (!m) continue;
     if (m[2] === "") {
       const child: Record<string, unknown> = {};
       parent[m[1]] = child;
-      stack.push({ indent, obj: child });
+      stack.push({ indent, obj: child, parent, key: m[1] });
     } else {
       parent[m[1]] = m[2].replace(/^"(.*)"$/, "$1");
     }
@@ -48,6 +68,8 @@ const args = [
   `--allow-net=${allowNet}`,
   "--allow-read=config.yaml,secrets.json,data/,deno.json,deno.lock,src/,scripts/",
   "--allow-write=data/",
+  "--allow-env",
+  "--allow-sys",
   "--no-prompt",
   "src/server.ts",
   configPath,

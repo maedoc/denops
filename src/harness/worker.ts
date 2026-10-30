@@ -18,6 +18,8 @@ export function summarizeOp(op: string, args: JsonValue): string {
     return s.length > max ? s.slice(0, max) + "…" : s;
   };
   switch (op) {
+    case "mail.messages.move":
+      return `Move ${Array.isArray(a.uids) ? a.uids.length : 1} message(s) from ${brief(a.account)}/${brief(a.mailbox)} to ${brief(a.toAccount ?? a.account)}/${brief(a.toMailbox)}`;
     case "gitlab.issues.create":
       return `Create issue in project ${brief(a.projectId)}: "${brief(a.title, 200)}"`;
     case "gitlab.issues.update":

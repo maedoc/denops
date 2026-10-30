@@ -74,7 +74,18 @@ export async function loadSecrets(path: string): Promise<Record<string, unknown>
 
 function parseYaml(text: string): unknown {
   const root: Record<string, unknown> = {};
-  const stack: { indent: number; obj: Record<string, unknown> }[] = [{ indent: -1, obj: root }];
+  const stack: {
+    indent: number;
+    obj: Record<string, unknown> | unknown[];
+    parent?: Record<string, unknown>;
+    key?: string;
+  }[] = [{ indent: -1, obj: root }];
+  const scalar = (rest: string): unknown => {
+    if (rest === "[]") return [];
+    if (rest === "true" || rest === "false") return rest === "true";
+    if (/^-?\d+(\.\d+)?$/.test(rest)) return Number(rest);
+    return rest.replace(/^"(.*)"$/, "$1").replace(/^'(.*)'$/, "$1");
+  };
   const lines = text.split("\n");
   for (const raw of lines) {
     const noComment = raw.replace(/\s+#.*$/, "");
@@ -82,7 +93,22 @@ function parseYaml(text: string): unknown {
     const indent = noComment.length - noComment.trimStart().length;
     const line = noComment.trim();
     while (stack.length > 1 && indent <= stack[stack.length - 1].indent) stack.pop();
-    const parent = stack[stack.length - 1].obj;
+    const top = stack[stack.length - 1];
+    if (line.startsWith("- ")) {
+      if (!Array.isArray(top.obj)) {
+        if (top.parent === undefined || Object.keys(top.obj).length > 0) continue;
+        const arr: unknown[] = [];
+        top.parent[top.key as string] = arr;
+        top.obj = arr;
+      }
+      const item: Record<string, unknown> = {};
+      (top.obj as unknown[]).push(item);
+      const m = line.slice(2).match(/^([A-Za-z0-9_.-]+):\s*(.*)$/);
+      if (m) item[m[1]] = m[2] === "" ? {} : scalar(m[2]);
+      stack.push({ indent: indent + 1, obj: item });
+      continue;
+    }
+    const parent = top.obj as Record<string, unknown>;
     const m = line.match(/^([A-Za-z0-9_.-]+):\s*(.*)$/);
     if (!m) continue;
     const key = m[1];
@@ -90,15 +116,9 @@ function parseYaml(text: string): unknown {
     if (rest === "") {
       const child: Record<string, unknown> = {};
       parent[key] = child;
-      stack.push({ indent, obj: child });
-    } else if (rest === "[]") {
-      parent[key] = [];
-    } else if (rest === "true" || rest === "false") {
-      parent[key] = rest === "true";
-    } else if (/^-?\d+(\.\d+)?$/.test(rest)) {
-      parent[key] = Number(rest);
+      stack.push({ indent, obj: child, parent, key });
     } else {
-      parent[key] = rest.replace(/^"(.*)"$/, "$1").replace(/^'(.*)'$/, "$1");
+      parent[key] = scalar(rest);
     }
   }
   return root;
