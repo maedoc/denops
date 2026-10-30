@@ -7,7 +7,7 @@ import { describe, search } from "./harness/discover.ts";
 import { isManifest, isOpEntry, RunLog } from "./harness/log.ts";
 import { Registry } from "./harness/registry.ts";
 import type { Budgets, Connector, JsonValue } from "./harness/types.ts";
-import { Harness } from "./harness/worker.ts";
+import { Harness, summarizeOp } from "./harness/worker.ts";
 import { type Config, loadConfig, loadSecrets } from "./config.ts";
 import { debugConnector } from "./connectors/debug/manifest.ts";
 import { gitlabConnector } from "./connectors/gitlab/manifest.ts";
@@ -179,7 +179,7 @@ export function registerTools(app: AppContext, server: McpServer): void {
     "execute",
     {
       description:
-        "Run one JavaScript async function body in a fresh sandboxed worker (no network/fs/env; connector handles like gitlab.*, mistral.*, mail.* call authenticated host-side clients). Return a JSON-serializable value. Approval-tier ops suspend the run and return { status: 'awaiting_approval', pendingId, op, args }; resume with the approve tool.",
+        "Run one JavaScript async function body in a fresh sandboxed worker (no network/fs/env; connector handles like gitlab.*, mistral.*, mail.* call authenticated host-side clients). Return a JSON-serializable value. Approval-tier ops suspend the run and return { status: 'awaiting_approval', pendingId, op, summary, args } — summary says in plain words what will be executed; resume with the approve tool.",
       inputSchema: { code: z.string(), description: z.string().optional() },
     },
     async ({ code }: { code: string; description?: string }) => {
@@ -198,6 +198,7 @@ export function registerTools(app: AppContext, server: McpServer): void {
               pendingId: outcome.pending.pendingId,
               runId,
               op: outcome.pending.op,
+              summary: outcome.pending.summary,
               args: outcome.pending.args,
               note:
                 "Call approve(pendingId, 'approve'|'reject'). On approve the run is replayed deterministically and the approved op executes live.",
@@ -236,6 +237,7 @@ export function registerTools(app: AppContext, server: McpServer): void {
             runId: stored.runId,
             op: stored.op,
             args: stored.args,
+            summary: stored.summary ?? summarizeOp(stored.op, stored.args),
           };
           app.approvals.add(pending);
           app.approvals.decide(pendingId, decision);
@@ -288,6 +290,8 @@ export function registerTools(app: AppContext, server: McpServer): void {
           text: JSON.stringify({
             status: outcome.status,
             runId: pending.runId,
+            approvedOp: pending.op,
+            approvedSummary: pending.summary,
             result: outcome.result ?? null,
             error: outcome.error ?? null,
             resumedFrom: pendingId,

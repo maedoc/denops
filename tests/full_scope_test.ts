@@ -4,7 +4,7 @@ import { isManifest, isOpEntry, RunLog } from "../src/harness/log.ts";
 import { PendingStore } from "../src/harness/pendingStore.ts";
 import { Registry } from "../src/harness/registry.ts";
 import type { Budgets, JsonValue } from "../src/harness/types.ts";
-import { Harness } from "../src/harness/worker.ts";
+import { Harness, summarizeOp } from "../src/harness/worker.ts";
 import { gitlabConnector } from "../src/connectors/gitlab/manifest.ts";
 import { imapConnector } from "../src/connectors/imap/manifest.ts";
 import { mistralConnector } from "../src/connectors/mistral/manifest.ts";
@@ -155,7 +155,13 @@ Deno.test("pending store: survives reload, add/remove/list round-trip", async ()
   const dir = await Deno.makeTempDir();
   try {
     const s1 = new PendingStore(dir);
-    await s1.add({ pendingId: "p1", runId: "r1", op: "debug.gated", args: { reason: "x" } });
+    await s1.add({
+      pendingId: "p1",
+      runId: "r1",
+      op: "debug.gated",
+      args: { reason: "x" },
+      summary: "debug.gated test",
+    });
     const s2 = new PendingStore(dir);
     const list = await s2.list();
     assertEquals(list.length, 1);
@@ -225,6 +231,70 @@ Deno.test("replay after restart: log-driven resume serves prior ops and runs app
     const res = out2.result as { a: unknown; g: unknown };
     assertEquals(res.a, { echoed: { n: 1 } });
     assertEquals(res.g, { gated: true, args: { ok: true } });
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("summarizeOp produces human-readable approval text", () => {
+  assertEquals(
+    summarizeOp("gitlab.issues.create", { projectId: "42", title: "Fix login bug" }),
+    'Create issue in project 42: "Fix login bug"',
+  );
+  assertEquals(
+    summarizeOp("gitlab.repository.files.create", {
+      projectId: "g/p",
+      filePath: "src/a.ts",
+      branch: "main",
+      content: "x".repeat(500),
+      commitMessage: "add a",
+    }),
+    'Commit file src/a.ts on branch main in project g/p (500 bytes): "add a"',
+  );
+  assertEquals(
+    summarizeOp("mistral.libraries.share", {
+      id: "lib-1",
+      shareWithType: "Org",
+      shareWithUuid: "org-9",
+      level: "Viewer",
+    }),
+    "Share library lib-1 with Org org-9 as Viewer",
+  );
+  assertEquals(
+    summarizeOp("mail.messages.raw", { account: "work", mailbox: "INBOX", uid: 123 }),
+    "Fetch full raw source of message uid 123 in INBOX (account work)",
+  );
+  assertStringIncludes(summarizeOp("debug.gated", { reason: "x" }), "debug.gated");
+});
+
+Deno.test("execute awaiting_approval result includes summary", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const registry = new Registry();
+    const { debugConnector } = await import("../src/connectors/debug/manifest.ts");
+    registry.register(debugConnector);
+    const clients = new Map([[
+      "debug",
+      debugConnector.client({ config: {}, secrets: {}, log: () => {} }),
+    ]]);
+    const h = new Harness(
+      (op) => {
+        const r = registry.resolve(op);
+        if (!r) return undefined;
+        const m = clients.get("debug")?.[op.slice(6)];
+        return m ? { spec: r.spec, connector: r.connector, method: m } : undefined;
+      },
+      budgets,
+      (q, c) => search(registry, q, c),
+      () => "",
+    );
+    h.setConnectorIds(["debug"]);
+    const log = new RunLog(dir, "s1", budgets.maxLogBytes);
+    await log.init({ runId: "s1", code: "", connectors: ["debug"] });
+    const out = await h.run("s1", `return await debug.gated({ reason: "needs review" });`, log);
+    assertEquals(out.status, "awaiting_approval");
+    assertStringIncludes(out.pending!.summary, "debug.gated");
+    assertStringIncludes(out.pending!.summary, "needs review");
   } finally {
     await Deno.remove(dir, { recursive: true });
   }

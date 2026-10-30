@@ -8,6 +8,63 @@ export interface PendingApproval {
   runId: string;
   op: string;
   args: JsonValue;
+  summary: string;
+}
+
+export function summarizeOp(op: string, args: JsonValue): string {
+  const a = (args ?? {}) as Record<string, unknown>;
+  const brief = (v: unknown, max = 120): string => {
+    const s = typeof v === "string" ? v : JSON.stringify(v);
+    return s.length > max ? s.slice(0, max) + "…" : s;
+  };
+  switch (op) {
+    case "gitlab.issues.create":
+      return `Create issue in project ${brief(a.projectId)}: "${brief(a.title, 200)}"`;
+    case "gitlab.issues.update":
+      return `Update issue #${a.issueIid} in project ${brief(a.projectId)}${
+        a.state ? ` → state=${a.state}` : ""
+      }${a.title ? ` title="${brief(a.title, 120)}"` : ""}`;
+    case "gitlab.issues.notes.create":
+      return `Comment on issue #${a.issueIid} in project ${brief(a.projectId)}: "${
+        brief(a.body, 200)
+      }"`;
+    case "gitlab.mergeRequests.create":
+      return `Create MR in project ${brief(a.projectId)}: ${brief(a.sourceBranch)} → ${
+        brief(a.targetBranch)
+      } "${brief(a.title, 200)}"`;
+    case "gitlab.mergeRequests.comment":
+      return `Comment on MR !${a.mrIid} in project ${brief(a.projectId)}: "${brief(a.body, 200)}"`;
+    case "gitlab.repository.files.create":
+      return `Commit file ${brief(a.filePath, 200)} on branch ${brief(a.branch)} in project ${
+        brief(a.projectId)
+      } (${typeof a.content === "string" ? (a.content as string).length : 0} bytes): "${
+        brief(a.commitMessage, 200)
+      }"`;
+    case "gitlab.projects.update":
+      return `Update project ${brief(a.id)}: ${
+        Object.entries(a).filter(([k]) => k !== "id").map(([k, v]) => `${k}=${brief(v, 100)}`).join(
+          ", ",
+        )
+      }`;
+    case "mistral.libraries.delete":
+      return `Delete Mistral library ${brief(a.id)}`;
+    case "mistral.documents.delete":
+      return `Delete document ${brief(a.documentId)} from library ${brief(a.libraryId)}`;
+    case "mistral.libraries.share":
+      return `Share library ${brief(a.id)} with ${brief(a.shareWithType)} ${
+        brief(a.shareWithUuid)
+      } as ${brief(a.level)}`;
+    case "mistral.libraries.unshare":
+      return `Unshare library ${brief(a.id)} from ${brief(a.shareWithType)} ${
+        brief(a.shareWithUuid)
+      }`;
+    case "mail.messages.raw":
+      return `Fetch full raw source of message uid ${a.uid} in ${brief(a.mailbox)} (account ${
+        brief(a.account)
+      })`;
+    default:
+      return `${op} ${brief(JSON.stringify(args), 300)}`;
+  }
 }
 
 export interface RunOutcome {
@@ -161,7 +218,7 @@ export class Harness {
       const effectiveTier = this.tierOverride?.(op, args, runState) ?? spec.tier;
       if (effectiveTier === "approval" && !(replay && replay.approvedOps.has(op))) {
         const pendingId = crypto.randomUUID();
-        awaiting = { pendingId, runId, op, args };
+        awaiting = { pendingId, runId, op, args, summary: summarizeOp(op, args) };
         await log.recordOp({ op, args, status: "pending" });
         await log.recordFinal({ status: "awaiting_approval", pendingId });
         finish({ status: "awaiting_approval", pending: awaiting });

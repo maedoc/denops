@@ -2,6 +2,7 @@ import type { PendingApproval } from "./worker.ts";
 
 export interface StoredPending extends PendingApproval {
   createdAt: string;
+  summary: string;
 }
 
 export class PendingStore {
@@ -28,7 +29,7 @@ export class PendingStore {
 
   async add(p: PendingApproval): Promise<StoredPending> {
     const items = await this.readAll();
-    const stored: StoredPending = { ...p, createdAt: new Date().toISOString() };
+    const stored: StoredPending = { ...p, summary: p.summary, createdAt: new Date().toISOString() };
     items.push(stored);
     await this.writeAll(items);
     return stored;
