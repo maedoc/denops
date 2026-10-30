@@ -6,7 +6,8 @@
     "test": "deno test --unstable-worker-options --allow-all tests/",
     "check": "deno check src/server.ts tests/",
     "fmt": "deno fmt",
-    "lint": "deno lint"
+    "lint": "deno lint",
+    "pending": "deno run --unstable-worker-options --allow-all scripts/pending.ts"
   },
   "imports": {
     "@modelcontextprotocol/sdk/server/mcp.js": "npm:@modelcontextprotocol/sdk@1.32.2/server/mcp.js",

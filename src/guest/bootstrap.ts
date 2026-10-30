@@ -33,11 +33,17 @@ self.addEventListener("message", (e) => {
 });
 
 function __makeHandle(prefix) {
-  return new Proxy({}, {
+  const target = function () {};
+  return new Proxy(target, {
     get(_t, prop) {
-      if (typeof prop !== "string") return undefined;
-      const op = prefix + prop.replace(/_/g, ".");
-      return (args) => __callOp(op, args === undefined ? {} : args);
+      if (typeof prop !== "string" || prop === "then" || prop === "inspect" || prop.startsWith("__")) {
+        return undefined;
+      }
+      return __makeHandle(prefix + prop + ".");
+    },
+    apply(_t, _this, args) {
+      const op = prefix.endsWith(".") ? prefix.slice(0, -1) : prefix;
+      return __callOp(op, args[0] === undefined ? {} : args[0]);
     }
   });
 }

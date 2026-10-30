@@ -73,7 +73,10 @@ If `server.token` is set in `config.yaml` (and `serverToken` in `secrets.json`),
 - **mistral** — Libraries API (`/v1/libraries`, `/v1/libraries/{id}/documents`, upload via
   `/v1/files` + document creation; the API key stays host-side). Deletes are approval-tier. Also
   exposes `mistral.connectors.list` (beta Connectors API).
-- **imap** — reserved (not yet implemented in this iteration).
+- **imap** (`mail.*`) — multi-account IMAP via `imapflow`: `mail.accounts`, `mail.mailboxes.list`,
+  `mail.messages.list/search/get/getPart/flags.get`, `mail.drafts.save` (open — deliberate
+  draft-not-send), `mail.messages.raw` (approval). One persistent connection per account, ops
+  serialized per account via a host-side queue. Send is absent by omission (no SMTP in v1).
 
 ### Mistral Vibe/Work connector startup check
 
@@ -100,6 +103,9 @@ access scope ("Private and shared connectors" in Studio).
 ## Development
 
 ```bash
+deno task pending data list                                  # list pending approvals
+deno task pending data approve <pendingId> config.yaml secrets.json   # replay + execute live
+deno task pending data reject <pendingId>                   # terminate + record rejection
 deno task test    # unit + MCP smoke tests (mock/debug connector only)
 deno task check   # typecheck
 deno task lint && deno fmt --check

@@ -129,6 +129,81 @@ export function gitlabConnector(
         argSchema: compose(rejectUnknown(), str("projectId"), num("mrIid")),
       },
       {
+        name: "gitlab.issues.create",
+        tier: "approval",
+        doc: "Create an issue. args: { projectId, title, description? }",
+        argSchema: compose(
+          rejectUnknown(),
+          str("projectId"),
+          str("title"),
+          optStr("description", 100000),
+        ),
+      },
+      {
+        name: "gitlab.issues.update",
+        tier: "approval",
+        doc: "Update an issue. args: { projectId, issueIid, title?, description?, state? }",
+        argSchema: compose(
+          rejectUnknown(),
+          str("projectId"),
+          num("issueIid"),
+          optStr("title", 500),
+          optStr("description", 100000),
+          oneOf("state", ["opened", "closed"]),
+        ),
+      },
+      {
+        name: "gitlab.issues.notes.create",
+        tier: "approval",
+        doc: "Comment on an issue. args: { projectId, issueIid, body }",
+        argSchema: compose(rejectUnknown(), str("projectId"), num("issueIid"), str("body")),
+      },
+      {
+        name: "gitlab.mergeRequests.create",
+        tier: "approval",
+        doc:
+          "Create a merge request. args: { projectId, sourceBranch, targetBranch, title, description? }",
+        argSchema: compose(
+          rejectUnknown(),
+          str("projectId"),
+          str("sourceBranch"),
+          str("targetBranch"),
+          str("title"),
+          optStr("description", 100000),
+        ),
+      },
+      {
+        name: "gitlab.mergeRequests.comment",
+        tier: "approval",
+        doc: "Comment on a merge request. args: { projectId, mrIid, body }",
+        argSchema: compose(rejectUnknown(), str("projectId"), num("mrIid"), str("body")),
+      },
+      {
+        name: "gitlab.repository.files.create",
+        tier: "approval",
+        doc:
+          "Create or update a file via a single commit. args: { projectId, filePath, branch, content, commitMessage }",
+        argSchema: compose(
+          rejectUnknown(),
+          str("projectId"),
+          str("filePath"),
+          str("branch"),
+          str("content"),
+          str("commitMessage"),
+        ),
+      },
+      {
+        name: "gitlab.projects.update",
+        tier: "approval",
+        doc: "Update project settings. args: { id, name?, description? }",
+        argSchema: compose(
+          rejectUnknown(),
+          str("id"),
+          optStr("name", 200),
+          optStr("description", 10000),
+        ),
+      },
+      {
         name: "gitlab.users.current",
         tier: "open",
         doc: "Get the current authenticated user. args: {}",
@@ -214,6 +289,74 @@ export function gitlabConnector(
       "mergeRequests.changes.get": (a) => {
         const r = a as { projectId: string; mrIid: number };
         return client.get(`/projects/${enc(r.projectId)}/merge_requests/${r.mrIid}/changes`);
+      },
+      "issues.create": (a) => {
+        const r = a as { projectId: string; title: string; description?: string };
+        return client.post(`/projects/${enc(r.projectId)}/issues`, {
+          title: r.title,
+          ...(r.description ? { description: r.description } : {}),
+        });
+      },
+      "issues.update": (a) => {
+        const r = a as {
+          projectId: string;
+          issueIid: number;
+          title?: string;
+          description?: string;
+          state?: string;
+        };
+        return client.put(
+          `/projects/${enc(r.projectId)}/issues/${r.issueIid}`,
+          pick(a, ["title", "description", "state"]),
+        );
+      },
+      "issues.notes.create": (a) => {
+        const r = a as { projectId: string; issueIid: number; body: string };
+        return client.post(`/projects/${enc(r.projectId)}/issues/${r.issueIid}/notes`, {
+          body: r.body,
+        });
+      },
+      "mergeRequests.create": (a) => {
+        const r = a as {
+          projectId: string;
+          sourceBranch: string;
+          targetBranch: string;
+          title: string;
+          description?: string;
+        };
+        return client.post(`/projects/${enc(r.projectId)}/merge_requests`, {
+          source_branch: r.sourceBranch,
+          target_branch: r.targetBranch,
+          title: r.title,
+          ...(r.description ? { description: r.description } : {}),
+        });
+      },
+      "mergeRequests.comment": (a) => {
+        const r = a as { projectId: string; mrIid: number; body: string };
+        return client.post(`/projects/${enc(r.projectId)}/merge_requests/${r.mrIid}/notes`, {
+          body: r.body,
+        });
+      },
+      "repository.files.create": (a) => {
+        const r = a as {
+          projectId: string;
+          filePath: string;
+          branch: string;
+          content: string;
+          commitMessage: string;
+        };
+        return client.post(
+          `/projects/${enc(r.projectId)}/repository/files/${encPath(r.filePath)}`,
+          {
+            branch: r.branch,
+            content: r.content,
+            commit_message: r.commitMessage,
+          },
+        );
+      },
+      "projects.update": (a) => {
+        const r = a as { id: string };
+        return client.put(`/projects/${enc(r.id)}`, pick(a, ["name", "description"]));
       },
       "users.current": () => client.get("/user"),
       "groups.list": (a) => client.get("/groups", pick(a, ["search", "perPage", "page"])),

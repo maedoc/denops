@@ -38,12 +38,13 @@ connectors:
   imap:
     enabled: false
     accounts: []
-    # - id: work
+    # - id: work              # ops take { account: "work", ... }
     #   host: imap.example.org
     #   port: 993
     #   tls: true
+    #   user: me@example.org
     #   draftsMailbox: Drafts
-    #   passwordSecret: mail.work.password   # key into secrets.json
+    #   # password lives in secrets.json as mail.work.password
 
 startup:
   # full: validate secrets and reachability of all enabled connectors, fail fast on error.

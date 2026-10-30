@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { z } from "zod";
 import { ApprovalQueue } from "./harness/approvals.ts";
+import { PendingStore } from "./harness/pendingStore.ts";
 import { describe, search } from "./harness/discover.ts";
 import { isManifest, isOpEntry, RunLog } from "./harness/log.ts";
 import { Registry } from "./harness/registry.ts";
@@ -21,6 +22,7 @@ export interface AppContext {
   registry: Registry;
   harness: Harness;
   approvals: ApprovalQueue;
+  pendingStore: PendingStore;
   dataDir: string;
   budgets: Budgets;
 }
@@ -61,6 +63,30 @@ export async function buildApp(configPath: string, secretsPath: string): Promise
         apiPath: String(m.apiPath ?? "/v1"),
       }),
     );
+  }
+
+  if (enabled("imap")) {
+    const im = config.connectors.imap;
+    const mailSecrets = (secrets.mail ?? {}) as Record<string, unknown>;
+    const accounts = ((im.accounts ?? []) as Array<Record<string, unknown>>).map((a) => ({
+      id: String(a.id),
+      host: String(a.host),
+      port: Number(a.port ?? 993),
+      tls: a.tls !== false,
+      user: String(a.user ?? ""),
+      password: String(
+        ((mailSecrets[String(a.id)] ?? {}) as Record<string, unknown>).password ?? "",
+      ),
+      draftsMailbox: String(a.draftsMailbox ?? "Drafts"),
+    }));
+    if (accounts.length === 0) throw new Error("imap enabled but no accounts configured");
+    for (const a of accounts) {
+      if (!a.password) {
+        throw new Error(`imap account ${a.id}: missing secrets.mail.${a.id}.password`);
+      }
+    }
+    const { imapConnector } = await import("./connectors/imap/manifest.ts");
+    registry.register(imapConnector({ accounts }));
   }
 
   if (config.startup.validate === "full") {
@@ -106,6 +132,7 @@ export async function buildApp(configPath: string, secretsPath: string): Promise
     registry,
     harness,
     approvals: new ApprovalQueue(),
+    pendingStore: new PendingStore(config.dataDir),
     dataDir: config.dataDir,
     budgets: config.budgets,
   };
@@ -138,6 +165,7 @@ export function registerTools(app: AppContext, server: McpServer): void {
       const outcome = await app.harness.run(runId, code, log);
       if (outcome.status === "awaiting_approval" && outcome.pending) {
         app.approvals.add(outcome.pending);
+        await app.pendingStore.add(outcome.pending);
         return {
           content: [{
             type: "text",
@@ -175,7 +203,20 @@ export function registerTools(app: AppContext, server: McpServer): void {
       inputSchema: { pendingId: z.string(), decision: z.enum(["approve", "reject"]) },
     },
     async ({ pendingId, decision }: { pendingId: string; decision: "approve" | "reject" }) => {
-      const pending = app.approvals.decide(pendingId, decision);
+      let pending = app.approvals.decide(pendingId, decision);
+      if (!pending) {
+        const stored = await app.pendingStore.get(pendingId);
+        if (stored) {
+          pending = {
+            pendingId: stored.pendingId,
+            runId: stored.runId,
+            op: stored.op,
+            args: stored.args,
+          };
+          app.approvals.add(pending);
+          app.approvals.decide(pendingId, decision);
+        }
+      }
       if (!pending) {
         return {
           content: [{
@@ -184,6 +225,7 @@ export function registerTools(app: AppContext, server: McpServer): void {
           }],
         };
       }
+      await app.pendingStore.remove(pendingId);
       if (decision === "reject") {
         const log = new RunLog(app.dataDir, pending.runId, app.budgets.maxLogBytes);
         await log.recordOp({ op: pending.op, status: "rejected" });
