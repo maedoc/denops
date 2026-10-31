@@ -11,6 +11,8 @@ import { Harness, summarizeOp } from "./harness/worker.ts";
 import { type Config, loadConfig, loadSecrets } from "./config.ts";
 import { createHandler, DEFAULT_MAX_BODY_BYTES, serveWithTimeouts } from "./security/http.ts";
 import { defaultBanPolicy } from "./security/ban.ts";
+import { RootGrants } from "./harness/grants.ts";
+import { fsConnector, fsGrantKey } from "./connectors/fs/manifest.ts";
 import { debugConnector } from "./connectors/debug/manifest.ts";
 import { gitlabConnector } from "./connectors/gitlab/manifest.ts";
 import { mistralConnector } from "./connectors/mistral/manifest.ts";
@@ -25,6 +27,7 @@ export interface AppContext {
   harness: Harness;
   approvals: ApprovalQueue;
   pendingStore: PendingStore;
+  grants: RootGrants;
   dataDir: string;
   budgets: Budgets;
 }
@@ -110,6 +113,25 @@ export async function buildApp(configPath: string, secretsPath: string): Promise
     );
   }
 
+  if (enabled("fs")) {
+    const f = config.connectors.fs;
+    const roots = ((f.roots ?? []) as Array<Record<string, unknown>>).map((r) => ({
+      name: String(r.name),
+      path: String(r.path),
+      write: r.write === true,
+      exec: r.exec === true,
+    }));
+    registry.register(
+      fsConnector({
+        roots,
+        maxFileSize: Number(f.maxFileSize ?? config.budgets.maxOpResultBytes),
+        maxOutput: Number(f.maxOutput ?? config.budgets.maxOpResultBytes),
+        execTimeoutSec: Number(f.execTimeoutSec ?? 120),
+        maxConcurrentExec: Number(f.maxConcurrentExec ?? 2),
+      }),
+    );
+  }
+
   if (enabled("imap")) {
     const im = config.connectors.imap;
     const mailSecrets = (secrets.mail ?? {}) as Record<string, unknown>;
@@ -184,6 +206,10 @@ export async function buildApp(configPath: string, secretsPath: string): Promise
   );
   harness.setConnectorIds(registry.list().map((c: Connector) => c.id));
 
+  const grants = new RootGrants({ dataDir: config.dataDir, isGrantOp: fsGrantKey });
+  await grants.init();
+  harness.setGrantLookup(fsGrantKey, (key) => grants.isGranted(key));
+
   return {
     config,
     secrets,
@@ -191,6 +217,7 @@ export async function buildApp(configPath: string, secretsPath: string): Promise
     harness,
     approvals: new ApprovalQueue(),
     pendingStore: new PendingStore(config.dataDir),
+    grants,
     dataDir: config.dataDir,
     budgets: config.budgets,
   };
@@ -286,6 +313,17 @@ export function registerTools(app: AppContext, server: McpServer): void {
         };
       }
       await app.pendingStore.remove(pendingId);
+      if (decision === "approve") {
+        const grantKey = fsGrantKey(pending.op, pending.args);
+        if (grantKey) {
+          await app.grants.grant(grantKey);
+          await new RunLog(app.dataDir, pending.runId, app.budgets.maxLogBytes).recordOp({
+            op: pending.op,
+            status: "approved",
+          });
+          console.error(`[denops] granted root ${grantKey} (approved ${pending.op})`);
+        }
+      }
       if (decision === "reject") {
         const log = new RunLog(app.dataDir, pending.runId, app.budgets.maxLogBytes);
         await log.recordOp({ op: pending.op, status: "rejected" });
@@ -339,6 +377,37 @@ export function registerTools(app: AppContext, server: McpServer): void {
 export function createMcpServer(app: AppContext): McpServer {
   const server = new McpServer({ name: "denops", version: "0.1.0" });
   registerTools(app, server);
+  server.registerTool(
+    "grants",
+    {
+      description:
+        "List or revoke root grants. Approving an fs.* op on a root grants it; later fs.* ops on that root run without further approval. args: { action: 'list' | 'revoke', key? } (key like 'fs:myrepo', required for revoke)",
+      inputSchema: {
+        action: z.enum(["list", "revoke"]),
+        key: z.string().optional(),
+      },
+    },
+    async ({ action, key }: { action: "list" | "revoke"; key?: string }) => {
+      if (action === "list") {
+        return {
+          content: [{ type: "text", text: JSON.stringify({ grants: app.grants.list() }) }],
+        };
+      }
+      if (!key) {
+        return {
+          content: [{ type: "text", text: JSON.stringify({ error: "key required for revoke" }) }],
+        };
+      }
+      const revoked = await app.grants.revoke(key);
+      console.error(`[denops] ${revoked ? "revoked" : "no such"} root grant ${key}`);
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({ revoked, key, grants: app.grants.list() }),
+        }],
+      };
+    },
+  );
   return server;
 }
 

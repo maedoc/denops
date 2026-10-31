@@ -173,6 +173,41 @@ so legitimate traffic is never banned; the auto-ban handles everything else.
   draft-not-send), `mail.messages.raw` (approval). One persistent connection per account, ops
   serialized per account via a host-side queue. Send is absent by omission (no SMTP in v1).
 
+### fs (local filesystem, root-allowlisted)
+
+Read/write/glob/exec against **named, allowlisted root directories** — for working on specific
+repos/paths through the chat instead of SSH. The model addresses roots by name (`root: "myrepo"`),
+never by absolute path; every path is resolved with symlink resolution and rejected if it escapes
+the root (`..`, absolute paths, symlink escapes).
+
+```yaml
+connectors:
+  fs:
+    enabled: true
+    roots:
+      - name: myrepo
+        path: /srv/repos/myrepo
+        write: true # enables fs.write / fs.edit / fs.editRegex
+        exec: true # enables fs.exec
+```
+
+Ops: `fs.roots` (open), `fs.glob`, `fs.list`, `fs.read` (line-windowed), `fs.write`, `fs.edit`
+(unique-match), `fs.editRegex`, `fs.exec` (`sh -c` with cwd=root, **scrubbed environment** so no
+process env/secrets leak into children, per-call timeout ceiling, output cap, whole-process-group
+kill on timeout, concurrency limit).
+
+**Grant model (no per-op approval spam):** the first `fs.*` op on a root is approval-tier; approving
+it records a persistent **root grant** (`data/root_grants.json`, atomic write, survives restarts)
+and every later `fs.*` op on that root — including writes and exec — runs open. List/revoke grants
+with the `grants` tool (`grants({action:"list"})`, `grants({action:"revoke", key:"fs:myrepo"})`) or
+by deleting the key from the file. `write`/`exec` additionally require the root to be configured
+with `write: true` / `exec: true`, so a grant alone never exceeds the root's configured
+capabilities.
+
+`deno task start` derives Deno permissions from the configured roots: `--allow-read`/`--allow-write`
+per root (write only for `write: true` roots) and `--allow-run=/bin/sh,/usr/bin/setsid,/bin/kill`
+only when at least one root has `exec: true`.
+
 ### Mistral Vibe/Work connector startup check
 
 Set in `config.yaml`:

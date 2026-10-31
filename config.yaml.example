@@ -48,6 +48,22 @@ connectors:
         name: denops          # connector name to look for
         expectServerUrl: ""   # optional: expected MCP server URL, e.g. http://127.0.0.1:3100/mcp
         strict: false
+  fs:
+    enabled: false
+    # Named roots the fs.* ops can address. The model refers to roots by name;
+    # absolute paths are never accepted from the model.
+    # First fs.* op on a root is approval-tier; approving it grants the root
+    # (persisted in data/root_grants.json) and later fs.* ops on that root run
+    # open. Revoke via the `grants` tool.
+    roots: []
+    # - name: myrepo        # referenced as root: "myrepo"
+    #   path: /srv/repos/myrepo
+    #   write: true         # allow fs.write / fs.edit / fs.editRegex
+    #   exec: true          # allow fs.exec (sh -c, cwd=root, scrubbed env)
+    # maxFileSize: 2097152
+    # maxOutput: 262144
+    # execTimeoutSec: 120
+    # maxConcurrentExec: 2
   imap:
     enabled: false
     accounts: []
