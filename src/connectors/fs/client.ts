@@ -334,33 +334,45 @@ export class FSClient {
 
   private runExec(cwd: string, command: string, timeoutMs: number): Promise<ExecResult> {
     const started = Date.now();
-    // The command runs as its own process-group leader (setsid), so the
-    // timeout can SIGKILL the whole group — sh and all its children — and
-    // collect the shell immediately instead of waiting for grandchildren
-    // to release the pipes.
-    const cmd = new Deno.Command("/usr/bin/setsid", {
-      args: ["/bin/sh", "-c", command],
-      cwd,
-      env: { PATH: "/usr/local/bin:/usr/bin:/bin", HOME: cwd, TMPDIR: "/tmp" },
-      clearEnv: true,
-      stdout: "piped",
-      stderr: "piped",
-    });
+    // On Linux the command runs as its own process-group leader (setsid), so
+    // the timeout can SIGKILL the whole group — sh and all its children — and
+    // collect the shell immediately. On macOS setsid is unavailable, so we
+    // spawn directly and kill the process (children may linger briefly).
+    const useSetsid = Deno.build.os === "linux";
+    const cmd = useSetsid
+      ? new Deno.Command("/usr/bin/setsid", {
+        args: ["/bin/sh", "-c", command],
+        cwd,
+        env: { PATH: "/usr/local/bin:/usr/bin:/bin", HOME: cwd, TMPDIR: "/tmp" },
+        clearEnv: true,
+        stdout: "piped",
+        stderr: "piped",
+      })
+      : new Deno.Command("/bin/sh", {
+        args: ["-c", command],
+        cwd,
+        env: { PATH: "/usr/local/bin:/usr/bin:/bin", HOME: cwd, TMPDIR: "/tmp" },
+        clearEnv: true,
+        stdout: "piped",
+        stderr: "piped",
+      });
     const proc = cmd.spawn();
     const stdout = this.cappedRead(proc.stdout, this.opts.maxOutput);
     const stderr = this.cappedRead(proc.stderr, this.opts.maxOutput);
     let killed = false;
     const timer = setTimeout(() => {
       killed = true;
-      // setsid made the child a session/group leader with pgid == its pid;
-      // kill the whole group (sh + all children) via the negative pid.
-      try {
-        new Deno.Command("/bin/kill", {
-          args: ["-KILL", "-" + String(proc.pid)],
-          stdout: "null",
-          stderr: "null",
-        }).outputSync();
-      } catch { /* already exited */ }
+      if (useSetsid) {
+        // setsid made the child a session/group leader with pgid == its pid;
+        // kill the whole group (sh + all children) via the negative pid.
+        try {
+          new Deno.Command("/bin/kill", {
+            args: ["-KILL", "-" + String(proc.pid)],
+            stdout: "null",
+            stderr: "null",
+          }).outputSync();
+        } catch { /* already exited */ }
+      }
       try {
         proc.kill("SIGKILL");
       } catch { /* already exited */ }
