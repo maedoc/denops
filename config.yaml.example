@@ -1,0 +1,81 @@
+# Copy to config.yaml. config.yaml is gitignored.
+server:
+  host: 127.0.0.1
+  port: 3100
+  # Static bearer token required on the /mcp endpoint (Authorization: Bearer <token>).
+  # Also read from secrets.json `serverToken`, or from `tokenFile` (e.g. a mounted secret).
+  # Binding to a non-loopback host without a token is refused at startup.
+  # token: ""
+  # tokenFile: /run/secrets/denops_token
+  # requireToken: true        # hard-fail startup when no token is configured
+  # maxBodyBytes: 4194304     # request body cap
+  # trustedProxy: 127.0.0.1   # behind Caddy on the same host: trust X-Forwarded-For from here
+  # skipLoopbackBan: true     # loopback peers are never auto-banned
+  # ban:                      # fail2ban-style brute-force protection
+  #   file: data/bans         # persist auto-bans; truncate the file to reset live bans
+  #   blacklistFile: blacklist.txt   # one CIDR or IP per line, '#' comments, hot-reloaded
+  #   whitelistFile: whitelist.txt   # exempts from blacklist AND auto-bans
+  #   maxFailures: 5          # failures within windowMs -> ban for durationMs
+  #   windowMs: 600000
+  #   durationMs: 86400000
+
+budgets:
+  wallClockMs: 120000
+  maxOpsPerRun: 200
+  maxOpResultBytes: 1048576
+  maxOpArgsBytes: 26214400
+  maxLogBytes: 10485760
+
+connectors:
+  debug:
+    enabled: true
+  gitlab:
+    enabled: false
+    origin: https://gitlab.ebrains.eu
+    apiPath: /api/v4
+  mistral:
+    enabled: false
+    origin: https://api.mistral.ai
+    apiPath: /v1
+    startup:
+      # Verify API key with a cheap read-only call at startup. Fail fast if invalid.
+      verifyKey: true
+      # Check (read-only) that a Vibe/Studio MCP connector pointing at this server is
+      # registered. Experimental beta API; failure is reported, not fatal, unless
+      # strict is true. Requires an API key with connector scope.
+      checkVibeConnector:
+        enabled: false
+        name: denops          # connector name to look for
+        expectServerUrl: ""   # optional: expected MCP server URL, e.g. http://127.0.0.1:3100/mcp
+        strict: false
+  fs:
+    enabled: false
+    # Named roots the fs.* ops can address. The model refers to roots by name;
+    # absolute paths are never accepted from the model.
+    # First fs.* op on a root is approval-tier; approving it grants the root
+    # (persisted in data/root_grants.json) and later fs.* ops on that root run
+    # open. Revoke via the `grants` tool.
+    roots: []
+    # - name: myrepo        # referenced as root: "myrepo"
+    #   path: /srv/repos/myrepo
+    #   write: true         # allow fs.write / fs.edit / fs.editRegex
+    #   exec: true          # allow fs.exec (sh -c, cwd=root, scrubbed env)
+    # maxFileSize: 2097152
+    # maxOutput: 262144
+    # execTimeoutSec: 120
+    # maxConcurrentExec: 2
+  imap:
+    enabled: false
+    accounts: []
+    # - id: work              # ops take { account: "work", ... }
+    #   host: imap.example.org
+    #   port: 993
+    #   tls: true
+    #   user: me@example.org
+    #   draftsMailbox: Drafts
+    #   # password lives in secrets.json as mail.work.password
+
+startup:
+  # full: validate secrets and reachability of all enabled connectors, fail fast on error.
+  # none: skip validation (dev only).
+  validate: full
