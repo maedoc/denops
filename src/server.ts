@@ -9,6 +9,8 @@ import { Registry } from "./harness/registry.ts";
 import type { Budgets, Connector, JsonValue } from "./harness/types.ts";
 import { Harness, summarizeOp } from "./harness/worker.ts";
 import { type Config, loadConfig, loadSecrets } from "./config.ts";
+import { createHandler, DEFAULT_MAX_BODY_BYTES, serveWithTimeouts } from "./security/http.ts";
+import { defaultBanPolicy } from "./security/ban.ts";
 import { debugConnector } from "./connectors/debug/manifest.ts";
 import { gitlabConnector } from "./connectors/gitlab/manifest.ts";
 import { mistralConnector } from "./connectors/mistral/manifest.ts";
@@ -45,6 +47,33 @@ export async function buildApp(configPath: string, secretsPath: string): Promise
     secrets.serverToken
   ) {
     config.server.token = secrets.serverToken;
+  }
+  if (config.server.token === undefined && config.server.tokenFile) {
+    const text = await Deno.readTextFile(config.server.tokenFile);
+    const token = text.trim();
+    if (!token) {
+      throw new Error(`server.tokenFile ${config.server.tokenFile} is empty`);
+    }
+    config.server.token = token;
+  }
+  if (!config.server.token) {
+    const host = config.server.host;
+    const loopback = host === "127.0.0.1" || host === "::1" || host === "localhost";
+    if (config.server.requireToken === true) {
+      throw new Error(
+        "server.requireToken=true but no token configured; set server.token, secrets.serverToken, or server.tokenFile",
+      );
+    }
+    if (!loopback) {
+      throw new Error(
+        `refusing to serve on non-loopback ${host} without a bearer token. ` +
+          "Set server.token (or secrets.serverToken / server.tokenFile), or explicitly set server.requireToken=false (not recommended).",
+      );
+    }
+    console.error(
+      "[denops] warning: no server.token configured; /mcp is unauthenticated but bound to loopback only. " +
+        "Set a token before exposing this server.",
+    );
   }
   const registry = new Registry();
   const startupLogs: string[] = [];
@@ -313,40 +342,51 @@ export function createMcpServer(app: AppContext): McpServer {
   return server;
 }
 
+export function createHttpHandler(
+  app: AppContext,
+): (req: Request, info: Deno.ServeHandlerInfo) => Promise<Response> {
+  const s = app.config.server;
+  return createHandler({
+    token: s.token ?? "",
+    policy: {
+      ...defaultBanPolicy(),
+      maxFailures: s.ban?.maxFailures ?? defaultBanPolicy().maxFailures,
+      windowMs: s.ban?.windowMs ?? defaultBanPolicy().windowMs,
+      durationMs: s.ban?.durationMs ?? defaultBanPolicy().durationMs,
+    },
+    banFile: s.ban?.file,
+    blacklistFile: s.ban?.blacklistFile,
+    whitelistFile: s.ban?.whitelistFile,
+    trustedProxy: s.trustedProxy,
+    skipLoopbackBan: s.skipLoopbackBan ?? true,
+    maxBodyBytes: s.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES,
+    healthHandler: () => Response.json({ ok: true }),
+    mcpHandler: async (req) => {
+      const transport = new WebStandardStreamableHTTPServerTransport();
+      const server = createMcpServer(app);
+      await server.connect(transport);
+      return await transport.handleRequest(req);
+    },
+  });
+}
+
 async function main(): Promise<void> {
   const app = await buildApp(configPath, secretsPath);
   const { host, port } = app.config.server;
+  const banDesc = app.config.server.ban
+    ? `ban file=${app.config.server.ban.file ?? "(memory)"} blacklist=${
+      app.config.server.ban.blacklistFile ?? "-"
+    } whitelist=${app.config.server.ban.whitelistFile ?? "-"} trustedProxy=${
+      app.config.server.trustedProxy ?? "-"
+    }`
+    : "brute-force banning enabled (in-memory)";
   console.error(
     `[denops] listening on http://${host}:${port}/mcp (connectors: ${
       app.registry.list().map((c) => c.id).join(", ")
-    })`,
+    }; auth: required; ${banDesc})`,
   );
-  const handler = Deno.serve({ hostname: host, port, onListen: () => {} }, async (req) => {
-    const url = new URL(req.url);
-    if (url.pathname === "/health") return Response.json({ ok: true });
-    if (url.pathname !== "/mcp") return new Response("not found", { status: 404 });
-    if (app.config.server.token) {
-      const auth = req.headers.get("authorization") ?? "";
-      if (auth !== `Bearer ${app.config.server.token}`) {
-        return new Response(
-          JSON.stringify({
-            jsonrpc: "2.0",
-            error: { code: -32001, message: "unauthorized" },
-            id: null,
-          }),
-          {
-            status: 401,
-            headers: { "content-type": "application/json" },
-          },
-        );
-      }
-    }
-    const transport = new WebStandardStreamableHTTPServerTransport();
-    const server = createMcpServer(app);
-    await server.connect(transport);
-    return await transport.handleRequest(req);
-  });
-  void handler;
+  const server = serveWithTimeouts({ hostname: host, port, handler: createHttpHandler(app) });
+  await server.finished;
 }
 
 if (import.meta.main) {

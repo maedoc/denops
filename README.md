@@ -25,6 +25,9 @@ Security invariants:
   resumes.
 - Ops whose results exceed 1 MB fail with a model-actionable error; runs are bounded by wall-clock
   and op-count budgets.
+- The HTTP edge is hardened: constant-time bearer auth (auth required whenever a token is set;
+  non-loopback binds without a token are refused), a request-body cap, `no-store`/`nosniff`/HSTS
+  headers, and fail2ban-style source banning (see "Exposure & brute-force protection" below).
 
 ## Install & run
 
@@ -51,8 +54,100 @@ transport = "streamable-http"
 url = "http://127.0.0.1:3100/mcp"
 ```
 
-If `server.token` is set in `config.yaml` (and `serverToken` in `secrets.json`), clients must send
-`Authorization: Bearer <token>`.
+If `server.token` is set in `config.yaml` (or `serverToken` in `secrets.json`, or `server.tokenFile`
+points at a secret file), clients must send `Authorization: Bearer <token>`. The comparison is
+constant-time. Binding to a **non-loopback** host without any token configured is refused at
+startup; on loopback without a token the server starts with a loud warning (local dev only).
+
+## Exposure & brute-force protection
+
+The server is designed to sit behind **Caddy** (or another TLS-terminating proxy) on the same host,
+bound to loopback. Failed bearer auth attempts are tracked per source **subnet** (IPv4 /24, IPv6
+/64) **and** per IP: `server.ban.maxFailures` (default 5) failures within `server.ban.windowMs`
+(default 10 min) ban that subnet/IP for `server.ban.durationMs` (default 24 h) — banned sources get
+`429` with a `Retry-After` header, even if they later present the correct token. A successful auth
+clears the failure counter but never lifts an active ban. Loopback peers are exempt by default
+(`server.skipLoopbackBan`).
+
+Bans live in memory unless `server.ban.file` is set; the file (`<expiry-unix> <subnet>` per line) is
+written atomically, reloaded at startup, and **hot-reloaded when edited on disk** — truncate it to
+reset all live bans without a restart. `server.ban.blacklistFile` / `server.ban.whitelistFile` are
+hot-reloaded CIDR lists (one CIDR or bare IP per line, `#` comments): blacklisted IPs are always
+rejected, whitelisted IPs are exempt from blacklist _and_ auto-bans. In-memory ban state is bounded
+(100k entries, oldest evicted first) so rotating attackers can't exhaust memory.
+
+Because the proxy terminates the connection, set `server.trustedProxy` (e.g. `127.0.0.1`) so the
+real client IP is taken from `X-Forwarded-For` — specifically the **right-most entry that is not
+itself a trusted proxy**, which is where Caddy appends the true peer. Requests from untrusted peers
+ignore `X-Forwarded-For` entirely, so clients can't spoof their way out of a ban. Without this,
+every request shares the proxy's address and one attacker would get the proxy itself banned.
+
+### config.yaml reference (server block)
+
+```yaml
+server:
+  host: 127.0.0.1
+  port: 3100
+  # token: ""            # or secrets.json serverToken, or tokenFile below
+  # tokenFile: /run/secrets/denops_token
+  # requireToken: true   # hard-fail startup if no token is configured
+  # maxBodyBytes: 4194304  # request body cap (default 4 MiB)
+  # trustedProxy: 127.0.0.1  # trust X-Forwarded-For from this CIDR/IP only
+  # skipLoopbackBan: true    # loopback peers are never banned (default true)
+  # ban:
+  #   file: data/bans            # persist auto-bans; truncate to reset live
+  #   blacklistFile: blacklist.txt
+  #   whitelistFile: whitelist.txt
+  #   maxFailures: 5
+  #   windowMs: 600000
+  #   durationMs: 86400000
+```
+
+### Recommended Caddy deployment
+
+```Caddyfile
+# /etc/caddy/Caddyfile
+mcp.example.com {
+    reverse_proxy 127.0.0.1:3100 {
+        transport http {
+            read_timeout 360s   # long-running execute runs
+        }
+    }
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options    "nosniff"
+        Referrer-Policy           "no-referrer"
+    }
+    # defense-in-depth rate limit on top of the in-app subnet bans
+    rate_limit {
+        zone   mcp_per_ip 10r/s 100r/m
+        key    {remote_host}
+    }
+}
+```
+
+Caddy appends the real client IP to `X-Forwarded-For` automatically — do **not** configure it to
+overwrite the header. Keep `server.trustedProxy: 127.0.0.1` so denops attributes bans to the real
+client. Avoid tunnel-style exposure (e.g. Tailscale Funnel): funnel traffic arrives from
+loopback/relay addresses, so every public client shares one subnet and subnet banning can't tell an
+attacker from legitimate traffic.
+
+```yaml
+# config.yaml (server block) behind Caddy on the same host
+server:
+  host: 127.0.0.1
+  port: 3100
+  tokenFile: /run/secrets/denops_token
+  trustedProxy: 127.0.0.1
+  skipLoopbackBan: true
+  ban:
+    file: data/bans
+    blacklistFile: /etc/denops/blacklist
+    whitelistFile: /etc/denops/whitelist
+```
+
+Put your expected client networks (e.g. the LLM provider's connector egress ranges) in the whitelist
+so legitimate traffic is never banned; the auto-ban handles everything else.
 
 ## Tools
 
@@ -118,8 +213,9 @@ Live smoke tests per connector are gated behind real credentials and intentional
 ## Layout
 
 ```
-src/server.ts            entry: config load, validation, MCP endpoint, tools
+src/server.ts            entry: config load, validation, MCP endpoint, hardened HTTP edge
 src/config.ts            config.yaml / secrets.json loading (minimal YAML subset parser)
+src/security/            http.ts (bearer gate, body cap, headers) + ban.ts (fail2ban-style CIDR bans)
 src/harness/             registry, boundary validation, worker sandbox, JSONL log, approvals, discovery
 src/guest/bootstrap.ts   injected worker prelude (handles, fetch/Deno stubs)
 src/connectors/<name>/  client.ts (host-only credentials) + manifest.ts (ops, tiers, docs)

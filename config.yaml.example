@@ -2,9 +2,22 @@
 server:
   host: 127.0.0.1
   port: 3100
-  # Optional static bearer token required on the /mcp endpoint (Authorization: Bearer <token>).
-  # If set, also required in secrets.json as `serverToken`.
+  # Static bearer token required on the /mcp endpoint (Authorization: Bearer <token>).
+  # Also read from secrets.json `serverToken`, or from `tokenFile` (e.g. a mounted secret).
+  # Binding to a non-loopback host without a token is refused at startup.
   # token: ""
+  # tokenFile: /run/secrets/denops_token
+  # requireToken: true        # hard-fail startup when no token is configured
+  # maxBodyBytes: 4194304     # request body cap
+  # trustedProxy: 127.0.0.1   # behind Caddy on the same host: trust X-Forwarded-For from here
+  # skipLoopbackBan: true     # loopback peers are never auto-banned
+  # ban:                      # fail2ban-style brute-force protection
+  #   file: data/bans         # persist auto-bans; truncate the file to reset live bans
+  #   blacklistFile: blacklist.txt   # one CIDR or IP per line, '#' comments, hot-reloaded
+  #   whitelistFile: whitelist.txt   # exempts from blacklist AND auto-bans
+  #   maxFailures: 5          # failures within windowMs -> ban for durationMs
+  #   windowMs: 600000
+  #   durationMs: 86400000
 
 budgets:
   wallClockMs: 120000
