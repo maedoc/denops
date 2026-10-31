@@ -10,6 +10,16 @@ export function str(field: string): (args: unknown) => string | null {
   };
 }
 
+export function strMax(field: string, maxLen: number): (args: unknown) => string | null {
+  return (args) => {
+    if (!isRecord(args)) return `${field}: expected object args`;
+    const v = args[field];
+    return typeof v === "string" && v.length > 0 && v.length <= maxLen
+      ? null
+      : `${field}: expected string of 1..${maxLen} chars`;
+  };
+}
+
 export function optStr(field: string, maxLen = 100_000): (args: unknown) => string | null {
   return (args) => {
     if (!isRecord(args)) return `${field}: expected object args`;

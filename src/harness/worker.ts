@@ -19,7 +19,9 @@ export function summarizeOp(op: string, args: JsonValue): string {
   };
   switch (op) {
     case "mail.messages.move":
-      return `Move ${Array.isArray(a.uids) ? a.uids.length : 1} message(s) from ${brief(a.account)}/${brief(a.mailbox)} to ${brief(a.toAccount ?? a.account)}/${brief(a.toMailbox)}`;
+      return `Move ${Array.isArray(a.uids) ? a.uids.length : 1} message(s) from ${
+        brief(a.account)
+      }/${brief(a.mailbox)} to ${brief(a.toAccount ?? a.account)}/${brief(a.toMailbox)}`;
     case "gitlab.issues.create":
       return `Create issue in project ${brief(a.projectId)}: "${brief(a.title, 200)}"`;
     case "gitlab.issues.update":
@@ -80,6 +82,9 @@ export interface ReplayState {
   resultsByOpSeq: Map<string, JsonValue>;
   approvedOps: Set<string>;
   runState?: RunState;
+  // grantKeys are root-grant keys (e.g. "fs:myrepo") approved out-of-band;
+  // ops touching them skip the approval tier even in fresh runs.
+  grantKeys?: Set<string>;
 }
 
 export type TierOverride = (
@@ -100,6 +105,8 @@ interface ResolvedOp {
 
 export class Harness {
   private connectorIds: string[] = [];
+  private grantKeyOf?: (op: string, args: JsonValue) => string | null;
+  private isGranted?: (key: string) => boolean;
 
   constructor(
     private resolveOp: (op: string) => ResolvedOp | undefined,
@@ -115,6 +122,14 @@ export class Harness {
 
   setConnectorIds(ids: string[]): void {
     this.connectorIds = ids;
+  }
+
+  setGrantLookup(
+    grantKeyOf: (op: string, args: JsonValue) => string | null,
+    isGranted: (key: string) => boolean,
+  ): void {
+    this.grantKeyOf = grantKeyOf;
+    this.isGranted = isGranted;
   }
 
   async run(runId: string, code: string, log: RunLog, replay?: ReplayState): Promise<RunOutcome> {
@@ -218,7 +233,10 @@ export class Harness {
       opCount += 1;
 
       const effectiveTier = this.tierOverride?.(op, args, runState) ?? spec.tier;
-      if (effectiveTier === "approval" && !(replay && replay.approvedOps.has(op))) {
+      const grantKey = this.grantKeyOf?.(op, args) ?? null;
+      const granted = grantKey !== null &&
+        ((replay?.grantKeys?.has(grantKey)) || this.isGranted?.(grantKey));
+      if (effectiveTier === "approval" && !(replay && replay.approvedOps.has(op)) && !granted) {
         const pendingId = crypto.randomUUID();
         awaiting = { pendingId, runId, op, args, summary: summarizeOp(op, args) };
         await log.recordOp({ op, args, status: "pending" });

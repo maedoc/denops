@@ -4,6 +4,19 @@ export interface ServerConfig {
   host: string;
   port: number;
   token?: string;
+  requireToken?: boolean;
+  tokenFile?: string;
+  maxBodyBytes?: number;
+  trustedProxy?: string;
+  skipLoopbackBan?: boolean;
+  ban?: {
+    file?: string;
+    blacklistFile?: string;
+    whitelistFile?: string;
+    maxFailures?: number;
+    windowMs?: number;
+    durationMs?: number;
+  };
 }
 
 export interface MistralStartupCheck {
@@ -30,6 +43,14 @@ export async function loadConfig(path: string): Promise<Config> {
 
 export function normalize(parsed: Record<string, unknown>): Config {
   const server = (parsed.server ?? {}) as Record<string, unknown>;
+  const positive = (v: unknown, name: string): number | undefined => {
+    if (v === undefined) return undefined;
+    const n = Number(v);
+    if (!Number.isFinite(n) || n <= 0) {
+      throw new Error(`${name} must be a positive number, got ${JSON.stringify(v)}`);
+    }
+    return n;
+  };
   const budgets = (parsed.budgets ?? {}) as Record<string, unknown>;
   const connectors = (parsed.connectors ?? {}) as Record<
     string,
@@ -45,6 +66,22 @@ export function normalize(parsed: Record<string, unknown>): Config {
       host: String(server.host ?? "127.0.0.1"),
       port: Number(server.port ?? 3100),
       token: server.token ? String(server.token) : undefined,
+      requireToken: server.requireToken === undefined ? undefined : server.requireToken === true,
+      tokenFile: server.tokenFile ? String(server.tokenFile) : undefined,
+      maxBodyBytes: positive(server.maxBodyBytes, "server.maxBodyBytes"),
+      trustedProxy: server.trustedProxy ? String(server.trustedProxy) : undefined,
+      skipLoopbackBan: server.skipLoopbackBan === false ? false : true,
+      ban: (() => {
+        const b = (server.ban ?? {}) as Record<string, unknown>;
+        return {
+          file: b.file ? String(b.file) : undefined,
+          blacklistFile: b.blacklistFile ? String(b.blacklistFile) : undefined,
+          whitelistFile: b.whitelistFile ? String(b.whitelistFile) : undefined,
+          maxFailures: positive(b.maxFailures, "server.ban.maxFailures"),
+          windowMs: positive(b.windowMs, "server.ban.windowMs"),
+          durationMs: positive(b.durationMs, "server.ban.durationMs"),
+        };
+      })(),
     },
     budgets: {
       wallClockMs: Number(budgets.wallClockMs ?? 120_000),

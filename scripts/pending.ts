@@ -30,6 +30,8 @@ async function resume(
   const { gitlabConnector } = await import("../src/connectors/gitlab/manifest.ts");
   const { mistralConnector } = await import("../src/connectors/mistral/manifest.ts");
   const { imapConnector } = await import("../src/connectors/imap/manifest.ts");
+  const { fsConnector, fsGrantKey } = await import("../src/connectors/fs/manifest.ts");
+  const { RootGrants } = await import("../src/harness/grants.ts");
 
   const config = await loadConfig(configPath);
   const secrets = await loadSecrets(secretsPath);
@@ -86,6 +88,24 @@ async function resume(
     const method = clients.get(r.connector.id)?.[op.slice(`${r.connector.id}.`.length)];
     return method ? { spec: r.spec, connector: r.connector, method } : undefined;
   };
+  if (enabled("fs")) {
+    const f = config.connectors.fs;
+    reg(fsConnector({
+      roots: ((f.roots ?? []) as Array<Record<string, unknown>>).map((r) => ({
+        name: String(r.name),
+        path: String(r.path),
+        write: r.write === true,
+        exec: r.exec === true,
+      })),
+      maxFileSize: Number(f.maxFileSize ?? config.budgets.maxOpResultBytes),
+      maxOutput: Number(f.maxOutput ?? config.budgets.maxOpResultBytes),
+      execTimeoutSec: Number(f.execTimeoutSec ?? 120),
+      maxConcurrentExec: Number(f.maxConcurrentExec ?? 2),
+    }));
+  }
+
+  const grants = new RootGrants({ dataDir, isGrantOp: fsGrantKey });
+  await grants.init();
   const harness = new Harness(
     resolveOp,
     config.budgets,
@@ -93,6 +113,7 @@ async function resume(
     (op) => describe(registry, op),
   );
   harness.setConnectorIds(registry.list().map((c) => c.id));
+  harness.setGrantLookup(fsGrantKey, (key) => grants.isGranted(key));
 
   const replay = {
     resultsByOpSeq: new Map<string, JsonValue>(),
@@ -104,8 +125,17 @@ async function resume(
     }
   }
   await store.remove(pendingId);
+  const grantKey = fsGrantKey(pending.op, pending.args);
+  if (grantKey) {
+    await grants.grant(grantKey);
+    console.error(`[denops] granted root ${grantKey} (approved ${pending.op})`);
+  }
   const log = new RunLog(dataDir, pending.runId, config.budgets.maxLogBytes);
-  const outcome = await harness.run(pending.runId, manifest.code, log, replay);
+  await log.recordOp({ op: pending.op, status: "approved" });
+  const outcome = await harness.run(pending.runId, manifest.code, log, {
+    ...replay,
+    grantKeys: grantKey ? new Set([grantKey]) : undefined,
+  });
   console.log(
     JSON.stringify({
       status: outcome.status,

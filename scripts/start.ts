@@ -51,6 +51,9 @@ const port = String(server.port ?? "3100");
 const connectors = (cfg.connectors ?? {}) as Record<string, Record<string, unknown>>;
 
 const netHosts = new Set<string>([`${host}:${port}`]);
+const fsReadPaths = new Set<string>();
+const fsWritePaths = new Set<string>();
+const fsExecRoots = new Set<string>();
 for (const [name, c] of Object.entries(connectors)) {
   if (c.enabled !== true && c.enabled !== "true") continue;
   if (c.origin) netHosts.add(new URL(String(c.origin)).host);
@@ -59,17 +62,38 @@ for (const [name, c] of Object.entries(connectors)) {
       netHosts.add(`${acc.host}:${acc.port ?? 993}`);
     }
   }
+  if (name === "fs") {
+    for (const r of (c.roots ?? []) as Array<Record<string, unknown>>) {
+      const p = String(r.path);
+      fsReadPaths.add(p);
+      if (r.write === true || r.write === "true") fsWritePaths.add(p);
+      if (r.exec === true || r.exec === "true") fsExecRoots.add(p);
+    }
+  }
 }
 
 const allowNet = [...netHosts].join(",");
+const allowRead = [
+  "config.yaml",
+  "secrets.json",
+  "data/",
+  "deno.json",
+  "deno.lock",
+  "src/",
+  "scripts/",
+  ...fsReadPaths,
+].join(",");
+const allowWrite = ["data/", ...fsWritePaths].join(",");
+const allowRun = fsExecRoots.size > 0 ? ["/bin/sh", ...[...fsExecRoots].map(() => "/bin/sh")] : [];
 const args = [
   "run",
   "--unstable-worker-options",
   `--allow-net=${allowNet}`,
-  "--allow-read=config.yaml,secrets.json,data/,deno.json,deno.lock,src/,scripts/",
-  "--allow-write=data/",
+  `--allow-read=${allowRead}`,
+  `--allow-write=${allowWrite}`,
   "--allow-env",
   "--allow-sys",
+  ...(allowRun.length > 0 ? [`--allow-run=${[...new Set(allowRun)].join(",")}`] : []),
   "--no-prompt",
   "src/server.ts",
   configPath,

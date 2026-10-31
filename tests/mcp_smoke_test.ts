@@ -1,5 +1,5 @@
 import { assert, assertEquals, assertStringIncludes } from "jsr:@std/assert@1";
-import { buildApp, createMcpServer } from "../src/server.ts";
+import { buildApp, createHttpHandler } from "../src/server.ts";
 
 async function writeConfig(dir: string): Promise<{ config: string; secrets: string }> {
   const config = `${dir}/config.yaml`;
@@ -35,24 +35,19 @@ Deno.test("MCP smoke: initialize, tools/list, execute echo via streamable HTTP",
     const { config, secrets } = await writeConfig(dir);
     const app = await buildApp(config, secrets);
     const port = 3123;
-    const handler = Deno.serve({ hostname: "127.0.0.1", port, onListen: () => {} }, async (req) => {
-      const url = new URL(req.url);
-      if (url.pathname !== "/mcp") return new Response("not found", { status: 404 });
-      const { WebStandardStreamableHTTPServerTransport } = await import(
-        "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js"
-      );
-      const transport = new WebStandardStreamableHTTPServerTransport();
-      const server = createMcpServer(app);
-      await server.connect(transport);
-      return await transport.handleRequest(req);
-    });
+    app.config.server.token = "test-token";
+    const handler = Deno.serve(
+      { hostname: "127.0.0.1", port, onListen: () => {} },
+      (req, info) => createHttpHandler(app)(req, info),
+    );
 
-    const post = (body: unknown) =>
+    const post = (body: unknown, token = "test-token") =>
       fetch(`http://127.0.0.1:${port}/mcp`, {
         method: "POST",
         headers: {
           "content-type": "application/json",
           accept: "application/json, text/event-stream",
+          authorization: `Bearer ${token}`,
         },
         body: JSON.stringify(body),
       });
@@ -80,7 +75,7 @@ Deno.test("MCP smoke: initialize, tools/list, execute echo via streamable HTTP",
     const tools = await post({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
     const toolsRes = await parseSse(tools);
     const names = (toolsRes.result as { tools: Array<{ name: string }> }).tools.map((t) => t.name);
-    assertEquals(names.sort(), ["approve", "execute", "search"]);
+    assertEquals(names.sort(), ["approve", "execute", "grants", "search"]);
 
     const call = await post({
       jsonrpc: "2.0",
@@ -106,6 +101,26 @@ Deno.test("MCP smoke: initialize, tools/list, execute echo via streamable HTTP",
     const searchRes = await parseSse(searchCall);
     const searchText = (searchRes.result as { content: Array<{ text: string }> }).content[0].text;
     assertStringIncludes(searchText, "debug.gated");
+
+    const noAuth = await fetch(`http://127.0.0.1:${port}/mcp`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 9, method: "tools/list", params: {} }),
+    });
+    assertEquals(noAuth.status, 401);
+
+    const badAuth = await post(
+      { jsonrpc: "2.0", id: 9, method: "tools/list", params: {} },
+      "wrong",
+    );
+    assertEquals(badAuth.status, 401);
+
+    const health = await fetch(`http://127.0.0.1:${port}/health`);
+    assertEquals(health.status, 200);
+    assertEquals(health.headers.get("x-content-type-options"), "nosniff");
 
     await handler.shutdown();
   } finally {
