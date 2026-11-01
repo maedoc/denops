@@ -6,6 +6,7 @@ import {
   optArr,
   optBool,
   optNum,
+  optOneOf,
   optStr,
   rejectUnknown,
   str,
@@ -135,7 +136,7 @@ export function gitlabConnector(
         argSchema: compose(
           rejectUnknown(),
           idArg("projectId"),
-          oneOf("state", ["opened", "closed", "all"]),
+          optOneOf("state", ["opened", "closed", "all"]),
           optStr("search", 200),
           optNum("perPage"),
           optNum("page"),
@@ -167,7 +168,7 @@ export function gitlabConnector(
         argSchema: compose(
           rejectUnknown(),
           idArg("projectId"),
-          oneOf("state", ["opened", "closed", "merged", "all"]),
+          optOneOf("state", ["opened", "closed", "merged", "all"]),
           optStr("search", 200),
           optNum("perPage"),
           optNum("page"),
@@ -235,7 +236,7 @@ export function gitlabConnector(
           num("issueIid"),
           optStr("title", 500),
           optStr("description", 100000),
-          oneOf("state", ["opened", "closed"]),
+          optOneOf("state", ["opened", "closed"]),
           optArr(
             "assignee_ids",
             (

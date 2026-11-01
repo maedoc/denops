@@ -95,9 +95,6 @@ them): `glob`, `list`, `read` (line windows with `hasMore`), `grep` (regex, capp
   multi-step writes), `denops.oplog` (read-only, redacted run log: recent runs, their ops, statuses,
   approval/error counts; no args, no result bodies).
 
-**debug** (3 ops) — `debug.echo`, `debug.boom`, `debug.gated`; harmless smoke tests, and the fastest
-way to check the execute/approval plumbing.
-
 **web** (1 op) — `web.fetch({url, format?:"text"|"html", maxBytes?})`: one http(s) document as text
 (HTML converted best-effort, no JS) or raw markup. Only hosts in the live config's `allowedHosts`
 are reachable; private/loopback/link-local addresses are refused (SSRF guard) and redirects are

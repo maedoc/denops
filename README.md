@@ -21,7 +21,7 @@ Host (main isolate)                            MCP endpoint /mcp (streamable HTT
   connector clients hold ALL credentials       JSONL op log under data/runs/<runId>.jsonl
         │ postMessage { op, args, callId }
 Guest (worker, deno permissions: "none")       fetch/WebSocket/Deno.* stubbed
-  model-written JS + handles: debug.* gitlab.* mail.* mistral.* fs.* web.* dev.* deploy.* denops.*
+  model-written JS + handles: gitlab.* mail.* mistral.* fs.* web.* dev.* deploy.* denops.*
 ```
 
 Security invariants:
@@ -227,9 +227,14 @@ result bodies (only their byte sizes), errors truncated. Always registered.
 `CHANGELOG.md` is the discipline that makes `denops.version` useful: append an entry in the same
 commit as any observable change (ops, args, return shapes, tiers, error contracts, deploy loop).
 
-### debug (3 ops) — smoke tests
+### debug (3 ops) — smoke tests, off in production
 
-`debug.echo`, `debug.boom`, `debug.gated` (approval-tier: exercises the approval round trip).
+`debug.echo`, `debug.boom`, `debug.gated` (approval-tier: exercises the approval round trip). The
+module is kept because the harness/approval tests drive it directly, but
+**`connectors.debug.enabled` is `false` in the shipped config**: a family whose stated purpose is
+testing does not belong in the permanent registry of a production server, and `dev.try` exercises
+the same code paths against real code. Enable it in a dev config when you want the plumbing probes
+(and remember to update `SKILL.md` — the drift test only knows what a config registers).
 
 ### gitlab (27 ops) — read + write, curated and generic
 

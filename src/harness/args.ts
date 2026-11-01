@@ -74,6 +74,21 @@ export function oneOf(field: string, values: string[]): (args: unknown) => strin
   };
 }
 
+// optOneOf is the same check for a field the op documents as optional. Using oneOf
+// for those is how `gitlab.issues.list` came to hard-fail without `state` even
+// though its client defaults it: the boundary rejected the call before the default
+// could apply. Optional means optional.
+export function optOneOf(field: string, values: string[]): (args: unknown) => string | null {
+  return (args) => {
+    if (!isRecord(args)) return `${field}: expected object args`;
+    const v = args[field];
+    if (v === undefined) return null;
+    return typeof v === "string" && values.includes(v)
+      ? null
+      : `${field}: expected one of ${values.join(", ")}`;
+  };
+}
+
 export function arr(
   field: string,
   itemCheck: (v: unknown, i: number) => string | null,

@@ -194,7 +194,7 @@ export async function buildApp(configPath: string, secretsPath: string): Promise
   registry.register(
     denopsConnector({
       skillPath: "SKILL.md",
-      version: "0.2.0",
+      version: "0.2.1",
       // the supervisor exports the commit it checked out
       commit: Deno.env.get("DENOPS_COMMIT") ?? undefined,
       connectors: () => registry.list().map((c) => c.id),

@@ -8,6 +8,16 @@ actually talking to instead of probing behaviour.
 Format: `## <version> — <YYYY-MM-DD>`, newest first, then a short bullet list. Keep bullets about
 the API surface; implementation notes belong in the commit message.
 
+## 0.2.1 — 2026-11-01
+
+- `gitlab.issues.list` no longer requires `state`: it accepts omission again and applies its
+  documented `opened` default (the boundary check was the _required_ enum form, so the call died
+  before the default could run). Same fix for `gitlab.mergeRequests.list` and
+  `gitlab.issues.update`, where the docs also said `state?`. An invalid value is still refused.
+- `debug.*` is no longer registered by default (`connectors.debug.enabled: false`): the family
+  exists for harness tests and is not part of the served surface. It disappears from `api.search`
+  and from the skill sheet, so the registry an agent sees is the production one.
+
 ## 0.2.0 — 2026-11-01
 
 - `dev.try` now runs committed, checked code only (dirty tracked tree ⇒ refused; the root's `check`

@@ -38,8 +38,10 @@ budgets:
   maxLogBytes: 10485760
 
 connectors:
+  # debug.* exists for tests and plumbing checks; it is not part of the served
+  # surface in production (dev.try exercises the same paths against real code).
   debug:
-    enabled: true
+    enabled: false
   gitlab:
     enabled: false
     origin: https://gitlab.ebrains.eu

@@ -1,5 +1,4 @@
 import { assert, assertEquals, assertStringIncludes } from "jsr:@std/assert@1";
-import { debugConnector } from "../src/connectors/debug/manifest.ts";
 import { deployConfigFrom, deployConnector } from "../src/connectors/deploy/manifest.ts";
 import { denopsConnector } from "../src/connectors/denops/manifest.ts";
 import { devConnector, devRootsFromConfig } from "../src/connectors/dev/manifest.ts";
@@ -30,7 +29,6 @@ async function allConnectors(): Promise<Connector[]> {
     tmp,
   );
   return [
-    debugConnector,
     gitlabConnector({ token: "t", origin: "https://gitlab.example", apiPath: "/api/v4" }),
     mistralConnector({ apiKey: "k", origin: "https://api.mistral.ai", apiPath: "/v1" }),
     imapConnector({
@@ -54,7 +52,7 @@ async function allConnectors(): Promise<Connector[]> {
     devConnector({ roots: devRoots }),
     webConnector({ allowedHosts: ["example.org"] }),
     ...(deploy ? [deployConnector(deploy)] : []),
-    denopsConnector({ skillPath, version: "0.2.0", connectors: () => [] }),
+    denopsConnector({ skillPath, version: "0.2.1", connectors: () => [] }),
   ];
 }
 
@@ -122,7 +120,7 @@ Deno.test("SKILL.md states the invariants the server enforces", () => {
 });
 
 Deno.test("denops.skill serves SKILL.md, optionally filtered by section", async () => {
-  const conn = denopsConnector({ skillPath, version: "0.2.0", connectors: () => ["debug", "fs"] });
+  const conn = denopsConnector({ skillPath, version: "0.2.1", connectors: () => ["mail", "fs"] });
   const client = conn.client({ config: {}, secrets: {}, log: () => {} });
   const full = await client["skill"]({}) as { content: string; bytes: number; updatedAt: string };
   assertEquals(full.content, skill);
@@ -138,6 +136,6 @@ Deno.test("denops.skill serves SKILL.md, optionally filtered by section", async 
   assert(!section.content.includes("## 6."), "filtered output keeps only matching sections");
 
   const about = await client["about"]({}) as { version: string; connectors: string[] };
-  assertEquals(about.version, "0.2.0");
-  assertEquals(about.connectors, ["debug", "fs"]);
+  assertEquals(about.version, "0.2.1");
+  assertEquals(about.connectors, ["mail", "fs"]);
 });
