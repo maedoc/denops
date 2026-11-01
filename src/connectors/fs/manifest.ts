@@ -223,12 +223,14 @@ export function fsConnector(opts: {
 export type FsGrantLevel = "read" | "write";
 
 // fsGrantKey maps an op to the grant it needs: read-level for browse/search ops,
-// write-level (which implies read) for mutations. exec is deliberately not grantable
-// — it stays approval-gated per call when enabled.
+// write-level (which implies read) for mutations. Deletion and shell execution are
+// never grant-covered — they stay approval-gated per call, because a grant buys
+// read/write, not the ability to destroy files or run commands.
 const WRITE_OPS = new Set(["fs.write", "fs.edit", "fs.editRegex"]);
+const NEVER_GRANTED = new Set(["fs.rm", "fs.exec"]);
 
 export function fsGrantKey(op: string, args: JsonValue): string | null {
-  if (!op.startsWith("fs.")) return null;
+  if (!op.startsWith("fs.") || NEVER_GRANTED.has(op)) return null;
   const root = (args as { root?: unknown } | null)?.root;
   if (typeof root !== "string" || root.length === 0) return null;
   const level: FsGrantLevel = WRITE_OPS.has(op) ? "write" : "read";

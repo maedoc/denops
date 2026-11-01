@@ -52,7 +52,13 @@ async function setup() {
   return { dir, connector, harness, writable, readonly };
 }
 
-async function run(harness: Harness, dir: string, code: string, grantKeys?: string[]) {
+async function run(
+  harness: Harness,
+  dir: string,
+  code: string,
+  grantKeys?: string[],
+  approvedSeqs: number[] = [],
+) {
   const runId = crypto.randomUUID();
   const log = new RunLog(dir, runId, budgets.maxLogBytes);
   await log.init({ runId, code, connectors: ["fs"] });
@@ -60,11 +66,11 @@ async function run(harness: Harness, dir: string, code: string, grantKeys?: stri
     runId,
     code,
     log,
-    grantKeys
+    grantKeys || approvedSeqs.length
       ? {
         resultsBySeq: new Map(),
-        approvedSeqs: new Set<number>(),
-        grantKeys: new Set(grantKeys),
+        approvedSeqs: new Set<number>(approvedSeqs),
+        grantKeys: new Set(grantKeys ?? []),
       }
       : undefined,
   );
@@ -108,12 +114,12 @@ Deno.test("fs.rm deletes files/dirs in a writable root and refuses the root itse
   try {
     await Deno.mkdir(`${writable}/sub/deep`, { recursive: true });
     await Deno.writeTextFile(`${writable}/sub/deep/file.txt`, "x");
-    const ok = await run(
-      harness,
-      dir,
-      `return await fs.rm({ root: "rw", path: "sub", recursive: true });`,
-      ["fs:rw:write"],
-    );
+    const cmd = `return await fs.rm({ root: "rw", path: "sub", recursive: true });`;
+    // a write grant is NOT enough: deletion always asks
+    const gated = await run(harness, dir, cmd, ["fs:rw:write"]);
+    assertEquals(gated.status, "awaiting_approval", "fs.rm must never be grant-covered");
+    // simulate the human approving call #1
+    const ok = await run(harness, dir, cmd, ["fs:rw:write"], [1]);
     assertEquals(ok.status, "completed", String(ok.error));
     assertEquals((ok.result as { removed: boolean }).removed, true);
     let exists = true;
@@ -126,7 +132,7 @@ Deno.test("fs.rm deletes files/dirs in a writable root and refuses the root itse
 
     const rootDel = await run(harness, dir, `return await fs.rm({ root: "rw", path: "." });`, [
       "fs:rw:write",
-    ]);
+    ], [1]);
     assertEquals(rootDel.status, "failed");
     assert(String(rootDel.error).includes("refusing to delete the root"), String(rootDel.error));
 
@@ -134,7 +140,7 @@ Deno.test("fs.rm deletes files/dirs in a writable root and refuses the root itse
     await Deno.mkdir(`${writable}/dir2`, { recursive: true });
     const noRec = await run(harness, dir, `return await fs.rm({ root: "rw", path: "dir2" });`, [
       "fs:rw:write",
-    ]);
+    ], [1]);
     assertEquals(noRec.status, "failed");
     assert(String(noRec.error).includes("recursive: true"), String(noRec.error));
   } finally {
@@ -147,11 +153,8 @@ Deno.test("fs: grant levels are independent, write implies read, legacy key cove
   assertEquals(fsGrantKey("fs.grep", { root: "r" }), "fs:r:read");
   assertEquals(fsGrantKey("fs.write", { root: "r" }), "fs:r:write");
   assertEquals(fsGrantKey("fs.editRegex", { root: "r" }), "fs:r:write");
-  assertEquals(
-    fsGrantKey("fs.exec", { root: "r" }),
-    "fs:r:read",
-    "exec stays approval-gated per call",
-  );
+  assertEquals(fsGrantKey("fs.exec", { root: "r" }), null, "exec is never grant-covered");
+  assertEquals(fsGrantKey("fs.rm", { root: "r" }), null, "deletion is never grant-covered");
 
   assert(grantSatisfies(["fs:r:read"], "fs:r:read"));
   assert(!grantSatisfies(["fs:r:read"], "fs:r:write"), "read must not cover write");

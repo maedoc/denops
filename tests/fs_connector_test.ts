@@ -207,7 +207,8 @@ Deno.test("fs.exec runs in root with scrubbed env and captures output", async ()
       harness,
       dir,
       `const r = await fs.exec({ root: "repo", command: "pwd; echo SECRET=$MY_SECRET; ls" }); return r;`,
-      { grantKeys: new Set(["fs:repo"]) },
+      // fs.exec is never grant-covered: simulate the approval of call #1
+      { approvedSeqs: new Set([1]) },
     );
     assertEquals(out.status, "completed");
     const r = out.result as { stdout: string; exitCode: number; timedOut: boolean };
@@ -340,7 +341,7 @@ Deno.test("fs.exec timeout kills only the command's process group", async () => 
       `const r = await fs.exec({ root: "repo", command: ${
         JSON.stringify(command)
       }, timeout: 1 }); return r;`,
-      { grantKeys: new Set(["fs:repo"]) },
+      { approvedSeqs: new Set([1]) },
     );
     assertEquals(out.status, "completed", outcomeText(out));
     const r = out.result as { timedOut: boolean; exitCode: number };
@@ -367,7 +368,7 @@ Deno.test("fs.exec timeout flags the result (1s timeout on sleep 30)", async () 
       harness,
       dir,
       `const t0 = Date.now(); const r = await fs.exec({ root: "repo", command: "sleep 30", timeout: 1 }); return { ...r, waitedMs: Date.now() - t0 };`,
-      { grantKeys: new Set(["fs:repo"]) },
+      { approvedSeqs: new Set([1]) },
     );
     assertEquals(out.status, "completed", outcomeText(out));
     const r = out.result as { timedOut: boolean; exitCode: number; waitedMs: number };
