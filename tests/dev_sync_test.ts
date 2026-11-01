@@ -144,6 +144,54 @@ Deno.test("dev.sync refuses a detached HEAD and a non-repo", async () => {
   }
 });
 
+Deno.test("dev.sync honours an operator-set syncFrom, and reports a missing upstream", async () => {
+  const f = await makeRemoteFixture();
+  try {
+    // detach from the upstream: the branch no longer tracks anything
+    await git(f.dev, "branch", "--unset-upstream");
+    const conn = devConnector({
+      roots: devRootsFromConfig([
+        { name: "plain", path: f.dev, tasks: {} },
+        { name: "pinned", path: f.dev, tasks: {}, syncFrom: "origin/main" },
+      ]),
+    });
+    const c = client(conn);
+
+    let msg = "";
+    try {
+      await c["sync"]({ root: "plain" });
+    } catch (e) {
+      msg = (e as Error).message;
+    }
+    assertStringIncludes(msg, "cannot resolve @{u}");
+    assertStringIncludes(msg, "syncFrom");
+
+    // with syncFrom pinned, the same worktree fast-forwards happily
+    await Deno.writeTextFile(`${f.seed}/README.md`, "v2\n");
+    await git(f.seed, "commit", "-qam", "v2");
+    await git(f.seed, "push", "-q", "origin", "main");
+    const res = await c["sync"]({ root: "pinned" }) as { target: string; changed: boolean };
+    assertEquals(res.target, "origin/main");
+    assertEquals(res.changed, true);
+
+    // a bogus ref is refused at config time, not at sync time
+    let cfgMsg = "";
+    try {
+      devRootsFromConfig([{
+        name: "x",
+        path: f.dev,
+        tasks: {},
+        syncFrom: "origin/main; rm -rf /",
+      }]);
+    } catch (e) {
+      cfgMsg = (e as Error).message;
+    }
+    assertStringIncludes(cfgMsg, "not a git ref");
+  } finally {
+    await Deno.remove(f.base, { recursive: true });
+  }
+});
+
 Deno.test("dev.sync is approval-tier with a summary naming the operation", async () => {
   const conn = devConnector({
     roots: devRootsFromConfig([{ name: "dev", path: "/tmp", tasks: {} }]),

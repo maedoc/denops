@@ -15,6 +15,11 @@ export interface DevRootConfig {
   tasks: Record<string, string[]>;
   /** task dev.try requires to have passed for this exact commit (default "check") */
   checkTask?: string;
+  /**
+   * Ref `dev.sync` fast-forwards to, e.g. "origin/main". Operator-set (the model
+   * cannot name a ref); defaults to the current branch's upstream.
+   */
+  syncFrom?: string;
 }
 
 const MAX_TASKS = 20;
@@ -119,11 +124,12 @@ export function devConnector(opts: DevConnectorOptions): Connector {
         tier: "approval",
         summarize: (a) => {
           const { root } = a as { root: string };
-          return `git fetch origin and fast-forward the current branch in dev root ${root} ` +
+          const target = roots.get(String(root))?.syncFrom ?? "the branch's upstream";
+          return `git fetch origin and fast-forward ${root} to ${target} ` +
             `(no reset: a diverged branch fails instead of discarding work)`;
         },
         doc:
-          "Bring a dev root up to date with origin: `git fetch --prune origin` then `merge --ff-only @{u}` on the CURRENT branch. args: { root }. " +
+          "Bring a dev root up to date with origin: `git fetch --prune origin` then `merge --ff-only <syncFrom>` on the CURRENT branch (`syncFrom` is config, default the branch's upstream). args: { root }. " +
           "No ref or remote comes from the caller, and never a reset, so local work cannot be discarded — a diverged branch fails and asks for a human. " +
           "Returns { code, stdout, stderr, branch, from, to, changed }.",
         argSchema: compose(rejectUnknown(), str("root")),
@@ -231,20 +237,38 @@ export function devConnector(opts: DevConnectorOptions): Connector {
           );
         }
         const before = await gitAt(r.path, ["rev-parse", "HEAD"]);
+        const target = r.syncFrom ?? "@{u}";
         const fetch = await gitAt(r.path, ["fetch", "--prune", "origin"]);
         if (fetch.code !== 0) {
           throw new Error(`dev.sync: git fetch failed: ${fetch.stderr.trim().slice(0, 300)}`);
         }
-        const merge = await gitAt(r.path, ["merge", "--ff-only", "@{u}"]);
+        // resolve the target before merging: otherwise "no upstream" and "diverged"
+        // are indistinguishable (both make the merge exit non-zero), and the useful
+        // error ("give me a syncFrom") turns into a confusing fast-forward complaint
+        const exists = await gitAt(r.path, ["rev-parse", "--verify", `${target}^{commit}`]);
+        if (exists.code !== 0) {
+          throw new Error(
+            `dev.sync: cannot resolve ${target} (branch ${name} in ${r.name}); set ` +
+              `connectors.dev.roots[].syncFrom (e.g. "origin/main") or give the branch an upstream`,
+          );
+        }
+        const merge = await gitAt(r.path, ["merge", "--ff-only", target]);
         const after = await gitAt(r.path, ["rev-parse", "HEAD"]);
         ctx.log({
           connector: "dev",
           op: "dev.sync",
-          args: { root, branch: name, from: before.stdout.trim(), to: after.stdout.trim() },
+          args: {
+            root,
+            branch: name,
+            target,
+            from: before.stdout.trim(),
+            to: after.stdout.trim(),
+          },
         });
         return {
           ...(execSummary(merge) as Record<string, JsonValue>),
           branch: name,
+          target,
           from: before.stdout.trim(),
           to: after.stdout.trim(),
           changed: before.stdout.trim() !== after.stdout.trim(),
@@ -449,12 +473,24 @@ export function devRootsFromConfig(raw: unknown): DevRootConfig[] {
       tasks[t] = argv as string[];
     }
     const checkTask = r.checkTask === undefined ? undefined : String(r.checkTask);
+    const syncFrom = r.syncFrom === undefined ? undefined : String(r.syncFrom);
+    if (syncFrom !== undefined && !/^[A-Za-z0-9._/-]+$/.test(syncFrom)) {
+      throw new Error(
+        `dev.roots[${name}].syncFrom: ${JSON.stringify(syncFrom)} is not a git ref`,
+      );
+    }
     if (checkTask !== undefined && !tasks[checkTask]) {
       throw new Error(
         `dev.roots[${name}].checkTask: ${JSON.stringify(checkTask)} is not a configured task`,
       );
     }
-    out.push({ name, path, tasks, ...(checkTask === undefined ? {} : { checkTask }) });
+    out.push({
+      name,
+      path,
+      tasks,
+      ...(checkTask === undefined ? {} : { checkTask }),
+      ...(syncFrom === undefined ? {} : { syncFrom }),
+    });
   }
   return out;
 }

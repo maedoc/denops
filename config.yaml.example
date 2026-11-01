@@ -131,6 +131,7 @@ startup:
 #       - name: denops-dev                 # worktree the agent owns
 #         path: /home/freebox/denops-dev
 #         checkTask: check                 # task that must pass for HEAD before dev.try
+#         syncFrom: origin/main            # dev.sync target (default: the branch's upstream)
 #         tasks:                           # argv only, never a shell
 #           check:
 #             - deno

@@ -16,9 +16,11 @@ the API surface; implementation notes belong in the commit message.
   tokens masked. A failed start is diagnosable from a run instead of from journald.
 - `denops.about` reports the live permission envelope (`permissions.net/read/write/run`), derived by
   the same `serverPlan()` the launcher uses.
-- `dev.sync({root})` (approval): `git fetch --prune origin` + `merge --ff-only @{u}` on the current
-  branch. No caller-supplied ref, remote or flag, and never a reset — a diverged branch fails and a
-  detached HEAD is refused, so local work cannot be discarded.
+- `dev.sync({root})` (approval): `git fetch --prune origin` + `merge --ff-only <syncFrom>` on the
+  current branch. No caller-supplied ref, remote or flag, and never a reset — a diverged branch
+  fails and a detached HEAD is refused, so local work cannot be discarded. `syncFrom` is
+  operator-set per root (`origin/main` for denops-dev, whose branch has no upstream on origin) and
+  defaults to the branch's upstream.
 
 ## 0.2.2 — 2026-11-01
 
