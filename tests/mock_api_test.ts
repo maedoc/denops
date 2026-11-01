@@ -112,6 +112,70 @@ Deno.test("gitlab client against mock API: read op, path encoding, auth header",
   }
 });
 
+// Upstream GitLab objects are ~4KB each; returning them wholesale is context
+// abuse for an LLM caller. Lists project onto a small default field set, with
+// `fields` to choose and `full: true` to opt into the raw object.
+Deno.test("gitlab list ops return summaries by default, full objects on request", async () => {
+  const fatProject = {
+    id: 42,
+    name: "proj",
+    path_with_namespace: "grp/proj",
+    default_branch: "main",
+    visibility: "private",
+    archived: false,
+    web_url: "https://gitlab.example/grp/proj",
+    last_activity_at: "2026-10-30T18:13:36.806+01:00",
+    description: "x".repeat(4000),
+    avatar_url: "https://gitlab.example/avatar.png",
+    _links: { self: "https://gitlab.example/api/v4/projects/42", issues: "..." },
+    namespace: { id: 3, name: "grp", path: "grp", kind: "group", full_path: "grp" },
+    permissions: { project_access: { access_level: 40 }, group_access: null },
+  };
+  const recorded: RecordedReq[] = [];
+  const srv = mockServer({
+    "GET /api/v4/projects": () => ({ body: [fatProject] }),
+  }, recorded);
+  const port = (srv.addr as Deno.NetAddr).port;
+  const conn = gitlabConnector({
+    token: "tok",
+    origin: `http://127.0.0.1:${port}`,
+    apiPath: "/api/v4",
+  });
+  const clients = conn.client({ config: {}, secrets: {}, log: () => {} });
+  try {
+    const summary = await clients["projects.list"]({}) as Array<Record<string, unknown>>;
+    assertEquals(summary.length, 1);
+    assertEquals(summary[0].id, 42);
+    assertEquals(summary[0].path_with_namespace, "grp/proj");
+    assertEquals(summary[0].default_branch, "main");
+    for (const heavy of ["description", "avatar_url", "_links", "namespace", "permissions"]) {
+      assert(!(heavy in summary[0]), `summary must omit ${heavy}`);
+    }
+    assert(
+      JSON.stringify(summary).length < 400,
+      `summary should be small, got ${JSON.stringify(summary).length}B`,
+    );
+
+    const picked = await clients["projects.list"]({
+      fields: ["id", "namespace.full_path"],
+    }) as Array<Record<string, unknown>>;
+    assertEquals(picked[0], { id: 42, namespace: { full_path: "grp" } });
+
+    const full = await clients["projects.list"]({ full: true }) as Array<Record<string, unknown>>;
+    assertEquals(full[0].description, "x".repeat(4000));
+    assert("_links" in full[0]);
+
+    // fields/full are projections, never forwarded upstream as query params
+    assertEquals(recorded.map((r) => r.path), [
+      "/api/v4/projects",
+      "/api/v4/projects",
+      "/api/v4/projects",
+    ]);
+  } finally {
+    await srv.shutdown();
+  }
+});
+
 Deno.test("gitlab approval op suspends, approve replays and issues POST live", async () => {
   const recorded: RecordedReq[] = [];
   const srv = mockServer({

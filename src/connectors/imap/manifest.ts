@@ -1,6 +1,7 @@
 import { arr, compose, num, optNum, optStr, rejectUnknown, str } from "../../harness/args.ts";
 import type { Connector, HostContext, JsonValue } from "../../harness/types.ts";
 import { type ImapAccountConfig, ImapHost } from "./client.ts";
+import { checkShapeArgs, wrapClient } from "../shape.ts";
 
 export interface ImapConnectorDeps {
   accounts: ImapAccountConfig[];
@@ -14,14 +15,16 @@ export function imapConnector(deps: ImapConnectorDeps): Connector {
     const wrap = <A extends JsonValue>(
       op: string,
       fn: (a: A) => Promise<JsonValue>,
-    ): ((a: JsonValue) => Promise<JsonValue>) =>
+    ): (a: JsonValue) => Promise<JsonValue> =>
     async (a: JsonValue) => {
       ctx.log({ connector: "mail", op: `mail.${op}`, args: a });
       return await fn(a as A);
     };
     return {
-      "accounts": wrap("accounts", (): Promise<JsonValue> =>
-        Promise.resolve({ accounts: host.ids() } as JsonValue)),
+      "accounts": wrap(
+        "accounts",
+        (): Promise<JsonValue> => Promise.resolve({ accounts: host.ids() } as JsonValue),
+      ),
       "mailboxes.list": wrap("mailboxes.list", async (a) => {
         const account = host.get(String((a as { account: string }).account));
         return await account.listMailboxes();
@@ -84,7 +87,7 @@ export function imapConnector(deps: ImapConnectorDeps): Connector {
     };
   };
 
-  return {
+  const conn: Connector = {
     id: "mail",
     ops: [
       {
@@ -179,17 +182,38 @@ export function imapConnector(deps: ImapConnectorDeps): Connector {
           rejectUnknown(),
           acc,
           str("mailbox"),
-          arr("uids", (v) =>
-            typeof v === "number" && Number.isFinite(v) && v > 0 ? null : "expected positive uid"
+          arr(
+            "uids",
+            (v) =>
+              typeof v === "number" && Number.isFinite(v) && v > 0 ? null : "expected positive uid",
           ),
           str("toMailbox"),
           optStr("toAccount"),
         ),
       },
     ],
-    client,
+    client: (_ctx: HostContext) => wrapClient(client(_ctx), MAIL_SHAPE),
     validateStartup: async () => {
       await host.validateAll();
     },
   };
+
+  conn.ops = conn.ops.map((op) => {
+    const short = op.name.slice("mail.".length);
+    return {
+      ...op,
+      argSchema: compose(op.argSchema, checkShapeArgs),
+      doc: MAIL_SHAPE[short] ? op.doc + SHAPE_HINT : op.doc,
+    };
+  });
+  return conn;
 }
+
+// Default projections for envelope listings: subjects and addresses are what a
+// caller needs to choose a message, not whole MIME envelopes.
+const SHAPE_HINT = ' Returns a summary; pass fields: ["..."] or full: true for the raw object.';
+
+const MAIL_SHAPE: Record<string, string[]> = {
+  "messages.list": ["uid", "subject", "from", "date", "flags"],
+  "messages.search": ["mailbox", "uids"],
+};

@@ -260,7 +260,7 @@ Deno.test("search reports registry size and truncation, never implies a small re
     const ops = Array.from({ length: 15 }, (_, i) => ({
       name: `${id}.op${i}`,
       tier: "open" as const,
-      doc: `op ${i} of ${id}`,
+      doc: `thing ${i} of ${id}`,
       argSchema: () => null,
     }));
     registry.register({ id, ops, client: () => ({}) });
@@ -272,7 +272,13 @@ Deno.test("search reports registry size and truncation, never implies a small re
   assertStringIncludes(empty, "showing 20 of 30");
   assertStringIncludes(empty, "+10 more");
 
-  const broad = search(registry, "op");
+  // "all available ops" is a listing request, not a literal search: those words
+  // are stopwords, so they must fall back to the full listing.
+  const phrasing = search(registry, "all available ops");
+  assertStringIncludes(phrasing, "30 op(s) registered");
+  assertStringIncludes(phrasing, "showing 20 of 30");
+
+  const broad = search(registry, "thing");
   assertStringIncludes(broad, "30 op(s) matched, showing the best 20");
   assertStringIncludes(broad, "+10 more");
 
