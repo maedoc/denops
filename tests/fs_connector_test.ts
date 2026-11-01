@@ -300,6 +300,57 @@ Deno.test("approvals queue decide flow unchanged", () => {
   assertEquals(q.decide("p1", "approve") ?? null, null);
 });
 
+// readPgrp mirrors the /proc parse used by the client: pgrp of a live pid, or
+// null once the process is gone.
+function readPgrp(pid: number): number | null {
+  try {
+    const stat = Deno.readTextFileSync(`/proc/${pid}/stat`);
+    return Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[2]);
+  } catch {
+    return null;
+  }
+}
+
+// Regression: the exec timeout must kill the command's own process group and
+// nothing else. A previous implementation shelled out to `kill -KILL -<pid>`;
+// Ubuntu's /bin/kill is procps-ng, which truncates multi-digit negative pids to
+// their first digit, so a 5-digit group id became kill(-1, SIGKILL) and killed
+// every process the test runner could signal — the login shell included. If
+// this ever regresses, this test *process* dies instead of failing cleanly.
+Deno.test("fs.exec timeout kills only the command's process group", async () => {
+  const { dir, harness } = await setup();
+  const ownGroup = Deno.build.os === "linux" ? readPgrp(Deno.pid) : null;
+  // Linux only: the pid file lets us assert the exec'd group leader is gone.
+  // macOS has no setsid, so the timeout can only kill the direct child (a
+  // shell that forked `sleep` would keep the output pipes open past the budget).
+  const command = Deno.build.os === "linux" ? "echo $$ > pid.txt; sleep 30" : "sleep 30";
+  try {
+    const out = await runCode(
+      harness,
+      dir,
+      `const r = await fs.exec({ root: "repo", command: ${
+        JSON.stringify(command)
+      }, timeout: 1 }); return r;`,
+      { grantKeys: new Set(["fs:repo"]) },
+    );
+    assertEquals(out.status, "completed", outcomeText(out));
+    const r = out.result as { timedOut: boolean; exitCode: number };
+    assertEquals(r.timedOut, true);
+    assertEquals(r.exitCode, -1);
+
+    // Still running: the SIGKILL above did not reach our own process group.
+    if (Deno.build.os !== "linux") return;
+    assertEquals(readPgrp(Deno.pid), ownGroup, "runner process group must be untouched");
+
+    // The exec'd shell was its own group leader and is gone.
+    const childPid = Number(Deno.readTextFileSync(`${dir}/repo/pid.txt`).trim());
+    assert(childPid > 1 && childPid !== Deno.pid, `unexpected child pid ${childPid}`);
+    assert(readPgrp(childPid) === null, `timed-out child ${childPid} should be gone`);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 Deno.test("fs.exec timeout flags the result (1s timeout on sleep 30)", async () => {
   const { dir, harness } = await setup();
   try {

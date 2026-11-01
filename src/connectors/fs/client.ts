@@ -18,6 +18,43 @@ interface ExecResult {
   timedOut: boolean;
 }
 
+// killExecGroup SIGKILLs the process group of a setsid-spawned exec child.
+//
+// `<pid>` is the pid of a child spawned through /usr/bin/setsid, which
+// guarantees it leads its own process group (setsid only forks when the child
+// already is a group leader, which cannot happen for a freshly spawned child).
+// The negative pid therefore names that child's group and nothing else: if the
+// guarantee ever broke, the group would simply not exist and kill would be a
+// no-op. Pids 0 and 1 are never passed, so the kill can never reach our own
+// group or init.
+//
+// The `--` separator is load-bearing. Passing a negative pid without it is
+// unsafe: Ubuntu's /bin/kill is procps-ng, which re-parses such an argument and
+// truncates it to its first digit, so `kill -KILL -19567` becomes
+// kill(-1, SIGKILL) — SIGKILL to every process the caller may signal, which
+// takes the whole login session (and any detached runs) down with it.
+//
+// /bin/kill is tried first because the server runs with a scoped --allow-run
+// list that does not cover Deno.kill; Deno.kill covers setups where kill(1) is
+// not on that list.
+function killExecGroup(pid: number): boolean {
+  if (!Number.isSafeInteger(pid) || pid <= 1) return false;
+  try {
+    new Deno.Command("/bin/kill", {
+      args: ["-KILL", "--", "-" + String(pid)],
+      stdout: "null",
+      stderr: "null",
+    }).outputSync();
+    return true;
+  } catch { /* kill(1) not permitted, or gone */ }
+  try {
+    Deno.kill(-pid, "SIGKILL");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // FSClient implements the host side of the fs.* ops. Confinement: every path
 // is resolved against the configured root's real path; anything escaping it
 // (traversal or symlink) is rejected. Exec runs with a scrubbed environment so
@@ -338,6 +375,8 @@ export class FSClient {
     // the timeout can SIGKILL the whole group — sh and all its children — and
     // collect the shell immediately. On macOS setsid is unavailable, so we
     // spawn directly and kill the process (children may linger briefly).
+    // See killExecGroup for how the group is signalled, and why it is never
+    // done by passing a negative pid to kill(1).
     const useSetsid = Deno.build.os === "linux";
     const cmd = useSetsid
       ? new Deno.Command("/usr/bin/setsid", {
@@ -362,17 +401,7 @@ export class FSClient {
     let killed = false;
     const timer = setTimeout(() => {
       killed = true;
-      if (useSetsid) {
-        // setsid made the child a session/group leader with pgid == its pid;
-        // kill the whole group (sh + all children) via the negative pid.
-        try {
-          new Deno.Command("/bin/kill", {
-            args: ["-KILL", "-" + String(proc.pid)],
-            stdout: "null",
-            stderr: "null",
-          }).outputSync();
-        } catch { /* already exited */ }
-      }
+      if (useSetsid) killExecGroup(proc.pid);
       try {
         proc.kill("SIGKILL");
       } catch { /* already exited */ }

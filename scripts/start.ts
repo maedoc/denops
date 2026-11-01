@@ -84,7 +84,14 @@ const allowRead = [
   ...fsReadPaths,
 ].join(",");
 const allowWrite = ["data/", ...fsWritePaths].join(",");
-const allowRun = fsExecRoots.size > 0 ? ["/bin/sh", ...[...fsExecRoots].map(() => "/bin/sh")] : [];
+// fs.exec spawns `/bin/sh` and, on Linux, wraps it in `/usr/bin/setsid` so the
+// timeout can kill the whole process group; `/bin/kill` is the fallback used to
+// signal that group when Deno.kill is not permitted.
+const execBins = [
+  "/bin/sh",
+  ...(Deno.build.os === "linux" ? ["/usr/bin/setsid", "/bin/kill"] : []),
+];
+const allowRun = fsExecRoots.size > 0 ? execBins : [];
 const args = [
   "run",
   "--unstable-worker-options",
