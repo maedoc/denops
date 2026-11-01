@@ -193,7 +193,7 @@ export class MistralClient {
    * Remove staged downloads. The staging root is read-only to fs writes by design,
    * so the connector that wrote those files owns pruning them.
    */
-  async clearStaging(olderThanHours = 0): Promise<{ removed: string[] }> {
+  clearStaging(olderThanHours = 0): { removed: string[] } {
     const removed: string[] = [];
     const cutoff = olderThanHours > 0 ? Date.now() - olderThanHours * 3600_000 : Infinity;
     let entries: Deno.DirEntry[];

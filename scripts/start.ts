@@ -20,6 +20,7 @@ const plan = derivePermissions(cfg, {
     "deno.json",
     "deno.lock",
     "SKILL.md",
+    "CHANGELOG.md",
     "src/",
     "scripts/",
   ],

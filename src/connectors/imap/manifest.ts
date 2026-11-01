@@ -1,4 +1,14 @@
-import { arr, compose, num, optNum, optStr, rejectUnknown, str } from "../../harness/args.ts";
+import {
+  arr,
+  compose,
+  num,
+  optArr,
+  optBool,
+  optNum,
+  optStr,
+  rejectUnknown,
+  str,
+} from "../../harness/args.ts";
 import type { Connector, HostContext, JsonValue } from "../../harness/types.ts";
 import { type ImapAccountConfig, ImapHost } from "./client.ts";
 import { checkShapeArgs, wrapClient } from "../shape.ts";
@@ -36,10 +46,16 @@ export function imapConnector(deps: ImapConnectorDeps): Connector {
       "messages.search": wrap("messages.search", async (a) => {
         const r = a as {
           account: string;
-          mailbox: string;
+          mailbox?: string;
+          mailboxes?: string[];
           query: Record<string, unknown>;
           limit?: number;
         };
+        if (r.mailboxes && r.mailboxes.length > 0) {
+          if (r.mailbox) throw new Error("pass either `mailbox` or `mailboxes`, not both");
+          return await host.get(r.account).searchMany(r.mailboxes, r.query, r.limit ?? 20);
+        }
+        if (!r.mailbox) throw new Error("messages.search needs `mailbox` or `mailboxes`");
         return await host.get(r.account).searchMessages(r.mailbox, r.query, r.limit ?? 50);
       }),
       "messages.get": wrap("messages.get", async (a) => {
@@ -62,11 +78,30 @@ export function imapConnector(deps: ImapConnectorDeps): Connector {
       }),
       "messages.raw": wrap("messages.raw", async (a) => {
         const r = a as { account: string; mailbox: string; uid: number };
-        return await host.get(r.account).getMessage(r.mailbox, r.uid, 100 * 1024 * 1024);
+        // full source, headers and all: `messages.get` deliberately splits them now
+        const { raw, internalDate } = await host.get(r.account).fetchRaw(r.mailbox, r.uid);
+        return {
+          uid: r.uid,
+          raw,
+          internalDate: internalDate ? internalDate.toISOString() : null,
+        } as JsonValue;
       }),
       "drafts.save": wrap("drafts.save", async (a) => {
-        const r = a as { account: string; subject: string; to: string[]; body: string };
-        return await host.get(r.account).saveDraft(r.subject, r.to, r.body);
+        const r = a as {
+          account: string;
+          subject?: string;
+          to?: string[];
+          body: string;
+          replyTo?: { mailbox: string; uid: number };
+          includeQuote?: boolean;
+        };
+        return await host.get(r.account).saveDraft({
+          ...(r.subject === undefined ? {} : { subject: r.subject }),
+          ...(r.to === undefined ? {} : { to: r.to }),
+          body: r.body,
+          ...(r.replyTo === undefined ? {} : { replyTo: r.replyTo }),
+          ...(r.includeQuote === undefined ? {} : { includeQuote: r.includeQuote }),
+        });
       }),
       "messages.move": wrap("messages.move", async (a) => {
         const r = a as {
@@ -114,24 +149,49 @@ export function imapConnector(deps: ImapConnectorDeps): Connector {
         name: "mail.messages.search",
         tier: "open",
         doc:
-          "Server-side IMAP SEARCH. args: { account, mailbox, query: object, limit? } e.g. query { subject: 'invoice', seen: false }. " +
-          "Returns { mailbox, count, messages: [{ uid, subject, from, date, flags }] } — envelopes are " +
+          "Server-side IMAP SEARCH. args: { account, mailbox, query: object, limit? } e.g. query { subject: 'invoice', seen: false }; " +
+          "or { account, mailboxes: string[] (max 20), query, limit? } to search several folders in one call (results carry their mailbox; a failing folder is reported, not fatal). " +
+          "Returns { mailbox, count, messages: [{ uid, subject, from, date, flags }] } (multi-mailbox: { count, searched, messages }) — envelopes are " +
           "included (each with its uid), so no second list-and-filter pass is needed.",
-        argSchema: compose(rejectUnknown(), acc, str("mailbox"), (a) => {
-          if (typeof a !== "object" || a === null || Array.isArray(a)) {
-            return "query: expected object";
-          }
-          const q = (a as Record<string, unknown>).query;
-          return typeof q === "object" && q !== null && !Array.isArray(q)
-            ? null
-            : "query: expected object";
-        }, optNum("limit")),
+        argSchema: compose(
+          rejectUnknown(),
+          acc,
+          optStr("mailbox", 512),
+          optArr(
+            "mailboxes",
+            (v) =>
+              typeof v === "string" && v.length > 0 && v.length <= 512
+                ? null
+                : "expected mailbox path",
+          ),
+          (a) => {
+            const r = a as { mailbox?: unknown; mailboxes?: unknown };
+            const hasOne = typeof r.mailbox === "string" && r.mailbox.length > 0;
+            const hasMany = Array.isArray(r.mailboxes) && r.mailboxes.length > 0;
+            if (hasOne && hasMany) return "pass either mailbox or mailboxes, not both";
+            if (!hasOne && !hasMany) return "mailbox or mailboxes is required";
+            if (Array.isArray(r.mailboxes) && r.mailboxes.length > 20) {
+              return `mailboxes: too many (${r.mailboxes.length} > 20)`;
+            }
+            return null;
+          },
+          (a) => {
+            if (typeof a !== "object" || a === null || Array.isArray(a)) {
+              return "query: expected object";
+            }
+            const q = (a as Record<string, unknown>).query;
+            return typeof q === "object" && q !== null && !Array.isArray(q)
+              ? null
+              : "query: expected object";
+          },
+          optNum("limit"),
+        ),
       },
       {
         name: "mail.messages.get",
         tier: "open",
         doc:
-          "Get full message (parsed envelope + body text). Body capped at maxBytes (default 256KB) with truncated flag. args: { account, mailbox, uid, maxBytes? }",
+          "Get one message: envelope + threading headers + raw header block + body. Returns { uid, subject, from, date, flags, parts, contentType, messageId, inReplyTo, references[], headers, body, truncated }: `body` is the message body only (headers are split off, not embedded). Both `headers` and `body` are capped at maxBytes (default 256KB) with a truncated flag; mail.messages.raw returns the uncapped source. args: { account, mailbox, uid, maxBytes? }",
         argSchema: compose(rejectUnknown(), acc, str("mailbox"), num("uid"), optNum("maxBytes")),
       },
       {
@@ -158,22 +218,58 @@ export function imapConnector(deps: ImapConnectorDeps): Connector {
         name: "mail.drafts.save",
         tier: "open",
         doc:
-          "Save a draft (APPEND to the account's Drafts folder). Deliberately open: there is no send op in v1. args: { account, subject, to: string[], body }",
+          "Save a draft (APPEND to the account's Drafts folder, flagged \\Draft so OWA/Outlook treat it as a draft). Deliberately open: there is no send op in v1. " +
+          "args: { account, body, subject?, to?: string[], replyTo?: { mailbox, uid }, includeQuote? }. " +
+          "With `replyTo` the server reads the parent and owns the threading: In-Reply-To = parent Message-ID, References = parent's chain + its Message-ID, " +
+          "Subject defaults to a non-doubled \"Re: …\", To defaults to the parent's From, and the parent's text is quoted (includeQuote, default true). Every draft gets a fresh Message-ID. " +
+          "Returns { saved, mailbox, uid, messageId, inReplyTo, references, subject, to, quoted, quoteSkipped? }: `mailbox` is the resolved folder — nothing is taken raw from the caller.",
         argSchema: compose(
           rejectUnknown(),
           acc,
-          str("subject"),
-          arr(
+          optStr("subject", 998),
+          optArr(
             "to",
             (v) => (typeof v === "string" && v.includes("@") ? null : "expected email address"),
           ),
           str("body"),
+          (a) => {
+            if ((a as { replyTo?: unknown }).replyTo === undefined) return null;
+            const r = (a as { replyTo?: unknown }).replyTo;
+            if (typeof r !== "object" || r === null || Array.isArray(r)) {
+              return "replyTo: expected { mailbox, uid }";
+            }
+            const { mailbox, uid } = r as Record<string, unknown>;
+            const keys = Object.keys(r as Record<string, unknown>);
+            if (keys.some((k) => k !== "mailbox" && k !== "uid")) {
+              return "replyTo: expected only mailbox and uid";
+            }
+            if (typeof mailbox !== "string" || mailbox.length === 0) {
+              return "replyTo.mailbox: expected non-empty string";
+            }
+            if (typeof uid !== "number" || !Number.isFinite(uid) || uid <= 0) {
+              return "replyTo.uid: expected a positive uid";
+            }
+            return null;
+          },
+          optBool("includeQuote"),
+          (a) => {
+            const r = a as { replyTo?: unknown; subject?: unknown; to?: unknown };
+            if (r.replyTo !== undefined) return null;
+            if (typeof r.subject !== "string" || r.subject.trim() === "") {
+              return "subject: required unless replyTo is given";
+            }
+            if (!Array.isArray(r.to) || r.to.length === 0) {
+              return "to: required unless replyTo is given";
+            }
+            return null;
+          },
         ),
       },
       {
         name: "mail.messages.raw",
         tier: "approval",
-        doc: "Full raw RFC822 source of a message (uncapped). args: { account, mailbox, uid }",
+        doc:
+          "Full raw RFC822 source of a message, headers and body together (uncapped). args: { account, mailbox, uid }. Returns { uid, raw, internalDate }.",
         argSchema: compose(rejectUnknown(), acc, str("mailbox"), num("uid")),
       },
       {
@@ -234,6 +330,8 @@ export const MAIL_SHAPE: Record<string, string[]> = {
   "messages.search": [
     "mailbox",
     "count",
+    "searched",
+    "messages.mailbox",
     "messages.uid",
     "messages.subject",
     "messages.from",

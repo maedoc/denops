@@ -1,5 +1,18 @@
 import { ImapFlow } from "npm:imapflow@2.10.0";
 import type { JsonValue } from "../../harness/types.ts";
+import {
+  addressOf,
+  composeDraft,
+  header,
+  messageIdTokens,
+  newMessageId,
+  parseHeaders,
+  parseMessage,
+  quoteBlock,
+  referencesChain,
+  replySubject,
+  splitHeadBody,
+} from "./rfc822.ts";
 
 export interface ImapAccountConfig {
   id: string;
@@ -9,7 +22,10 @@ export interface ImapAccountConfig {
   allowSelfSigned?: boolean;
   user: string;
   password: string;
+  /** Drafts folder; `auto` resolves the one carrying the \Drafts special-use flag. */
   draftsMailbox: string;
+  /** Domain for Message-IDs we mint; defaults to the domain of `user`. */
+  messageIdDomain?: string;
   /** Socket inactivity timeout; imapflow's default is 300000 (5 min). */
   socketTimeoutMs?: number;
 }
@@ -23,6 +39,7 @@ export class ImapAccountClient {
   private queue: Queue = { tail: Promise.resolve() };
   private connected = false;
   private connError: Error | null = null;
+  private resolvedDrafts: string | null = null;
 
   constructor(private cfg: ImapAccountConfig) {
     this.client = this.newClient();
@@ -170,6 +187,42 @@ export class ImapAccountClient {
 
   private static textDecoder = new TextDecoder();
 
+  /**
+   * Search several mailboxes in one call. One mailbox per round trip is the wrong
+   * ergonomics for a folder tree like the univ archive (Ebrains/TVB/CAP, travel,
+   * candidates…): "where did X say Y" becomes a dozen calls. Failures are reported
+   * per mailbox, never fatal, because one unselectable folder must not sink the
+   * whole answer.
+   */
+  async searchMany(
+    mailboxes: string[],
+    query: Record<string, unknown>,
+    limit = 20,
+  ): Promise<JsonValue> {
+    const perBox: Record<string, unknown>[] = [];
+    const messages: JsonValue[] = [];
+    for (const mailbox of mailboxes) {
+      try {
+        const r = await this.searchMessages(mailbox, query, limit) as {
+          count: number;
+          messages: JsonValue[];
+        };
+        perBox.push({ mailbox, count: r.count });
+        for (const m of r.messages) {
+          messages.push({ ...(m as Record<string, unknown>), mailbox } as JsonValue);
+        }
+      } catch (e) {
+        perBox.push({ mailbox, error: (e as Error).message.slice(0, 200) });
+      }
+    }
+    messages.sort(byDateDesc);
+    return {
+      count: messages.length,
+      searched: perBox,
+      messages: messages.slice(0, 100),
+    } as JsonValue;
+  }
+
   async getMessage(mailbox: string, uid: number, maxBytes = 256 * 1024): Promise<JsonValue> {
     return await this.enqueue(async () => {
       await this.connect();
@@ -184,8 +237,16 @@ export class ImapAccountClient {
         }, { uid: true });
         if (!msg) throw new Error(`message uid ${uid} not found in ${mailbox}`);
         const raw = msg.source?.toString("utf-8") ?? "";
-        const truncated = raw.length > maxBytes;
-        const bodyText = truncated ? raw.slice(0, maxBytes) : raw;
+        // `body` must be the body. Returning the whole RFC822 source (headers and
+        // all) under that name made every caller re-parse MIME text, and hid the
+        // threading headers from anyone who wanted them — so the headers are split
+        // off here and the interesting ones are exposed as fields.
+        const { head, body } = splitHeadBody(raw);
+        const headers = parseHeaders(head);
+        const headerText = head.length > maxBytes ? head.slice(0, maxBytes) : head;
+        const headerTruncated = head.length > maxBytes;
+        const bodyText = body.length > maxBytes ? body.slice(0, maxBytes) : body;
+        const truncated = headerTruncated || body.length > maxBytes;
         const parts: JsonValue[] = [];
         const walk = (bs: unknown): void => {
           if (Array.isArray(bs)) {
@@ -215,6 +276,11 @@ export class ImapAccountClient {
             : null,
           flags: [...(msg.flags ?? [])],
           parts,
+          contentType: header(headers, "content-type") ?? null,
+          messageId: messageIdTokens(header(headers, "message-id"))[0] ?? null,
+          inReplyTo: messageIdTokens(header(headers, "in-reply-to"))[0] ?? null,
+          references: messageIdTokens(header(headers, "references")),
+          headers: headerText,
           body: bodyText,
           truncated,
         } as JsonValue;
@@ -260,23 +326,126 @@ export class ImapAccountClient {
     });
   }
 
-  async saveDraft(subject: string, to: string[], body: string): Promise<JsonValue> {
+  async saveDraft(opts: {
+    subject?: string;
+    to?: string[];
+    body: string;
+    /** Parent message on the same account: the draft becomes a threaded reply. */
+    replyTo?: { mailbox: string; uid: number };
+    /** Append the parent's text as a quoted block (default true when replyTo is set). */
+    includeQuote?: boolean;
+  }): Promise<JsonValue> {
+    // Fetch the parent first (outside the drafts lock, through the same queue) so a
+    // missing uid fails before anything is appended.
+    const parent = opts.replyTo
+      ? await this.fetchRaw(opts.replyTo.mailbox, opts.replyTo.uid)
+      : null;
+    const parsed = parent ? parseMessage(parent.raw) : null;
+
+    const mailbox = await this.draftsMailbox();
+    const to = opts.to && opts.to.length > 0
+      ? opts.to
+      : parsed
+      ? [addressOf(parsed.from) ?? ""].filter((a) => a !== "")
+      : [];
+    if (to.length === 0) {
+      throw new Error(
+        "drafts.save needs a recipient: pass `to`, or a `replyTo` whose parent has a usable From",
+      );
+    }
+    const subject = parsed
+      ? replySubject(parsed.subject, opts.subject)
+      : String(opts.subject ?? "").trim() || "(no subject)";
+
+    const wantQuote = opts.includeQuote ?? parsed !== null;
+    let quoteSkipped: string | null = null;
+    let body = opts.body;
+    if (parsed && wantQuote) {
+      if (parsed.text.trim() === "") {
+        quoteSkipped = parsed.textMissing ?? "parent has no text body";
+      } else {
+        body = `${body.replace(/\s+$/, "")}\n\n${quoteBlock(parsed)}`;
+      }
+    }
+
+    const messageId = newMessageId(this.messageIdDomain());
+    const references = parsed ? referencesChain(parsed) : [];
+    const raw = composeDraft({
+      from: this.cfg.user.includes("@")
+        ? this.cfg.user
+        : `${this.cfg.user}@${this.messageIdDomain()}`,
+      to,
+      subject,
+      date: new Date(),
+      messageId,
+      ...(parsed?.messageId ? { inReplyTo: parsed.messageId } : {}),
+      ...(references.length > 0 ? { references } : {}),
+    }, body);
+
     return await this.enqueue(async () => {
       await this.connect();
-      const message = [
-        `From: ${this.cfg.user}`,
-        `To: ${to.join(", ")}`,
-        `Subject: ${subject.replace(/[\r\n]+/g, " ")}`,
-        "Content-Type: text/plain; charset=utf-8",
-        "",
-        body,
-      ].join("\r\n");
-      const res = await this.client.append(this.cfg.draftsMailbox, message);
+      // \Draft is what makes OWA/Outlook treat an APPENDed message as a draft rather
+      // than a received message; \Seen keeps it from showing up as unread.
+      const res = await this.client.append(mailbox, raw, ["\\Draft", "\\Seen"]);
       return {
         saved: true,
-        mailbox: this.cfg.draftsMailbox,
+        mailbox,
         uid: res && typeof res === "object" ? (res as { uid?: number }).uid ?? null : null,
-      };
+        messageId,
+        inReplyTo: parsed?.messageId ?? null,
+        references,
+        subject,
+        to,
+        quoted: parsed !== null && wantQuote && quoteSkipped === null,
+        ...(quoteSkipped ? { quoteSkipped } : {}),
+      } as JsonValue;
+    });
+  }
+
+  private messageIdDomain(): string {
+    if (this.cfg.messageIdDomain) return this.cfg.messageIdDomain;
+    const at = this.cfg.user.lastIndexOf("@");
+    return at > 0 ? this.cfg.user.slice(at + 1) : this.cfg.host;
+  }
+
+  /** Resolve the Drafts folder once: `auto` follows the server's \Drafts special-use. */
+  private async draftsMailbox(): Promise<string> {
+    if (this.resolvedDrafts) return this.resolvedDrafts;
+    if (this.cfg.draftsMailbox !== "auto") {
+      this.resolvedDrafts = this.cfg.draftsMailbox;
+      return this.resolvedDrafts;
+    }
+    const boxes = await this.enqueue(async () => {
+      await this.connect();
+      return await this.client.list();
+    });
+    const drafts = boxes.find((b) =>
+      String(b.specialUse ?? "").toLowerCase().replace(/\\/g, "") === "drafts"
+    );
+    if (!drafts) {
+      const seen = boxes.map((b) => `${b.path}${b.specialUse ? ` (${b.specialUse})` : ""}`)
+        .join(", ");
+      throw new Error(
+        `draftsMailbox is "auto" but this account advertises no \\Drafts folder; set it explicitly. Mailboxes: ${seen}`,
+      );
+    }
+    this.resolvedDrafts = String(drafts.path);
+    return this.resolvedDrafts;
+  }
+
+  /** Every mailbox matching a substring, for cross-folder search. */
+  async searchMailboxes(needle: string): Promise<JsonValue> {
+    return await this.enqueue(async () => {
+      await this.connect();
+      const boxes = await this.client.list();
+      const want = needle.toLowerCase();
+      return boxes
+        .filter((b) => String(b.path).toLowerCase().includes(want))
+        .filter((b) => !(b.flags && [...b.flags].some((f) => f.toLowerCase() === "\\noselect")))
+        .map((b) => ({
+          path: String(b.path),
+          specialUse: b.specialUse ? String(b.specialUse) : null,
+        })) as JsonValue;
     });
   }
 

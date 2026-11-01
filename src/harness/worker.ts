@@ -125,6 +125,38 @@ export class Harness {
     private tierOverride?: TierOverride,
   ) {}
 
+  activeRun?: { runId: string; startedAt: number; opsDispatched: number };
+
+  /**
+   * Remaining budget for the run in flight. Exposed as an op so a long run can
+   * degrade gracefully (stage early, narrow reads) instead of dying after a human
+   * already approved a write.
+   */
+  budgetSnapshot(): {
+    runId: string | null;
+    wallClockMs: number;
+    elapsedMs: number;
+    remainingMs: number;
+    opLimit: number;
+    opsUsed: number;
+    opsRemaining: number;
+    maxOpResultBytes: number;
+  } {
+    const a = this.activeRun;
+    const elapsed = a ? Date.now() - a.startedAt : 0;
+    const used = a?.opsDispatched ?? 0;
+    return {
+      runId: a?.runId ?? null,
+      wallClockMs: this.budgets.wallClockMs,
+      elapsedMs: elapsed,
+      remainingMs: Math.max(0, this.budgets.wallClockMs - elapsed),
+      opLimit: this.budgets.maxOpsPerRun,
+      opsUsed: used,
+      opsRemaining: Math.max(0, this.budgets.maxOpsPerRun - used),
+      maxOpResultBytes: this.budgets.maxOpResultBytes,
+    };
+  }
+
   private newRunState(): RunState {
     return { createdLibraryIds: new Set<string>() };
   }
@@ -147,6 +179,7 @@ export class Harness {
     let opSeq = 0;
     let awaiting: PendingApproval | null = null;
     const runState = replay?.runState ?? this.newRunState();
+    this.activeRun = { runId, startedAt: started, opsDispatched: 0 };
     if (replay) {
       for (const { op, result } of replay.resultsBySeq.values()) {
         if (op === "mistral.libraries.create") {
@@ -283,6 +316,7 @@ export class Harness {
         return;
       }
       opCount += 1;
+      if (this.activeRun) this.activeRun.opsDispatched = opCount;
 
       // 1-based call sequence: the identity of *this* op call within the run. Every
       // dispatch logs exactly one op entry, so it matches the log's seq.

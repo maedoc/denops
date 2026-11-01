@@ -5,8 +5,8 @@ prefer this over guessing, and re-read it after any server upgrade.
 
 <!--
 MAINTENANCE: this file is the prompt-facing contract. Any change to an op, tier, capability, config
-knob, deployment step or error contract must update it in the SAME change; `tests/skill_test.ts`
-fails when it drifts (unknown ops, missing families/counts). Keep it under ~120 lines.
+knob, deployment step or error contract updates it in the SAME change; `tests/skill_test.ts` fails
+when it drifts (unknown ops, missing families/counts). Keep it under ~130 lines.
 -->
 
 ## 1. What this server is
@@ -17,12 +17,12 @@ root is configured). Everything else is an **op** you call from JavaScript insid
 ```js
 // execute() runs the BODY of an async function; return JSON-serializable data
 const projects = await gitlab.projects.list({ perPage: 5 });
-return projects.map((p) => p.path_with_namespace);
+return projects.map((p) => p.path_with_namespace); // → ["group/project", …]
 ```
 
-Ops are namespaced globals (`gitlab.*`, `mail.*`, `mistral.*`, `fs.*`, `dev.*`, `deploy.*`). There
-is no `tools` object. Credentials never enter the sandbox; ops are the only egress. No `fetch`,
-`WebSocket`, filesystem or `Deno` APIs.
+Ops are namespaced globals (`gitlab.*`, `mail.*`, `mistral.*`, `fs.*`, `web.*`, `dev.*`,
+`deploy.*`); there is no `tools` object. Credentials never enter the sandbox: ops are the only
+egress, and there is no `fetch`, `WebSocket`, filesystem or `Deno` API (use `web.fetch` for URLs).
 
 ## 2. Discovery (do this first, cheaply)
 
@@ -33,13 +33,13 @@ is no `tools` object. Credentials never enter the sandbox; ops are the only egre
 | `api.describe("gitlab.issues.create")` | full doc: args **and** return shape             |
 | `denops.skill({})`                     | this document                                   |
 
-`search`/`describe` are also available as MCP tools. A query that matches nothing returns the
-inventory, so a single call always tells you what exists.
+`search`/`describe` are also MCP tools; a query that matches nothing returns the inventory, so one
+call always tells you what exists. `denops.version` says what is actually deployed.
 
 ## 3. Call conventions
 
 - Write one `execute` that loops over ops rather than many round trips; budgets are per run (wall
-  clock, op count, 1 MB per op result).
+  clock, op count, 1 MB per op result) and `denops.budget` reads what is left of them.
 - **Summary projections** are the default for list/get ops: narrow with
   `fields: ["id", "namespace.full_path"]` (dotted paths, arrays shaped per element) or ask for the
   raw upstream object with `full: true`. Width matters: five raw GitLab projects ≈ 130 KB.
@@ -62,60 +62,61 @@ Anything without a curated op: `gitlab.get({ path, query? })` (open) and
 to the pinned origin, and credential-bearing reads (`variables`, `*_tokens`, `secure_files`) are
 refused.
 
-**mail** (10 ops) — `mailboxes.list`, `messages.list` (`{mailbox,total,page,limit,messages[]}`),
-`messages.search` (server-side IMAP search; returns envelopes with the uids),
+**mail** (10 ops) — `mailboxes.list`, `messages.list`, `messages.search` (server-side IMAP;
+`mailboxes: string[]` searches a folder tree in one call and each hit carries its `mailbox`),
 `messages.get`/`getPart`/`flags.get`, `drafts.save` (open — draft, never send), `messages.raw` and
-`messages.move` (approval). No SMTP: sending does not exist.
+`messages.move` (approval). No SMTP. `messages.get` splits headers from body: `body` is the body
+only, plus `messageId`, `inReplyTo`, `references[]`, `contentType`, `headers` — inspect threading
+without the raw source.
+`drafts.save({account, body, replyTo:{mailbox,uid}, includeQuote?, subject?, to?})` makes the draft
+a **threaded reply**: the server writes `Message-ID`/`In-Reply-To`/`References`/`Date`/
+`MIME-Version`, defaults `Re: <parent subject>` + parent `From`, quotes the parent, APPENDs with
+`\Draft`. Never compose those headers yourself. **mistral** (17 ops) — libraries and documents,
+metadata first: `libraries.list` → `documents.list` (rows carry `size`, `mime_type`,
+`process_status`) → then `documents.read` for small text (inline, else `truncated: true`),
+`documents.get({fields:["summary"]})` for the extracted summary, or `documents.stage` (→
+`{root, path, absPath, bytes, mime, sha256}`) to hand `root`+`path` to `fs.grep`/`fs.read`. Writing
+is text-first: `documents.put` creates, `documents.replace` replaces by name (refuses if several
+share it — pass `documentId`), `documents.upload` takes base64, `staging.clear({olderThanHours?})`
+prunes. Writes/deletes are approval-tier for libraries that already existed; one created in the same
+run can be written and cleaned up freely. **fs** (10 ops) — named roots only (`fs.roots` lists
+them): `glob`, `list`, `read` (line windows with `hasMore`), `grep` (regex, capped), `write`,
+`edit`/`editRegex`, `rm`, `exec`.
 
-**mistral** (17 ops) — libraries and documents. Discovery is metadata-first: `libraries.list` →
-`documents.list` (each row has `size`, `mime_type`, `process_status`) → then decide:
-
-- small text → `documents.read({libraryId, documentId})` (inline, ≤ `inlineReadMaxBytes`, else
-  `truncated: true`); binary (PDF…) → the extracted `summary` via
-  `documents.get({libraryId, documentId, fields:["summary"]})`, or `documents.stage` to download it;
-- search a big staged file → `documents.stage` returns `{root, path, absPath, bytes, mime, sha256}`
-  and you pass `root`+`path` straight to `fs.grep`/`fs.read` (grep skips binaries: `skippedBinary`).
-  Writing is text-first: `documents.put({libraryId, fileName, text})` creates,
-  `documents.replace({libraryId, fileName, text})` is replace-by-name (refuses if several documents
-  share the name — pass `documentId` then), `documents.upload` takes base64 for binaries, and
-  `staging.clear({olderThanHours?})` prunes staged copies. Writes/deletes are approval-tier for
-  libraries that already existed; one created in the same run can be written and cleaned up freely.
-  Mistral assigns the stored `mime_type` itself (text uploads become `text/plain`).
-
-**fs** (10 ops) — named roots only (`fs.roots` lists them). `glob`, `list`, `read` (line windows
-with `hasMore`), `grep` (regex, capped), `write`, `edit`/`editRegex`, `rm`, `exec`.
-
-- **Capabilities are enforced before approval**: writing to a `write: false` root (or exec on
-  `exec: false`) fails with `capability_denied` and creates **no** pending. Paths are confined to
-  the root (symlinks that escape are refused).
-- **Grants are levelled**: approving the first op on a root records `fs:<root>:read` (browse/search)
-  or `fs:<root>:write` (write/edit; implies read). `fs.rm` and `fs.exec` are never grant-covered —
-  they ask every time. `grants({action:"list"|"revoke", key})`.
-
-**denops** (2 ops) — `denops.skill` (this document; `{ section }` filters) and `denops.about`
-(version, skill freshness, connector families).
+- **Capabilities are enforced before approval**: a write to a `write: false` root (or exec on
+  `exec: false`) fails `capability_denied` and creates **no** pending; paths are confined to the
+  root.
+- **Grants are levelled**: approving the first op on a root records `fs:<root>:read` or
+  `fs:<root>:write` (implies read); `fs.rm`/`fs.exec` are never grant-covered.
+  `grants({action, key})`. **denops** (5 ops) — `denops.skill` (this document; `{ section }`
+  filters), `denops.about` (version, skill freshness, connector families), `denops.version`
+  (version, commit, CHANGELOG head — check this instead of probing whether a fix deployed),
+  `denops.budget` (remaining wall clock and op count for THIS run — call it before long loops or
+  multi-step writes), `denops.oplog` (read-only, redacted run log: recent runs, their ops, statuses,
+  approval/error counts; no args, no result bodies).
 
 **debug** (3 ops) — `debug.echo`, `debug.boom`, `debug.gated`; harmless smoke tests, and the fastest
 way to check the execute/approval plumbing.
 
-**dev** (4 ops) / **deploy** (3 ops) — working on this server's own code without a shell:
-`dev.roots` (roots + task names), `dev.run({root, task})` (`check`, `test`, `fmt`, `lint`… argv from
-config, no shell; returns `{code, stdout, stderr, sha, dirty}` and records the result against the
-current **tree** — exit code and tree identity, never output, because a cached `deno check` prints
-nothing and is still a pass), `dev.git({root, action:"status"|"diff"|"log"|"commit", message?})`,
-`dev.try({root, op, args})` (runs one **open-tier** op from the dev checkout's own registry against
-the real APIs — this is how you validate new code before shipping), `deploy.status`,
-`deploy.promote` (approval: runs the test task, records intent), `deploy.rollback({commit?})`.
-`dev.try` runs **committed, checked code only**: it refuses a dirty tracked tree, and refuses unless
-the root's `check` task passed for the current tree (checking before you commit the same content is
-fine). Its child process gets a pinned envelope — read: the checkout (+ its secrets symlink), write:
-the checkout's own `dataDir`, net: hosts the **live** config declares, and no subprocess at all — so
-`NotCapable` from an op means it tried to leave that envelope (stage files or ship instead). Result:
-`{code, stdout, stderr, commit, subject, dirty, check}`. Promotion flow: edit →
-`dev.run("check")`/`dev.run("test")` → `dev.git commit` → `dev.try` → `deploy.promote` (human
-approves) → the supervisor restarts into it, probes `/health`, soaks 60 s, then advances `main` and
-records it as last-good. Failure → automatic revert. `deploy.status` shows live/main/dev shas,
-ahead/behind, dirty flags (untracked scratch files do not block a promotion).
+**web** (1 op) — `web.fetch({url, format?:"text"|"html", maxBytes?})`: one http(s) document as text
+(HTML converted best-effort, no JS) or raw markup. Only hosts in the live config's `allowedHosts`
+are reachable; private/loopback/link-local addresses are refused (SSRF guard) and redirects are
+re-validated. A refused host is a config question for the operator, not something to work around.
+
+**dev** (4 ops) / **deploy** (3 ops) — work on this server's own code without a shell: `dev.roots`,
+`dev.run({root, task})` (`check`/`test`/`fmt`/`lint`… argv from config, no shell; returns
+`{code, stdout, stderr, sha, dirty}` and records the outcome against the current **tree**, by exit
+code and tree identity, never by output), `dev.git({root, action, message?})`,
+`dev.try({root, op, args})` (one **open-tier** op from the dev checkout's own registry, against the
+real APIs), `deploy.status`, `deploy.promote` (approval: runs the test task, records intent),
+`deploy.rollback({commit?})`. `dev.try` runs **committed, checked code only** — a dirty tracked tree
+is refused and the root's `check` must have passed for this tree — inside a pinned child (read =
+checkout + secrets symlink, write = its `dataDir`, net = hosts the **live** config declares, no
+subprocess), so `NotCapable` means the op left that envelope. Returns
+`{code, stdout, stderr, commit, subject, dirty, check}`. Flow: edit → `dev.run("check")`/`("test")`
+→ `dev.git commit` → `dev.try` → `deploy.promote` (human approves) → supervisor restarts, probes
+`/health`, soaks 60 s, advances `main`; failure auto-reverts. `deploy.status` shows live/main/dev
+shas, ahead/behind and dirty flags (untracked files never block).
 
 ## 5. Error and approval semantics worth remembering
 
@@ -123,11 +124,11 @@ ahead/behind, dirty flags (untracked scratch files do not block a promotion).
 - `invalid args for <op>: <field>: …` — the boundary rejected you; fix the argument, no approval.
 - `unknown or unavailable op` — use `api.search`; the op may belong to a disabled connector.
 - Approval summaries are written by the connector (commit subject + diffstat for deployments,
-  mailbox/uids for moves). Quote them to the user; they are the human's only view.
+  mailbox/uids for moves). Quote them: they are the human's only view.
 
 ## 6. Ground rules
 
 One user, one identity: you act with their credentials. Prefer read ops, batch work into one
-`execute`, and ask for approval rather than working around a gate. Never paste credentials into
-`execute` output; secrets live host-side. If something is missing, `api.search` first, then say what
-you need — the operator can add an op.
+`execute`, ask for approval rather than working around a gate. Never paste credentials into
+`execute` output. Missing something? `api.search` first, then say what you need — the operator can
+add an op.

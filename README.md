@@ -211,11 +211,19 @@ MB), `maxOpArgsBytes`, `maxLogBytes`.
 
 Enable in `config.yaml`; every connector's ops appear in `search` and are tiered individually.
 
-### denops (2 ops) — the skill sheet
+### denops (5 ops) — the skill sheet and the server's self-report
 
 `denops.skill({section?})` returns `SKILL.md` (the prompt-facing contract, cached by mtime);
 `denops.about()` returns version, `SKILL.md` freshness/length and the connector families this
-deployment exposes. Always registered.
+deployment exposes; `denops.version()` returns version + commit + the top `CHANGELOG.md` entries (so
+a run can tell whether a fix deployed instead of probing behaviour); `denops.budget()` returns the
+remaining wall clock and op count for the run in flight (degrade gracefully instead of dying after a
+human approved a write); `denops.oplog({limit?,runId?,ops?})` is a read-only, redacted view of the
+run log — recent runs with their ops, statuses and approval/error counts, **without** arguments or
+result bodies (only their byte sizes), errors truncated. Always registered.
+
+`CHANGELOG.md` is the discipline that makes `denops.version` useful: append an entry in the same
+commit as any observable change (ops, args, return shapes, tiers, error contracts, deploy loop).
 
 ### debug (3 ops) — smoke tests
 
@@ -245,6 +253,28 @@ validate `query`/`body`, and refuse credential-bearing reads (`variables`, `*_to
 `mail.messages.get`, `mail.messages.getPart`, `mail.messages.flags.get`, `mail.drafts.save` (open —
 deliberate draft-not-send), `mail.messages.raw` _(approval)_, `mail.messages.move` _(approval,
 cross-account SHA-256 verified copy-then-expunge)_. No SMTP: send is absent by omission.
+
+`mail.messages.get` splits the source: `body` is the **body only** (it used to include the headers),
+and `headers` plus the parsed `messageId`, `inReplyTo`, `references[]`, `contentType` come
+separately — threading is inspectable without the uncapped `raw` op. `mail.messages.search` takes
+`mailboxes:
+string[]` (max 20) to search a whole folder tree in one call; results carry their
+`mailbox` and a failing folder is reported instead of aborting the search.
+
+**Threaded replies.** `mail.drafts.save({account, body, replyTo:{mailbox,uid}, includeQuote?})`
+reads the parent and owns RFC 5322 itself (`src/connectors/imap/rfc822.ts`): a fresh `Message-ID` in
+the account's domain, `In-Reply-To` = the parent's Message-ID, `References` = the parent's chain
+followed by its Message-ID (omitted if the parent has neither), `Date`, `MIME-Version`, a `Re:`
+subject that is never doubled, `To` defaulting to the parent's `From`, and the parent's `text/plain`
+quoted behind an attribution line (`src/text.ts` decodes base64/quoted-printable; an html-only
+parent gets `quoteSkipped` rather than markup in the draft). Every header value derived from the
+parent is sanitised, so a crafted subject cannot inject headers. The APPEND carries `\Draft` +
+`\Seen` — that is what makes OWA/Outlook treat it as a draft in the same conversation instead of a
+new message.
+
+`draftsMailbox: auto` resolves the folder carrying the `\Drafts` special-use flag, because names
+lie: the univ-amu account has both `Brouillons` (flagged, what the client syncs) and a stale
+`Drafts` (unflagged). The op's result names the folder it used.
 
 Background connection errors (socket inactivity, server BYE, dropped tunnel) are absorbed: the
 account marks itself disconnected and reconnects on the next op, instead of taking the process down.
@@ -324,6 +354,24 @@ root's capabilities. Manage with `grants({action:"list"|"revoke", key:"fs:denops
 
 **No shell by default.** `fs.exec` is off in this deployment: it runs with the service user's full
 authority, so it can read secrets regardless of the root. Instead, code work goes through `dev`.
+
+### web (1 op) — fetch a document into a run
+
+`web.fetch({url, format?: "text"|"html", maxBytes?})` GETs one http(s) document and returns its text
+(HTML converted best-effort: no renderer, no JS, no link graph) or the raw markup. It exists so an
+agent can read a preprint or a docs page and feed it to `mistral.documents.put` without a human
+round trip.
+
+The guard is the point, in three fail-closed layers:
+
+1. **Allowlist** — only hosts in `connectors.web.allowedHosts` (`example.org`, `*.example.org`,
+   optional `:port`) are reachable, and the same list narrows `--allow-net`, so Deno enforces it
+   too.
+2. **SSRF guard** — the hostname is resolved and every address must be public: loopback, RFC1918,
+   link-local (including `169.254.169.254`), CGNAT, multicast, `fc00::/7`, `fe80::/10` and
+   IPv4-mapped-private are refused. IP literals are checked without DNS.
+3. **Redirects** are followed manually (max 3) and re-validated at every hop; bodies are capped and
+   only textual content-types are returned (a PDF is refused, not silently truncated into mojibake).
 
 ### dev (4 ops) — work on code without a shell
 
@@ -525,16 +573,19 @@ Lint and format: `deno lint src tests scripts`, `deno fmt`.
 src/server.ts              entry: config load, MCP endpoint, tools, connector wiring
 src/config.ts              config.yaml / secrets.json loading (minimal YAML subset incl. scalar lists)
 src/permissions.ts         Deno --allow-* derivation for the server and dev.try's pinned child
+src/text.ts                dependency-free codecs: base64/QP/RFC 2047, html→text
 src/security/              http.ts (gate, bans, headers), ban.ts (CIDR bans), oauth.ts (static-client AS)
 src/harness/               registry, boundary validation, worker sandbox, JSONL log, approvals, discovery
 src/guest/bootstrap.ts     injected worker prelude (handles, stub surface, error boundary)
 src/guide.ts               agent-oriented `instructions` returned at initialize
 SKILL.md                   prompt-facing contract, served by denops.skill (drift-tested)
 AGENTS.md                  repo rules for agents (incl. "keep SKILL.md current")
-src/connectors/<name>/     client.ts (host-only credentials) + manifest.ts (ops, tiers, docs)
+src/connectors/<name>/     client.ts (host-only credentials) + manifest.ts (ops, tiers, docs);
+                           imap/rfc822.ts assembles threaded drafts
 scripts/start.ts           reads config.yaml, derives Deno permissions (src/permissions.ts), runs the server
 scripts/live-supervisor.sh the only thing that decides which commit runs (restart/soak/auto-revert)
 scripts/dev_try.ts         runner behind dev.try (one op from a checkout's own registry)
+CHANGELOG.md               version-stamped history, served by denops.version (append in every commit)
 scripts/pending.ts         CLI for pending approvals
 deploy/denops.service      systemd unit for the supervisor
 tests/                     unit, mock-API, MCP smoke, security, OAuth, dev/deploy rehearsals

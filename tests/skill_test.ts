@@ -7,7 +7,8 @@ import { fsConnector } from "../src/connectors/fs/manifest.ts";
 import { gitlabConnector } from "../src/connectors/gitlab/manifest.ts";
 import { imapConnector } from "../src/connectors/imap/manifest.ts";
 import { mistralConnector } from "../src/connectors/mistral/manifest.ts";
-import type { Connector, JsonValue } from "../src/harness/types.ts";
+import { webConnector } from "../src/connectors/web/manifest.ts";
+import type { Connector } from "../src/harness/types.ts";
 
 // SKILL.md is the prompt-facing contract; it is served by the denops.skill op. This
 // test is the anti-drift gate: it fails when the doc and the code disagree, so a
@@ -51,8 +52,9 @@ async function allConnectors(): Promise<Connector[]> {
       maxConcurrentExec: 1,
     }),
     devConnector({ roots: devRoots }),
+    webConnector({ allowedHosts: ["example.org"] }),
     ...(deploy ? [deployConnector(deploy)] : []),
-    denopsConnector({ skillPath, version: "0.1.0", connectors: () => [] }),
+    denopsConnector({ skillPath, version: "0.2.0", connectors: () => [] }),
   ];
 }
 
@@ -88,7 +90,11 @@ Deno.test("SKILL.md covers every connector family and its op count", async () =>
   for (const c of connectors) {
     assertStringIncludes(skill, `**${c.id}**`, `missing crib-sheet section for ${c.id}`);
     const count = c.ops.filter((o) => o.tier !== "absent").length;
-    assertStringIncludes(skill, `${count} ops`, `missing "${count} ops" for ${c.id}`);
+    // "(1 op)" and "(4 ops)" are both fine: only the number has to match
+    assert(
+      new RegExp(`\\(${count} op(s)?\\)`).test(skill),
+      `missing "(${count} ops)" for ${c.id}`,
+    );
   }
 });
 
@@ -116,7 +122,7 @@ Deno.test("SKILL.md states the invariants the server enforces", () => {
 });
 
 Deno.test("denops.skill serves SKILL.md, optionally filtered by section", async () => {
-  const conn = denopsConnector({ skillPath, version: "0.1.0", connectors: () => ["debug", "fs"] });
+  const conn = denopsConnector({ skillPath, version: "0.2.0", connectors: () => ["debug", "fs"] });
   const client = conn.client({ config: {}, secrets: {}, log: () => {} });
   const full = await client["skill"]({}) as { content: string; bytes: number; updatedAt: string };
   assertEquals(full.content, skill);
@@ -132,6 +138,6 @@ Deno.test("denops.skill serves SKILL.md, optionally filtered by section", async 
   assert(!section.content.includes("## 6."), "filtered output keeps only matching sections");
 
   const about = await client["about"]({}) as { version: string; connectors: string[] };
-  assertEquals(about.version, "0.1.0");
+  assertEquals(about.version, "0.2.0");
   assertEquals(about.connectors, ["debug", "fs"]);
 });

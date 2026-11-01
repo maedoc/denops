@@ -560,7 +560,7 @@ Deno.test("mistral client against mock API: create library, upload document, sha
   }
 });
 
-async function mistralConn(port: number) {
+function mistralConn(port: number) {
   const conn = mistralConnector({
     apiKey: "mk-secret",
     origin: `http://127.0.0.1:${port}`,

@@ -83,7 +83,10 @@ connectors:
     #   port: 993
     #   tls: true
     #   user: me@example.org
-    #   draftsMailbox: Drafts
+    #   # auto = follow the folder's \\Drafts special-use flag (names differ per
+    #   # server and locale: Drafts, Brouillons, …); set a path to pin it
+    #   draftsMailbox: auto
+    #   messageIdDomain: example.org  # for the Message-IDs the server mints
     #   socketTimeoutMs: 300000  # drop + reconnect after this much socket inactivity (default 5 min)
     #   # password lives in secrets.json as mail.work.password
 
@@ -91,6 +94,19 @@ startup:
   # full: validate secrets and reachability of all enabled connectors, fail fast on error.
   # none: skip validation (dev only).
   validate: full
+
+# --- fetching the web (optional) ---------------------------------------------
+#  web: GET one http(s) document into a run (text, or raw html). allowedHosts is the
+#       whole security boundary: it narrows --allow-net AND gates the op, and every
+#       resolved address must be public (SSRF guard), so never list a LAN host.
+#
+# connectors:
+#   web:
+#     enabled: true
+#     allowedHosts: [arxiv.org, export.arxiv.org, "*.githubusercontent.com"]
+#     maxBytes: 262144
+#     timeoutMs: 20000
+#     userAgent: "denops/0.2 (+https://example.org)"
 
 # --- agent-assisted development (optional) -----------------------------------
 #  dev:    work on code without a shell — a project's declared argv tables

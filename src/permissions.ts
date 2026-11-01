@@ -54,6 +54,14 @@ export function derivePermissions(
         net.add(`${acc.host}:${acc.port ?? 993}`);
       }
     }
+    if (name === "web") {
+      // web.fetch is allowed to reach exactly the hosts the operator listed; Deno
+      // enforces that too, so a bug in the SSRF guard is not the only line of defence.
+      for (const host of (c.allowedHosts ?? []) as unknown[]) {
+        const h = String(host).trim();
+        if (h !== "") net.add(h.includes(":") ? h : h);
+      }
+    }
     if (name === "mistral") {
       // documents.stage writes into the staging root; signed URLs point at Azure blob
       // storage, which is a different host from the API origin.

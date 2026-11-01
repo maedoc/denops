@@ -23,6 +23,13 @@ cannot catch — review it by hand when you touch behaviour.
 House style for `SKILL.md`: keep it under ~120 lines, one crib-sheet entry per connector, concrete
 call shapes over prose, and no secrets or host-specific paths.
 
+## Keep CHANGELOG.md current (required)
+
+`CHANGELOG.md` is served by `denops.version` so a run can tell what it is talking to. Append an
+entry (newest first, `## <version> — <YYYY-MM-DD>`) in the **same commit** as any change a caller
+can observe: an op, an argument, a return shape, a tier, an error contract, the deploy loop. Bump
+`version` in `deno.json` when the entry deserves one.
+
 ## Before promoting
 
 ```bash

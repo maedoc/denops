@@ -13,6 +13,7 @@ import { createHandler, DEFAULT_MAX_BODY_BYTES, serveWithTimeouts } from "./secu
 import { agentGuide } from "./guide.ts";
 import { deployConfigFrom, deployConnector } from "./connectors/deploy/manifest.ts";
 import { devConnector, devRootsFromConfig } from "./connectors/dev/manifest.ts";
+import { webConnector, webOptionsFromConfig } from "./connectors/web/manifest.ts";
 import { derivePermissions } from "./permissions.ts";
 import { mistralTierOverride } from "./connectors/mistral/tiers.ts";
 import { denopsConnector } from "./connectors/denops/manifest.ts";
@@ -147,6 +148,14 @@ export async function buildApp(configPath: string, secretsPath: string): Promise
     );
   }
 
+  if (enabled("web")) {
+    const web = webOptionsFromConfig(config.connectors.web ?? {});
+    if (web.allowedHosts.length === 0) {
+      throw new Error("connectors.web enabled but allowedHosts is empty");
+    }
+    registry.register(webConnector(web));
+  }
+
   // dev / deploy: work on code without a shell. `dev` runs the argv tables declared
   // in config.yaml, `deploy` records intent for the supervisor (which owns
   // restart, health-probe, soak and auto-revert).
@@ -185,10 +194,14 @@ export async function buildApp(configPath: string, secretsPath: string): Promise
   registry.register(
     denopsConnector({
       skillPath: "SKILL.md",
-      version: "0.1.0",
+      version: "0.2.0",
       // the supervisor exports the commit it checked out
       commit: Deno.env.get("DENOPS_COMMIT") ?? undefined,
       connectors: () => registry.list().map((c) => c.id),
+      dataDir: config.dataDir,
+      changelogPath: "CHANGELOG.md",
+      // read lazily: the harness is created before this registry is registered
+      budget: () => harness.budgetSnapshot() as unknown as Record<string, JsonValue>,
     }),
   );
 
@@ -205,7 +218,8 @@ export async function buildApp(configPath: string, secretsPath: string): Promise
       password: String(
         ((mailSecrets[String(a.id)] ?? {}) as Record<string, unknown>).password ?? "",
       ),
-      draftsMailbox: String(a.draftsMailbox ?? "Drafts"),
+      draftsMailbox: String(a.draftsMailbox ?? "auto"),
+      ...(a.messageIdDomain === undefined ? {} : { messageIdDomain: String(a.messageIdDomain) }),
       ...(a.socketTimeoutMs === undefined ? {} : { socketTimeoutMs: Number(a.socketTimeoutMs) }),
     }));
     if (accounts.length === 0) throw new Error("imap enabled but no accounts configured");
