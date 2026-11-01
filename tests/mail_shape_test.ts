@@ -68,7 +68,7 @@ Deno.test("messages.list summary keeps wrapper keys and trims envelopes", () => 
 Deno.test("messages.search summary carries envelopes with the uids", () => {
   const searched = {
     mailbox: "INBOX",
-    uids: [11],
+    count: 1,
     messages: [
       {
         uid: 11,
@@ -83,7 +83,7 @@ Deno.test("messages.search summary carries envelopes with the uids", () => {
   };
   assertEquals(shapeResult(searched, MAIL_SHAPE["messages.search"], {}), {
     mailbox: "INBOX",
-    uids: [11],
+    count: 1,
     messages: [{
       uid: 11,
       subject: "hello",

@@ -92,6 +92,24 @@ export function arr(
 
 // optArr validates an optional array field: absent is fine, present must match
 // itemCheck for every entry.
+// idArg accepts a GitLab-style identifier: a number or a non-empty string (paths
+// like "group/sub" and numeric ids are both valid, and ops disagreed on which).
+export function idArg(field: string): (args: unknown) => string | null {
+  return (args) => {
+    if (!isRecord(args)) return `${field}: expected object args`;
+    const v = args[field];
+    if (typeof v === "number") {
+      if (!Number.isFinite(v) || v <= 0) return `${field}: expected a positive number`;
+      return null;
+    }
+    if (typeof v === "string") {
+      if (v.length === 0 || v.length > 255) return `${field}: expected 1-255 chars`;
+      return null;
+    }
+    return `${field}: expected string or number`;
+  };
+}
+
 export function optArr(
   field: string,
   itemCheck: (v: unknown, i: number) => string | null,

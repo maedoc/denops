@@ -116,14 +116,19 @@ async function resume(
   harness.setGrantLookup(fsGrantKey, (key) => grants.isGranted(key));
 
   const replay = {
-    resultsByOpSeq: new Map<string, JsonValue>(),
-    approvedOps: new Set([pending.op]),
+    resultsBySeq: new Map<number, { op: string; result: JsonValue }>(),
+    approvedSeqs: new Set<number>([pending.seq ?? 0]),
   };
   for (const l of lines) {
-    if (isOpEntry(l) && l.status === "ok" && l.result !== undefined) {
-      replay.resultsByOpSeq.set(l.op, l.result);
-    }
+    if (!isOpEntry(l) || l.status !== "ok" || l.call === undefined) continue;
+    const result = l.result ??
+      (l.resultSummary?.storedAt
+        ? await RunLog.readOpResult(config.dataDir ?? "data", pending.runId, l.seq)
+        : undefined);
+    if (result === undefined) continue;
+    replay.resultsBySeq.set(l.call, { op: l.op, result });
   }
+  replay.approvedSeqs.delete(0);
   await store.remove(pendingId);
   const grantKey = fsGrantKey(pending.op, pending.args);
   if (grantKey) {

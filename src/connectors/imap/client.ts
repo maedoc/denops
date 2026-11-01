@@ -161,7 +161,7 @@ export class ImapAccountClient {
           }
           messages.sort(byDateDesc);
         }
-        return { mailbox, uids, messages };
+        return { mailbox, count: messages.length, messages };
       } finally {
         lock.release();
       }

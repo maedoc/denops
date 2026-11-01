@@ -57,7 +57,7 @@ async function runCode(
   harness: Harness,
   dir: string,
   code: string,
-  replay?: { grantKeys?: Set<string>; approvedOps?: Set<string> },
+  replay?: { grantKeys?: Set<string>; approvedSeqs?: Set<number> },
 ) {
   const runId = crypto.randomUUID();
   const log = new RunLog(dir, runId, budgets.maxLogBytes);
@@ -68,8 +68,8 @@ async function runCode(
     log,
     replay
       ? {
-        resultsByOpSeq: new Map(),
-        approvedOps: replay.approvedOps ?? new Set(),
+        resultsBySeq: new Map<number, { op: string; result: JsonValue }>(),
+        approvedSeqs: replay.approvedSeqs ?? new Set<number>(),
         grantKeys: replay.grantKeys,
       }
       : undefined,

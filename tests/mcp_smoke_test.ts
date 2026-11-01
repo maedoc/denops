@@ -75,7 +75,9 @@ Deno.test("MCP smoke: initialize, tools/list, execute echo via streamable HTTP",
     const tools = await post({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
     const toolsRes = await parseSse(tools);
     const names = (toolsRes.result as { tools: Array<{ name: string }> }).tools.map((t) => t.name);
-    assertEquals(names.sort(), ["approve", "execute", "grants", "search"]);
+    // `grants` is only advertised when a grant-keyed connector (fs) is enabled; this
+    // deployment has debug+gitlab+mail.
+    assertEquals(names.sort(), ["approve", "execute", "search"]);
 
     const call = await post({
       jsonrpc: "2.0",

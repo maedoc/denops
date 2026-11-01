@@ -9,6 +9,8 @@ export interface PendingApproval {
   op: string;
   args: JsonValue;
   summary: string;
+  /** 1-based call sequence of this op inside the run (matches the op log). */
+  seq?: number;
 }
 
 export function summarizeOp(op: string, args: JsonValue): string {
@@ -79,8 +81,14 @@ export interface RunOutcome {
 }
 
 export interface ReplayState {
-  resultsByOpSeq: Map<string, JsonValue>;
-  approvedOps: Set<string>;
+  /**
+   * Recorded results keyed by the op's 1-based call sequence within the run (the
+   * same number the op log stores), NOT by op name: a run that calls
+   * issues.create three times has three separate calls to replay.
+   */
+  resultsBySeq: Map<number, { op: string; result: JsonValue }>;
+  /** Call sequences the human approved; every other approval op re-suspends. */
+  approvedSeqs: Set<number>;
   runState?: RunState;
   // grantKeys are root-grant keys (e.g. "fs:myrepo") approved out-of-band;
   // ops touching them skip the approval tier even in fresh runs.
@@ -135,10 +143,11 @@ export class Harness {
   async run(runId: string, code: string, log: RunLog, replay?: ReplayState): Promise<RunOutcome> {
     const started = Date.now();
     let opCount = 0;
+    let opSeq = 0;
     let awaiting: PendingApproval | null = null;
     const runState = replay?.runState ?? this.newRunState();
     if (replay) {
-      for (const [op, result] of replay.resultsByOpSeq) {
+      for (const { op, result } of replay.resultsBySeq.values()) {
         if (op === "mistral.libraries.create") {
           const id = (result as { id?: unknown })?.id;
           if (typeof id === "string") runState.createdLibraryIds.add(id);
@@ -253,14 +262,21 @@ export class Harness {
       }
       opCount += 1;
 
+      // 1-based call sequence: the identity of *this* op call within the run. Every
+      // dispatch logs exactly one op entry, so it matches the log's seq.
+      opSeq += 1;
+
       const effectiveTier = this.tierOverride?.(op, args, runState) ?? spec.tier;
       const grantKey = this.grantKeyOf?.(op, args) ?? null;
       const granted = grantKey !== null &&
         ((replay?.grantKeys?.has(grantKey)) || this.isGranted?.(grantKey));
-      if (effectiveTier === "approval" && !(replay && replay.approvedOps.has(op)) && !granted) {
+      // Approval is per call, not per op name: approving one issues.create must not
+      // silently approve the next one in the same run.
+      const approved = replay?.approvedSeqs.has(opSeq) ?? false;
+      if (effectiveTier === "approval" && !approved && !granted) {
         const pendingId = crypto.randomUUID();
-        awaiting = { pendingId, runId, op, args, summary: summarizeOp(op, args) };
-        await log.recordOp({ op, args, status: "pending" });
+        awaiting = { pendingId, runId, op, args, summary: summarizeOp(op, args), seq: opSeq };
+        await log.recordOp({ op, args, status: "pending", call: opSeq });
         await log.recordFinal({ status: "awaiting_approval", pendingId });
         finish({ status: "awaiting_approval", pending: awaiting });
         reply(callId, { pending: true, pendingId, op, args });
@@ -268,9 +284,9 @@ export class Harness {
       }
 
       if (replay) {
-        const prior = replay.resultsByOpSeq.get(op);
-        if (prior !== undefined) {
-          reply(callId, { result: prior });
+        const prior = replay.resultsBySeq.get(opSeq);
+        if (prior && prior.op === op) {
+          reply(callId, { result: prior.result });
           return;
         }
       }
@@ -279,15 +295,22 @@ export class Harness {
         const result = await method(args);
         const bytes = serializedSize(result);
         if (bytes > this.budgets.maxOpResultBytes) {
-          await log.recordOp({ op, status: "error", error: `result ${bytes}B exceeds cap` });
+          await log.recordOp({
+            op,
+            status: "error",
+            error: `result ${bytes}B exceeds cap`,
+            call: opSeq,
+          });
           reply(callId, {
             error:
               `op ${op} result is ${bytes} bytes, exceeding the per-op cap of ${this.budgets.maxOpResultBytes}. Narrow the query.`,
           });
           return;
         }
-        await log.recordOp({ op, args, status: "ok", result });
-        if (replay) replay.resultsByOpSeq.set(op, result);
+        await log.recordOp({ op, args, status: "ok", result, call: opSeq });
+        // Keep the replayed map current so a later suspension (a second approval
+        // op) replays this call instead of executing it again.
+        if (replay) replay.resultsBySeq.set(opSeq, { op, result });
         if (op === "mistral.libraries.create") {
           const id = (result as { id?: unknown })?.id;
           if (typeof id === "string") runState.createdLibraryIds.add(id);
@@ -295,7 +318,7 @@ export class Harness {
         reply(callId, { result });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        await log.recordOp({ op, status: "error", error: msg });
+        await log.recordOp({ op, status: "error", error: msg, call: opSeq });
         reply(callId, { error: `op ${op} failed: ${msg}` });
       }
     };

@@ -1,5 +1,6 @@
 import {
   compose,
+  idArg,
   num,
   oneOf,
   optArr,
@@ -36,7 +37,7 @@ export function gitlabConnector(
         name: "gitlab.projects.get",
         tier: "open",
         doc: "Get one project. args: { id: string|number } (path with / allowed, e.g. 'group/sub')",
-        argSchema: compose(rejectUnknown(), str("id")),
+        argSchema: compose(rejectUnknown(), idArg("id")),
       },
       {
         name: "gitlab.projects.search",
@@ -89,7 +90,12 @@ export function gitlabConnector(
         tier: "open",
         doc:
           "Get a file's metadata/content from the default branch. args: { projectId, filePath, ref? }",
-        argSchema: compose(rejectUnknown(), str("projectId"), str("filePath"), optStr("ref", 200)),
+        argSchema: compose(
+          rejectUnknown(),
+          idArg("projectId"),
+          str("filePath"),
+          optStr("ref", 200),
+        ),
       },
       {
         name: "gitlab.repository.tree.list",
@@ -97,7 +103,7 @@ export function gitlabConnector(
         doc: "List repository tree. args: { projectId, path?, ref?, perPage?, page? }",
         argSchema: compose(
           rejectUnknown(),
-          str("projectId"),
+          idArg("projectId"),
           optStr("path", 1000),
           optStr("ref", 200),
           optNum("perPage"),
@@ -110,7 +116,7 @@ export function gitlabConnector(
         doc: "List commits. args: { projectId, ref?, perPage?, page? }",
         argSchema: compose(
           rejectUnknown(),
-          str("projectId"),
+          idArg("projectId"),
           optStr("ref", 200),
           optNum("perPage"),
           optNum("page"),
@@ -120,7 +126,7 @@ export function gitlabConnector(
         name: "gitlab.repository.branches.list",
         tier: "open",
         doc: "List branches. args: { projectId, search? }",
-        argSchema: compose(rejectUnknown(), str("projectId"), optStr("search", 200)),
+        argSchema: compose(rejectUnknown(), idArg("projectId"), optStr("search", 200)),
       },
       {
         name: "gitlab.issues.list",
@@ -128,7 +134,7 @@ export function gitlabConnector(
         doc: "List issues of a project. args: { projectId, state?, search?, perPage?, page? }",
         argSchema: compose(
           rejectUnknown(),
-          str("projectId"),
+          idArg("projectId"),
           oneOf("state", ["opened", "closed", "all"]),
           optStr("search", 200),
           optNum("perPage"),
@@ -139,7 +145,7 @@ export function gitlabConnector(
         name: "gitlab.issues.get",
         tier: "open",
         doc: "Get one issue. args: { projectId, issueIid: number }",
-        argSchema: compose(rejectUnknown(), str("projectId"), num("issueIid")),
+        argSchema: compose(rejectUnknown(), idArg("projectId"), num("issueIid")),
       },
       {
         name: "gitlab.issues.notes.list",
@@ -148,7 +154,7 @@ export function gitlabConnector(
           "List notes/comments on an issue. args: { projectId, issueIid: number, perPage?, page? }",
         argSchema: compose(
           rejectUnknown(),
-          str("projectId"),
+          idArg("projectId"),
           num("issueIid"),
           optNum("perPage"),
           optNum("page"),
@@ -160,7 +166,7 @@ export function gitlabConnector(
         doc: "List merge requests. args: { projectId, state?, search?, perPage?, page? }",
         argSchema: compose(
           rejectUnknown(),
-          str("projectId"),
+          idArg("projectId"),
           oneOf("state", ["opened", "closed", "merged", "all"]),
           optStr("search", 200),
           optNum("perPage"),
@@ -171,13 +177,13 @@ export function gitlabConnector(
         name: "gitlab.mergeRequests.get",
         tier: "open",
         doc: "Get one MR. args: { projectId, mrIid: number }",
-        argSchema: compose(rejectUnknown(), str("projectId"), num("mrIid")),
+        argSchema: compose(rejectUnknown(), idArg("projectId"), num("mrIid")),
       },
       {
         name: "gitlab.mergeRequests.changes.get",
         tier: "open",
         doc: "Get MR diff/changes. args: { projectId, mrIid: number }",
-        argSchema: compose(rejectUnknown(), str("projectId"), num("mrIid")),
+        argSchema: compose(rejectUnknown(), idArg("projectId"), num("mrIid")),
       },
       {
         name: "gitlab.issues.create",
@@ -187,7 +193,7 @@ export function gitlabConnector(
           "Returns an issue summary.",
         argSchema: compose(
           rejectUnknown(),
-          str("projectId"),
+          idArg("projectId"),
           str("title"),
           optStr("description", 100000),
           optArr(
@@ -225,7 +231,7 @@ export function gitlabConnector(
           "Returns an issue summary.",
         argSchema: compose(
           rejectUnknown(),
-          str("projectId"),
+          idArg("projectId"),
           num("issueIid"),
           optStr("title", 500),
           optStr("description", 100000),
@@ -261,7 +267,7 @@ export function gitlabConnector(
         name: "gitlab.issues.notes.create",
         tier: "approval",
         doc: "Comment on an issue. args: { projectId, issueIid, body }",
-        argSchema: compose(rejectUnknown(), str("projectId"), num("issueIid"), str("body")),
+        argSchema: compose(rejectUnknown(), idArg("projectId"), num("issueIid"), str("body")),
       },
       {
         name: "gitlab.mergeRequests.create",
@@ -270,7 +276,7 @@ export function gitlabConnector(
           "Create a merge request. args: { projectId, sourceBranch, targetBranch, title, description? }",
         argSchema: compose(
           rejectUnknown(),
-          str("projectId"),
+          idArg("projectId"),
           str("sourceBranch"),
           str("targetBranch"),
           str("title"),
@@ -281,7 +287,7 @@ export function gitlabConnector(
         name: "gitlab.mergeRequests.comment",
         tier: "approval",
         doc: "Comment on a merge request. args: { projectId, mrIid, body }",
-        argSchema: compose(rejectUnknown(), str("projectId"), num("mrIid"), str("body")),
+        argSchema: compose(rejectUnknown(), idArg("projectId"), num("mrIid"), str("body")),
       },
       {
         name: "gitlab.repository.files.create",
@@ -290,7 +296,7 @@ export function gitlabConnector(
           "Create or update a file via a single commit. args: { projectId, filePath, branch, content, commitMessage }",
         argSchema: compose(
           rejectUnknown(),
-          str("projectId"),
+          idArg("projectId"),
           str("filePath"),
           str("branch"),
           str("content"),
@@ -315,10 +321,17 @@ export function gitlabConnector(
         argSchema: compose(rejectUnknown()),
       },
       {
-        name: "gitlab.users.search",
+        name: "gitlab.users.get",
         tier: "open",
         doc:
-          "Search users (needed for assignee_ids). args: { search, perPage?, page? }. Returns a user summary.",
+          "Look up one user by exact username (use this for assignee_ids: users.search is fuzzy and can return near-matches). args: { username }. Returns a user summary or null.",
+        argSchema: compose(rejectUnknown(), str("username")),
+      },
+      {
+        name: "gitlab.users.search",
+        tier: "open",
+        doc: "Fuzzy user search by name/username (substring match, so it returns near-matches). " +
+          "For assignment prefer gitlab.users.get({ username }) which is exact. args: { search, perPage?, page? }. Returns user summaries.",
         argSchema: compose(
           rejectUnknown(),
           str("search"),
@@ -412,10 +425,15 @@ export function gitlabConnector(
           );
         },
         "issues.list": (a) => {
-          const r = a as { projectId: string };
+          const r = a as { projectId: string | number; state?: string };
           return client.get(
-            `/projects/${enc(r.projectId)}/issues`,
-            pick(a, ["state", "search", "perPage", "page"]),
+            `/projects/${enc(String(r.projectId))}/issues`,
+            {
+              ...pick(a, ["search", "perPage", "page"]),
+              // GitLab returns every state when `state` is omitted; an agent almost
+              // always wants the open ones first, and "all" is available explicitly.
+              state: String(r.state ?? "opened"),
+            },
           );
         },
         "issues.get": (a) => {
@@ -525,6 +543,12 @@ export function gitlabConnector(
         },
         "users.current": () => client.get("/user"),
         "users.search": (a) => client.get("/users", pick(a, ["search", "perPage", "page"])),
+        "users.get": async (a) => {
+          const users = await client.get("/users", {
+            username: String((a as { username: string }).username),
+          });
+          return Array.isArray(users) ? (users[0] ?? null) : users;
+        },
         "groups.list": (a) => client.get("/groups", pick(a, ["search", "perPage", "page"])),
       }, GITLAB_SHAPE),
     validateStartup: async () => {
@@ -614,6 +638,7 @@ const GITLAB_SHAPE: Record<string, string[]> = {
   "groups.list": ["id", "name", "full_path", "visibility", "web_url"],
   "users.current": ["id", "username", "name", "state", "web_url"],
   "users.search": ["id", "username", "name", "state", "web_url"],
+  "users.get": ["id", "username", "name", "state", "web_url"],
 };
 
 // Paths are relative to the pinned API root: no scheme, no host, no traversal.

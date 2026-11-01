@@ -115,8 +115,8 @@ export function imapConnector(deps: ImapConnectorDeps): Connector {
         tier: "open",
         doc:
           "Server-side IMAP SEARCH. args: { account, mailbox, query: object, limit? } e.g. query { subject: 'invoice', seen: false }. " +
-          "Returns { mailbox, uids: number[], messages: [{ uid, subject, from, date, flags }] } — envelopes are " +
-          "included, so no second list-and-filter pass is needed.",
+          "Returns { mailbox, count, messages: [{ uid, subject, from, date, flags }] } — envelopes are " +
+          "included (each with its uid), so no second list-and-filter pass is needed.",
         argSchema: compose(rejectUnknown(), acc, str("mailbox"), (a) => {
           if (typeof a !== "object" || a === null || Array.isArray(a)) {
             return "query: expected object";
@@ -233,7 +233,7 @@ export const MAIL_SHAPE: Record<string, string[]> = {
   ],
   "messages.search": [
     "mailbox",
-    "uids",
+    "count",
     "messages.uid",
     "messages.subject",
     "messages.from",

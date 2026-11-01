@@ -190,12 +190,12 @@ Deno.test("approval tier suspends run and approve resumes via replay", async () 
 
     const lines = await RunLog.read(dir, runId);
     const replay = {
-      resultsByOpSeq: new Map<string, JsonValue>(),
-      approvedOps: new Set([out1.pending.op]),
+      resultsBySeq: new Map<number, { op: string; result: JsonValue }>(),
+      approvedSeqs: new Set<number>([out1.pending.seq!]),
     };
     for (const l of lines) {
       if ("seq" in l && "op" in l && l.status === "ok" && l.result !== undefined) {
-        replay.resultsByOpSeq.set(String(l.op), l.result);
+        replay.resultsBySeq.set(l.seq, { op: l.op, result: l.result });
       }
     }
     const log2 = new RunLog(dir, runId, budgets.maxLogBytes);
@@ -224,6 +224,71 @@ Deno.test("reject terminates the run", async () => {
     const p = approvals.decide(out.pending.pendingId, "reject");
     assertEquals(p?.op, "debug.gated");
     assertEquals(approvals.get(out.pending.pendingId), undefined);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+// Regression: replay used to be keyed by op name, so a run with three approval
+// ops replayed the *first* recorded result for all of them — the caller saw three
+// identical payloads and the later ops never executed live.
+Deno.test("approval replay is per call: each approval op executes once, in order", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const { harness } = setup();
+    const runId = "multi-approval";
+    const code = `
+      const first = await debug.echo({ step: 0 });
+      const a = await debug.gated({ step: 1 });
+      const b = await debug.gated({ step: 2 });
+      const c = await debug.gated({ step: 3 });
+      return { first, a, b, c };
+    `;
+    const log = new RunLog(dir, runId, budgets.maxLogBytes);
+    await log.init({ runId, code, connectors: ["debug"] });
+
+    const run1 = await harness.run(runId, code, log);
+    assertEquals(run1.status, "awaiting_approval");
+    assertEquals(run1.pending?.seq, 2, "the first gated call is the 2nd op");
+
+    // Approve #1 -> must re-suspend on #2, not return #1's result again.
+    const approved = new Set<number>();
+    const approveAndReplay = async (call: number) => {
+      approved.add(call);
+      const lines = await RunLog.read(dir, runId);
+      const replay = {
+        resultsBySeq: new Map<number, { op: string; result: JsonValue }>(),
+        approvedSeqs: new Set<number>(approved),
+      };
+      for (const l of lines) {
+        if ("call" in l && "op" in l && l.status === "ok" && l.result !== undefined) {
+          replay.resultsBySeq.set(l.call as number, { op: l.op, result: l.result });
+        }
+      }
+      return await harness.run(runId, code, new RunLog(dir, runId, budgets.maxLogBytes), replay);
+    };
+
+    const run2 = await approveAndReplay(run1.pending!.seq!);
+    assertEquals(run2.status, "awaiting_approval", "second gated call must still ask");
+    assertEquals(run2.pending?.seq, 3);
+    assertEquals((run2.pending?.args as { step: number }).step, 2);
+
+    const run3 = await approveAndReplay(run2.pending!.seq!);
+    assertEquals(run3.status, "awaiting_approval");
+    assertEquals(run3.pending?.seq, 4);
+
+    const run4 = await approveAndReplay(run3.pending!.seq!);
+    assertEquals(run4.status, "completed");
+    const res = run4.result as {
+      first: { echoed: unknown };
+      a: { args: { step: number } };
+      b: { args: { step: number } };
+      c: { args: { step: number } };
+    };
+    assertEquals(res.first, { echoed: { step: 0 } }, "the open op is replayed, not re-run");
+    assertEquals(res.a.args, { step: 1 });
+    assertEquals(res.b.args, { step: 2 });
+    assertEquals(res.c.args, { step: 3 });
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
@@ -272,7 +337,10 @@ Deno.test("search finds ops by fuzzy query and scopes by connector", () => {
   assertStringIncludes(scoped, "debug.gated");
   assertStringIncludes(scoped, "[approval]");
   const none = search(registry, "", "gitlab");
-  assertStringIncludes(none, "no matching ops");
+  assertStringIncludes(none, "no ops matched");
+  // "no match" now shows the inventory instead of a dead end; "*" lists everything
+  assertStringIncludes(search(registry, "*"), "op(s) registered");
+  assertStringIncludes(search(registry, "*", "debug"), "debug.echo");
 });
 
 // A caller that only ever saw "20 op(s)" concluded the server had two ops. Always
@@ -313,8 +381,11 @@ Deno.test("search reports registry size and truncation, never implies a small re
   assertStringIncludes(scoped, "15 op(s) in alpha");
 
   const none = search(registry, "zzz");
-  assertStringIncludes(none, "no matching ops");
+  assertStringIncludes(none, 'no ops matched "zzz"');
   assertStringIncludes(none, "30 op(s) registered");
+  assertStringIncludes(none, "alpha.op0", "a miss still shows the inventory");
+  // wildcards are listing requests
+  assertStringIncludes(search(registry, "*"), "showing 20 of 30");
 });
 
 Deno.test("op log records manifest, ops and final entry", async () => {

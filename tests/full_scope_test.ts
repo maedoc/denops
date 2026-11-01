@@ -217,12 +217,12 @@ Deno.test("replay after restart: log-driven resume serves prior ops and runs app
     const manifest = lines.find(isManifest);
     assert(manifest?.code);
     const replay = {
-      resultsByOpSeq: new Map<string, JsonValue>(),
-      approvedOps: new Set([out1.pending!.op]),
+      resultsBySeq: new Map<number, { op: string; result: JsonValue }>(),
+      approvedSeqs: new Set<number>([out1.pending!.seq!]),
     };
     for (const l of lines) {
       if (isOpEntry(l) && l.status === "ok" && l.result !== undefined) {
-        replay.resultsByOpSeq.set(l.op, l.result);
+        replay.resultsBySeq.set(l.call!, { op: l.op, result: l.result });
       }
     }
     const log2 = new RunLog(dir, runId, budgets.maxLogBytes);

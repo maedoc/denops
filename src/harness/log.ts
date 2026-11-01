@@ -16,6 +16,12 @@ export interface OpLogEntry {
   args?: JsonValue;
   argsSummary?: { bytes: number; sha256: string };
   status: "ok" | "error" | "pending" | "approved" | "rejected";
+  /**
+   * 1-based dispatch index of the op call within the run. Stable across replays
+   * (the guest code is deterministic), unlike `seq`, which also counts approval
+   * marker entries. Replay keys on this.
+   */
+  call?: number;
   result?: JsonValue;
   resultSummary?: { bytes: number; sha256: string; storedAt?: string };
   error?: string;
@@ -83,7 +89,9 @@ export class RunLog {
     this.bytesWritten += text.length;
   }
 
-  async recordOp(entry: Omit<OpLogEntry, "seq" | "ts"> & { args?: JsonValue }): Promise<number> {
+  async recordOp(
+    entry: Omit<OpLogEntry, "seq" | "ts" | "call"> & { args?: JsonValue; call?: number },
+  ): Promise<number> {
     this.seq += 1;
     const seq = this.seq;
     let args = entry.args;
@@ -114,6 +122,7 @@ export class RunLog {
     await this.append({
       seq,
       ts: new Date().toISOString(),
+      ...(entry.call !== undefined ? { call: entry.call } : {}),
       op: entry.op,
       ...(args !== undefined ? { args } : {}),
       ...(argsSummary ? { argsSummary } : {}),

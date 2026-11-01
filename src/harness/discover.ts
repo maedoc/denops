@@ -55,7 +55,10 @@ const STOPWORDS = new Set([
 export function search(registry: Registry, query: string, connector?: string): string {
   const q = query.trim().toLowerCase();
   const raw = q.split(/\s+/).filter(Boolean);
-  const tokens = raw.filter((t) => !STOPWORDS.has(t));
+  // Wildcards and punctuation-only tokens ("*", "?", "all*") mean "everything".
+  const tokens = raw
+    .map((t) => t.replace(/[*?]+/g, ""))
+    .filter((t) => t !== "" && !STOPWORDS.has(t));
   const everything = registry.index();
   const all = everything.filter((e) => !connector || e.name.startsWith(`${connector}.`));
   const matched = all
@@ -77,12 +80,16 @@ export function search(registry: Registry, query: string, connector?: string): s
     return line;
   });
   if (matched.length === 0) {
-    // Say how big the registry actually is: "no matching ops" alone reads as
-    // "this server has no ops", which is how a caller concluded a 35-op server
-    // exposed two.
-    return `no matching ops${connector ? ` in ${connector}` : ""}: ${
+    // A dead end invites the caller to conclude the registry is empty. Show the
+    // inventory instead, so one call is always enough to see what exists.
+    const listing = all.slice(0, MAX_OPS).map((e) => {
+      let line = `${e.name} ${e.tier} — ${e.doc}`;
+      if (line.length > MAX_CHARS_PER_OP) line = line.slice(0, MAX_CHARS_PER_OP) + "…";
+      return line;
+    });
+    return `no ops matched "${query}"${connector ? ` in ${connector}` : ""}; ${
       describeSize(all, connector)
-    }.`;
+    }, showing ${listing.length}:\n${listing.join("\n")}`;
   }
   const header = tokens.length === 0
     ? `${describeSize(all, connector)}: showing ${scored.length}${

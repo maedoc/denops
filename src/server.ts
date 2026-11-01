@@ -242,8 +242,14 @@ export function registerTools(app: AppContext, server: McpServer): void {
   server.registerTool(
     "execute",
     {
-      description:
-        "Run one JavaScript async function body in a fresh sandboxed worker (no network/fs/env; connector handles like gitlab.*, mistral.*, mail.* call authenticated host-side clients). Return a JSON-serializable value. Approval-tier ops suspend the run and return { status: 'awaiting_approval', pendingId, op, summary, args } — summary says in plain words what will be executed; resume with the approve tool.",
+      description: (() => {
+        // Advertise the handle families this deployment actually has: naming
+        // connectors that are not enabled sends the model chasing 404s.
+        const families = app.registry.list().map((c) => `${c.id}.*`).join(", ");
+        return `Run one JavaScript async function body in a fresh sandboxed worker (no network/fs/env; connector handles ${
+          families || "none"
+        } call authenticated host-side clients; api.search/api.describe list the ops). Return a JSON-serializable value. Approval-tier ops suspend the run and return { status: 'awaiting_approval', pendingId, op, summary, args } — summary says in plain words what will be executed; resume with the approve tool, which re-suspends on any further approval op.`;
+      })(),
       inputSchema: { code: z.string(), description: z.string().optional() },
     },
     async ({ code }: { code: string; description?: string }) => {
@@ -262,6 +268,7 @@ export function registerTools(app: AppContext, server: McpServer): void {
               pendingId: outcome.pending.pendingId,
               runId,
               op: outcome.pending.op,
+              seq: outcome.pending.seq,
               summary: outcome.pending.summary,
               args: outcome.pending.args,
               note:
@@ -323,13 +330,14 @@ export function registerTools(app: AppContext, server: McpServer): void {
           await new RunLog(app.dataDir, pending.runId, app.budgets.maxLogBytes).recordOp({
             op: pending.op,
             status: "approved",
+            call: pending.seq,
           });
           console.error(`[denops] granted root ${grantKey} (approved ${pending.op})`);
         }
       }
       if (decision === "reject") {
         const log = new RunLog(app.dataDir, pending.runId, app.budgets.maxLogBytes);
-        await log.recordOp({ op: pending.op, status: "rejected" });
+        await log.recordOp({ op: pending.op, status: "rejected", call: pending.seq });
         await log.recordFinal({ status: "rejected" });
         return {
           content: [{
@@ -348,14 +356,27 @@ export function registerTools(app: AppContext, server: McpServer): void {
           }],
         };
       }
+      // Replay is keyed by call sequence (log seq), so each op call is distinct:
+      // three issues.create calls are three entries, not one shared result.
       const replay = {
-        resultsByOpSeq: new Map<string, JsonValue>(),
-        approvedOps: new Set([pending.op]),
+        resultsBySeq: new Map<number, { op: string; result: JsonValue }>(),
+        // Every call approved so far in this run (marker entries carry the call
+        // index), plus the one being approved now.
+        approvedSeqs: new Set<number>(
+          lines
+            .filter((l) => isOpEntry(l) && l.status === "approved" && l.call !== undefined)
+            .map((l) => (l as { call: number }).call),
+        ),
       };
+      if (pending.seq !== undefined) replay.approvedSeqs.add(pending.seq);
       for (const l of lines) {
-        if (isOpEntry(l) && l.status === "ok" && l.result !== undefined) {
-          replay.resultsByOpSeq.set(l.op, l.result);
-        }
+        if (!isOpEntry(l) || l.status !== "ok" || l.call === undefined) continue;
+        const result = l.result ??
+          (l.resultSummary?.storedAt
+            ? await RunLog.readOpResult(app.dataDir, pending.runId, l.seq)
+            : undefined);
+        if (result === undefined) continue;
+        replay.resultsBySeq.set(l.call, { op: l.op, result });
       }
       const log = new RunLog(app.dataDir, pending.runId, app.budgets.maxLogBytes);
       const outcome = await app.harness.run(pending.runId, manifest.code, log, replay);
@@ -398,37 +419,42 @@ export function createMcpServer(app: AppContext): McpServer {
     }),
   });
   registerTools(app, server);
-  server.registerTool(
-    "grants",
-    {
-      description:
-        "List or revoke root grants. Approving an fs.* op on a root grants it; later fs.* ops on that root run without further approval. args: { action: 'list' | 'revoke', key? } (key like 'fs:myrepo', required for revoke)",
-      inputSchema: {
-        action: z.enum(["list", "revoke"]),
-        key: z.string().optional(),
+  // `grants` only means anything when a grant-keyed connector (fs) is enabled;
+  // advertising it otherwise invites calls that can only return "[]".
+  const hasGrantKeyedConnector = app.registry.list().some((c) => c.id === "fs");
+  if (hasGrantKeyedConnector) {
+    server.registerTool(
+      "grants",
+      {
+        description:
+          "List or revoke root grants. Approving an fs.* op on a root grants it; later fs.* ops on that root run without further approval. args: { action: 'list' | 'revoke', key? } (key like 'fs:myrepo', required for revoke)",
+        inputSchema: {
+          action: z.enum(["list", "revoke"]),
+          key: z.string().optional(),
+        },
       },
-    },
-    async ({ action, key }: { action: "list" | "revoke"; key?: string }) => {
-      if (action === "list") {
+      async ({ action, key }: { action: "list" | "revoke"; key?: string }) => {
+        if (action === "list") {
+          return {
+            content: [{ type: "text", text: JSON.stringify({ grants: app.grants.list() }) }],
+          };
+        }
+        if (!key) {
+          return {
+            content: [{ type: "text", text: JSON.stringify({ error: "key required for revoke" }) }],
+          };
+        }
+        const revoked = await app.grants.revoke(key);
+        console.error(`[denops] ${revoked ? "revoked" : "no such"} root grant ${key}`);
         return {
-          content: [{ type: "text", text: JSON.stringify({ grants: app.grants.list() }) }],
+          content: [{
+            type: "text",
+            text: JSON.stringify({ revoked, key, grants: app.grants.list() }),
+          }],
         };
-      }
-      if (!key) {
-        return {
-          content: [{ type: "text", text: JSON.stringify({ error: "key required for revoke" }) }],
-        };
-      }
-      const revoked = await app.grants.revoke(key);
-      console.error(`[denops] ${revoked ? "revoked" : "no such"} root grant ${key}`);
-      return {
-        content: [{
-          type: "text",
-          text: JSON.stringify({ revoked, key, grants: app.grants.list() }),
-        }],
-      };
-    },
-  );
+      },
+    );
+  }
   return server;
 }
 

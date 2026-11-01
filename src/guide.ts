@@ -20,7 +20,8 @@ TOOLS
 - search(query, connector?) — find ops. api.search inside execute is equivalent.
 - execute(code, description?) — run one JavaScript async function BODY in a sandbox.
 - approve(pendingId, "approve" | "reject") — resolve an approval-tier op.
-- grants(action, key?) — list/revoke persistent fs root grants.
+- grants(action, key?) — list/revoke persistent fs root grants (only present when
+  the fs connector is enabled).
 
 HOW TO CALL OPS
 Write the body of an async function; it may use \`return\` and \`await\`:

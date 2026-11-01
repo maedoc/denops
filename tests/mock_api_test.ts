@@ -335,6 +335,69 @@ Deno.test("gitlab.get / gitlab.mutate cover uncatalogued endpoints", async () =>
   }
 });
 
+// Feedback from a live client: users.search is fuzzy (a name substring matched a
+// placeholder account), issues.list returned every state, and projectId types
+// disagreed between ops.
+Deno.test("gitlab: exact user lookup, issue-state default, id types", async () => {
+  const recorded: RecordedReq[] = [];
+  const srv = mockServer({
+    "GET /api/v4/users": (r) => ({
+      body: r.path.includes("username=woodman")
+        ? [{ id: 13, username: "woodman", name: "Marmaduke", state: "active", web_url: "u" }]
+        : [
+          { id: 13, username: "woodman", name: "Marmaduke", state: "active", web_url: "u" },
+          {
+            id: 99,
+            username: "placeholder",
+            name: "Placeholder marmaduke woodman",
+            state: "active",
+            web_url: "p",
+          },
+        ],
+    }),
+    "GET /api/v4/projects/42/issues": () => ({ body: [{ iid: 1, title: "open one" }] }),
+  }, recorded);
+  const port = (srv.addr as Deno.NetAddr).port;
+  const conn = gitlabConnector({
+    token: "tok",
+    origin: `http://127.0.0.1:${port}`,
+    apiPath: "/api/v4",
+  });
+  const clients = conn.client({ config: {}, secrets: {}, log: () => {} });
+  try {
+    // fuzzy search surfaces the near-match...
+    const fuzzy = await clients["users.search"]({ search: "woodman" }) as Array<
+      Record<string, unknown>
+    >;
+    assertEquals(fuzzy.length, 2);
+    // ...while the exact lookup resolves the one account
+    const exact = await clients["users.get"]({ username: "woodman" }) as Record<string, unknown>;
+    assertEquals(exact.id, 13);
+    assertEquals(exact.username, "woodman");
+    assertEquals(recorded[1].path, "/api/v4/users?username=woodman");
+
+    // issues.list defaults to open issues
+    await clients["issues.list"]({ projectId: 42 });
+    assertEquals(recorded[2].path, "/api/v4/projects/42/issues?state=opened");
+    // numeric project ids are accepted by the string-typed ops too
+    await clients["issues.list"]({ projectId: 42, state: "all" });
+    assertEquals(recorded[3].path, "/api/v4/projects/42/issues?state=all");
+    assertEquals(
+      conn.ops.find((o) => o.name === "gitlab.issues.create")!.argSchema({
+        projectId: 42,
+        title: "t",
+      }),
+      null,
+    );
+    assertEquals(
+      conn.ops.find((o) => o.name === "gitlab.projects.get")!.argSchema({ id: 42 }),
+      null,
+    );
+  } finally {
+    await srv.shutdown();
+  }
+});
+
 Deno.test("gitlab approval op suspends, approve replays and issues POST live", async () => {
   const recorded: RecordedReq[] = [];
   const srv = mockServer({
@@ -368,12 +431,12 @@ Deno.test("gitlab approval op suspends, approve replays and issues POST live", a
 
     const lines = await RunLog.read(dir, runId);
     const replay = {
-      resultsByOpSeq: new Map<string, JsonValue>(),
-      approvedOps: new Set(["gitlab.issues.create"]),
+      resultsBySeq: new Map<number, { op: string; result: JsonValue }>(),
+      approvedSeqs: new Set<number>([out1.pending!.seq!]),
     };
     for (const l of lines) {
-      if ("seq" in l && "op" in l && l.status === "ok" && l.result !== undefined) {
-        replay.resultsByOpSeq.set(String(l.op), l.result as JsonValue);
+      if ("call" in l && "op" in l && l.status === "ok" && l.result !== undefined) {
+        replay.resultsBySeq.set(l.call as number, { op: l.op, result: l.result as JsonValue });
       }
     }
     const log2 = new RunLog(dir, runId, budgets.maxLogBytes);
@@ -453,12 +516,16 @@ Deno.test("mistral client against mock API: create library, upload document, sha
 
     const lines = await RunLog.read(dir, runId);
     const replay = {
-      resultsByOpSeq: new Map<string, JsonValue>(),
-      approvedOps: new Set(["mistral.libraries.share"]),
+      resultsBySeq: new Map<number, { op: string; result: JsonValue }>(),
+      approvedSeqs: new Set<number>(
+        lines.filter((l) =>
+          "op" in l && l.op === "mistral.libraries.share" && l.status === "pending"
+        ).map((l) => (l as { call: number }).call),
+      ),
     };
     for (const l of lines) {
-      if ("seq" in l && "op" in l && l.status === "ok" && l.result !== undefined) {
-        replay.resultsByOpSeq.set(String(l.op), l.result as JsonValue);
+      if ("call" in l && "op" in l && l.status === "ok" && l.result !== undefined) {
+        replay.resultsBySeq.set(l.call as number, { op: l.op, result: l.result as JsonValue });
       }
     }
     const log2 = new RunLog(dir, runId, budgets.maxLogBytes);
