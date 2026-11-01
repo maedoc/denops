@@ -20,11 +20,17 @@ export class MistralClient {
   }
 
   private async req(path: string, init?: RequestInit): Promise<JsonValue> {
+    // Never label a multipart body as JSON: fetch must add
+    // `multipart/form-data; boundary=…` itself, and hard-coding application/json
+    // made Mistral reject uploads with `422 Field required at loc ['file','file']`
+    // (the form part never existed as far as the server could tell).
+    const isForm = init?.body instanceof FormData;
     const res = await fetch(`${this.base}${path}`, {
       ...init,
+      ...(isForm ? {} : {}),
       headers: {
         authorization: `Bearer ${this.apiKey}`,
-        "content-type": "application/json",
+        ...(isForm ? {} : { "content-type": "application/json" }),
         ...(init?.headers ?? {}),
       },
     });

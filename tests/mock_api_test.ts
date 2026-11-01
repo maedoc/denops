@@ -20,6 +20,7 @@ interface RecordedReq {
   path: string;
   auth?: string;
   body?: string;
+  contentType?: string;
 }
 
 function mockServer(
@@ -28,12 +29,15 @@ function mockServer(
 ) {
   return Deno.serve({ hostname: "127.0.0.1", port: 0, onListen: () => {} }, async (req) => {
     const url = new URL(req.url);
-    const body = req.body ? await req.text() : undefined;
+    const body = req.body
+      ? new TextDecoder().decode(await req.arrayBuffer() ?? new Uint8Array())
+      : undefined;
     const rec: RecordedReq = {
       method: req.method,
       path: url.pathname + url.search,
       auth: req.headers.get("authorization") ?? req.headers.get("private-token") ?? undefined,
       body,
+      contentType: req.headers.get("content-type") ?? undefined,
     };
     recorded.push(rec);
     const key = `${req.method} ${url.pathname}`;
@@ -550,6 +554,50 @@ Deno.test("mistral client against mock API: create library, upload document, sha
   } finally {
     await srv.shutdown();
     await Deno.remove(dir, { recursive: true });
+  }
+});
+
+// Mistral's Files API wants the document as a multipart part named `file`; a
+// hard-coded JSON content-type produced "422 Field required at loc ['file','file']".
+Deno.test("mistral upload sends multipart with a file part", async () => {
+  const recorded: RecordedReq[] = [];
+  const srv = mockServer({
+    "POST /v1/files": () => ({ status: 200, body: { id: "file-1" } }),
+    "POST /v1/libraries/lib-1/documents": (r) => ({
+      status: 200,
+      body: { id: "doc-1", file_id: JSON.parse(r.body!).file_id },
+    }),
+  }, recorded);
+  const port = (srv.addr as Deno.NetAddr).port;
+  const conn = mistralConnector({
+    apiKey: "mk-secret",
+    origin: `http://127.0.0.1:${port}`,
+    apiPath: "/v1",
+  });
+  const clients = conn.client({ config: {}, secrets: {}, log: () => {} });
+  try {
+    const out = await clients["documents.upload"]({
+      libraryId: "lib-1",
+      fileName: "notes.md",
+      contentBase64: btoa("# hello\n"),
+      contentType: "text/markdown",
+    }) as Record<string, unknown>;
+    assertEquals(out.id, "doc-1");
+    assertEquals(recorded.length, 2);
+    // The upload request must be multipart (fetch sets the boundary) and carry the
+    // decoded content in a part named "file" with the right filename/content-type.
+    const upload = recorded[0];
+    assert(!upload.body || !upload.body.startsWith("{"), "must not be a JSON body");
+    assertEquals(upload.contentType?.startsWith("multipart/form-data; boundary="), true);
+    assert(upload.body?.includes('name="file"'), upload.body?.slice(0, 200));
+    assert(upload.body?.includes('filename="notes.md"'), upload.body?.slice(0, 200));
+    assert(upload.body?.includes("text/markdown"), upload.body?.slice(0, 300));
+    assert(upload.body?.includes("# hello"), upload.body?.slice(0, 300));
+    // The follow-up document create is JSON, as before.
+    assertEquals(recorded[1].contentType?.startsWith("application/json"), true);
+    assertEquals(JSON.parse(recorded[1].body!), { file_id: "file-1", name: "notes.md" });
+  } finally {
+    await srv.shutdown();
   }
 });
 
