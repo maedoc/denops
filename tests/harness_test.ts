@@ -58,6 +58,59 @@ Deno.test("execute: echo round-trip in sandboxed worker", async () => {
   }
 });
 
+// A failure used to arrive as a stack whose frames point into the injected
+// prelude's data: URL — i.e. the whole sandbox source, percent-encoded, plus
+// wrapper line numbers the caller never wrote.
+Deno.test("sandbox: failed runs report name+message, never a stack", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const { harness } = setup();
+    const log = new RunLog(dir, "t-stack", budgets.maxLogBytes);
+    await log.init({ runId: "t-stack", code: "", connectors: ["debug"] });
+    const out = await harness.run("t-stack", `throw new TypeError("boom");`, log);
+    assertEquals(out.status, "failed");
+    assertEquals(out.error, "TypeError: boom");
+    for (const leak of ["data:text/javascript", "Injected", ".ts:", " at "]) {
+      assert(!String(out.error).includes(leak), `error must not leak ${leak}: ${out.error}`);
+    }
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+// Deno's own error/inspect helpers read Deno.noColor; blocking that data
+// property surfaced "Deno.noColor is disabled in the sandbox" for code that
+// merely touched globalThis.
+Deno.test("sandbox: inert Deno data is readable, Deno APIs stay blocked", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const { harness } = setup();
+    const log = new RunLog(dir, "t-inert", budgets.maxLogBytes);
+    await log.init({ runId: "t-inert", code: "", connectors: ["debug"] });
+    const ok = await harness.run(
+      "t-inert",
+      `return { noColor: Deno.noColor, os: Deno.build.os, keys: Object.keys(globalThis).length };`,
+      log,
+    );
+    assertEquals(ok.status, "completed", String(ok.error));
+    const r = ok.result as { noColor: boolean; os: string; keys: number };
+    assertEquals(r.noColor, true);
+    assertEquals(typeof r.os, "string");
+    assert(r.keys > 0);
+
+    const blocked = await harness.run(
+      "t-inert",
+      `return Deno.env.get("HOME");`,
+      log,
+    );
+    assertEquals(blocked.status, "failed");
+    assertStringIncludes(String(blocked.error), "Deno.env is disabled");
+    assert(!String(blocked.error).includes("data:text/javascript"));
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 Deno.test("sandbox: fetch and Deno namespace are blocked in worker", async () => {
   const dir = await Deno.makeTempDir();
   try {
@@ -197,6 +250,42 @@ Deno.test("search finds ops by fuzzy query and scopes by connector", () => {
   assertStringIncludes(scoped, "[approval]");
   const none = search(registry, "", "gitlab");
   assertStringIncludes(none, "no matching ops");
+});
+
+// A caller that only ever saw "20 op(s)" concluded the server had two ops. Always
+// report the true registry size, and say when results were truncated.
+Deno.test("search reports registry size and truncation, never implies a small registry", () => {
+  const registry = new Registry();
+  for (const id of ["alpha", "beta"]) {
+    const ops = Array.from({ length: 15 }, (_, i) => ({
+      name: `${id}.op${i}`,
+      tier: "open" as const,
+      doc: `op ${i} of ${id}`,
+      argSchema: () => null,
+    }));
+    registry.register({ id, ops, client: () => ({}) });
+  }
+
+  const empty = search(registry, "");
+  assertStringIncludes(empty, "30 op(s) registered");
+  assertStringIncludes(empty, "(alpha:15, beta:15)");
+  assertStringIncludes(empty, "showing 20 of 30");
+  assertStringIncludes(empty, "+10 more");
+
+  const broad = search(registry, "op");
+  assertStringIncludes(broad, "30 op(s) matched, showing the best 20");
+  assertStringIncludes(broad, "+10 more");
+
+  const narrow = search(registry, "beta.op7");
+  assertStringIncludes(narrow, "1 op(s) matched");
+  assert(!narrow.includes("more —"), "a short result must not claim truncation");
+
+  const scoped = search(registry, "", "alpha");
+  assertStringIncludes(scoped, "15 op(s) in alpha");
+
+  const none = search(registry, "zzz");
+  assertStringIncludes(none, "no matching ops");
+  assertStringIncludes(none, "30 op(s) registered");
 });
 
 Deno.test("op log records manifest, ops and final entry", async () => {

@@ -6,10 +6,36 @@ export const GUEST_BOOTSTRAP = `
 globalThis.fetch = () => { throw new Error("fetch is disabled in the sandbox; use connector handles (e.g. gitlab.*, mistral.*)"); };
 globalThis.WebSocket = class { constructor() { throw new Error("WebSocket is disabled in the sandbox"); } };
 globalThis.XMLHttpRequest = class { constructor() { throw new Error("XMLHttpRequest is disabled in the sandbox"); } };
+// Capability surface: every Deno API is blocked. Inert data properties are kept
+// (frozen, function members removed) because library and runtime internals read
+// them for formatting/introspection — throwing on those (e.g. Deno.noColor,
+// which deno's own error printer reads) turned unrelated failures into
+// "Deno.noColor is disabled in the sandbox" errors attributed to sandbox code.
+const __inertValues = new Map([["noColor", true], ["pid", 0], ["ppid", 0]]);
+const __frozenData = new Set(["build", "version"]);
+function __inert(v) {
+  const copy = Object.create(null);
+  for (const k of Object.keys(v || {})) {
+    if (typeof v[k] !== "function") copy[k] = v[k];
+  }
+  return Object.freeze(copy);
+}
 if (globalThis.Deno) {
   for (const k of Object.getOwnPropertyNames(globalThis.Deno)) {
     if (k === "internal") continue;
-    try { Object.defineProperty(globalThis.Deno, k, { get() { throw new Error("Deno." + k + " is disabled in the sandbox; use connector handles"); } }); } catch {}
+    let value;
+    try {
+      // Capture inert data before redefining the property: reading Deno[k] from
+      // inside the replacement getter would recurse.
+      if (__inertValues.has(k)) value = __inertValues.get(k);
+      else if (__frozenData.has(k)) value = __inert(globalThis.Deno[k]);
+      Object.defineProperty(globalThis.Deno, k, {
+        get() {
+          if (__inertValues.has(k) || __frozenData.has(k)) return value;
+          throw new Error("Deno." + k + " is disabled in the sandbox; use connector handles");
+        },
+      });
+    } catch {}
   }
 }
 
@@ -52,6 +78,19 @@ globalThis.api = {
   describe: (op) => __callOp("__describe", { op }),
   search: (query, connector) => __callOp("__search", { query, connector }),
 };
+
+// Errors cross the sandbox boundary as name + message only. A stack trace here
+// would leak sandbox internals: frames point into a data: URL holding the whole
+// injected prelude, and the line numbers refer to wrapper code the caller never
+// wrote.
+function __errorText(e) {
+  if (e && typeof e === "object") {
+    const name = typeof e.name === "string" && e.name ? e.name : "Error";
+    const msg = typeof e.message === "string" ? e.message : String(e);
+    return (name + ": " + msg).slice(0, 2000);
+  }
+  return ("Error: " + String(e)).slice(0, 2000);
+}
 `;
 
 export function guestSource(connectors: string[], userCode: string): string {
@@ -61,6 +100,6 @@ export function guestSource(connectors: string[], userCode: string): string {
   return `${GUEST_BOOTSTRAP}\n${handles}\nself.postMessage({ kind: "ready" });\n` +
     `(async () => {\n${userCode}\n})().then(\n` +
     `  (r) => self.postMessage({ kind: "done", result: r === undefined ? null : r }),\n` +
-    `  (e) => self.postMessage({ kind: "done", error: String((e && e.stack) || e) }),\n` +
+    `  (e) => self.postMessage({ kind: "done", error: __errorText(e) }),\n` +
     `);\n`;
 }
