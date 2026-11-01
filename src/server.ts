@@ -14,6 +14,7 @@ import { agentGuide } from "./guide.ts";
 import { deployConfigFrom, deployConnector } from "./connectors/deploy/manifest.ts";
 import { devConnector, devRootsFromConfig } from "./connectors/dev/manifest.ts";
 import { mistralTierOverride } from "./connectors/mistral/tiers.ts";
+import { denopsConnector } from "./connectors/denops/manifest.ts";
 import { handleOAuthRoute, newOAuthState, type OAuthConfig } from "./security/oauth.ts";
 import { defaultBanPolicy } from "./security/ban.ts";
 import { grantSatisfies, RootGrants } from "./harness/grants.ts";
@@ -166,6 +167,16 @@ export async function buildApp(configPath: string, secretsPath: string): Promise
     const deployCfg = deployConfigFrom(config.connectors.deploy ?? {}, devRoots, config.dataDir);
     if (deployCfg) registry.register(deployConnector(deployCfg));
   }
+
+  // The skill sheet is part of the API surface: always registered, served from the
+  // repository's SKILL.md so the model and the diff see the same file.
+  registry.register(
+    denopsConnector({
+      skillPath: "SKILL.md",
+      version: "0.1.0",
+      connectors: () => registry.list().map((c) => c.id),
+    }),
+  );
 
   if (enabled("imap")) {
     const im = config.connectors.imap;

@@ -31,13 +31,16 @@ try {
     const near = known.filter((n) => n.includes(op.split(".")[1] ?? "#")).slice(0, 10);
     console.log(JSON.stringify({
       error: `unknown op ${op} in this checkout`,
-      hint: near.length ? `similar: ${near.join(", ")}` : `use api.search("", "${op.split(".")[0]}")`,
+      hint: near.length
+        ? `similar: ${near.join(", ")}`
+        : `use api.search("", "${op.split(".")[0]}")`,
     }));
     Deno.exit(0);
   }
   if (resolved.spec.tier === "approval") {
     console.log(JSON.stringify({
-      error: `${op} is approval-tier; dev.try only runs open-tier ops — promote it and approve instead`,
+      error:
+        `${op} is approval-tier; dev.try only runs open-tier ops — promote it and approve instead`,
     }));
     Deno.exit(0);
   }

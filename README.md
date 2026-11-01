@@ -144,8 +144,19 @@ blacklists _and_ auto-bans (use it for legitimate client egress ranges, e.g. an 
 ## Code mode contract
 
 Tools: `search(query, connector?)`, `execute(code, description?)`, `approve(pendingId, decision)`,
-and `grants(action, key?)` when a `fs` root is configured. The MCP `initialize` result also carries
-an agent-oriented guide (`instructions`, see `src/guide.ts`).
+and `grants(action, key?)` when a `fs` root is configured. The MCP `initialize` result carries a
+short agent-oriented guide (`instructions`, see `src/guide.ts`), and the full prompt-facing contract
+is the repo's **[`SKILL.md`](SKILL.md)**, served as an op:
+
+```js
+const skill = await denops.skill({}); // full sheet
+const gitlab = await denops.skill({ section: "gitlab" }); // one section
+const about = await denops.about({}); // version, skill freshness, connectors
+```
+
+`SKILL.md` is the single source of truth for how to use the server and must be updated in the same
+commit as any surface change; `tests/skill_test.ts` fails if it drifts from the op registry (unknown
+ops, missing connector families, stale op counts). `AGENTS.md` records that rule.
 
 `execute` runs the **body of an async function** in a fresh worker:
 
@@ -200,6 +211,12 @@ MB), `maxOpArgsBytes`, `maxLogBytes`.
 
 Enable in `config.yaml`; every connector's ops appear in `search` and are tiered individually.
 
+### denops (2 ops) — the skill sheet
+
+`denops.skill({section?})` returns `SKILL.md` (the prompt-facing contract, cached by mtime);
+`denops.about()` returns version, `SKILL.md` freshness/length and the connector families this
+deployment exposes. Always registered.
+
 ### debug (3 ops) — smoke tests
 
 `debug.echo`, `debug.boom`, `debug.gated` (approval-tier: exercises the approval round trip).
@@ -232,7 +249,7 @@ cross-account SHA-256 verified copy-then-expunge)_. No SMTP: send is absent by o
 Background connection errors (socket inactivity, server BYE, dropped tunnel) are absorbed: the
 account marks itself disconnected and reconnects on the next op, instead of taking the process down.
 
-### mistral — Libraries API (15 ops)
+### mistral — Libraries API (17 ops)
 
 Read, and _write knowledge back_:
 
@@ -276,7 +293,7 @@ run** (tracked in run state), so a chat can build and clean up its own library f
 human to touch `hdr`, `E4HB`, … Set `connectors.mistral.allowOpenUploads: true` for the old, ungated
 behaviour.
 
-### fs — local filesystem, root-allowlisted
+### fs (10 ops) — local filesystem, root-allowlisted
 
 Read/write/glob/exec against **named, allowlisted root directories**. The model addresses roots by
 name (`root: "denops-dev"`), never by absolute path; every path is resolved with symlink resolution
@@ -458,6 +475,13 @@ Lint and format: `deno lint src tests scripts`, `deno fmt`.
 - **systemd starts services with a minimal PATH** — the supervisor must add `~/.deno/bin`.
 - **mtime is too coarse for hot-reload** — two edits in the same millisecond share an mtime; hot
   reload keys on `mtime:size`.
+- **A capability check must precede the approval gate.** `requireWrite` lived inside the client, so
+  a write to a read-only root suspended, and would have executed if a human rubber-stamped it.
+  Capability violations now fail in `precheck` and create no pending.
+- **Grants must not buy deletion or a shell.** Level-levelled grants cover read/write; `fs.rm` and
+  `fs.exec` resolve to no grant key at all and ask every time.
+- **Docs drift silently.** The agent-facing contract is a file in the repo, served by an op, with a
+  test that fails when it names ops that do not exist — prose alone does not survive a refactor.
 - **Fuzzy search looks like a small registry.** `search` silently capped at 20 with no totals, and a
   miss said "no matching ops"; both now report the true size and show the inventory.
 
@@ -472,6 +496,8 @@ src/security/              http.ts (gate, bans, headers), ban.ts (CIDR bans), oa
 src/harness/               registry, boundary validation, worker sandbox, JSONL log, approvals, discovery
 src/guest/bootstrap.ts     injected worker prelude (handles, stub surface, error boundary)
 src/guide.ts               agent-oriented `instructions` returned at initialize
+SKILL.md                   prompt-facing contract, served by denops.skill (drift-tested)
+AGENTS.md                  repo rules for agents (incl. "keep SKILL.md current")
 src/connectors/<name>/     client.ts (host-only credentials) + manifest.ts (ops, tiers, docs)
 scripts/start.ts           derives Deno permissions from config, then runs the server
 scripts/live-supervisor.sh the only thing that decides which commit runs (restart/soak/auto-revert)

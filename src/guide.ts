@@ -22,6 +22,8 @@ TOOLS
 - approve(pendingId, "approve" | "reject") — resolve an approval-tier op.
 - grants(action, key?) — list/revoke persistent fs root grants (only present when
   the fs connector is enabled).
+- The full, always-current usage guide is an op: \`await denops.skill({})\` (add
+  { section: "gitlab" } to filter). Read it before non-trivial work.
 
 HOW TO CALL OPS
 Write the body of an async function; it may use \`return\` and \`await\`:

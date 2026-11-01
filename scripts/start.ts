@@ -104,6 +104,7 @@ const allowRead = [
   "data/",
   "deno.json",
   "deno.lock",
+  "SKILL.md",
   "src/",
   "scripts/",
   ...fsReadPaths,
