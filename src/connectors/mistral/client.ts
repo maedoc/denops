@@ -218,27 +218,21 @@ export class MistralClient {
     bytes: Uint8Array,
     contentType: string,
   ): Promise<JsonValue> {
+    // Library documents are uploaded *directly* as multipart on the library
+    // endpoint; the filename in the file part becomes the document name. (There is
+    // no /files + {file_id} step — the Files API has different purposes and, for a
+    // document, expects a multipart `file` part as well.)
     const form = new FormData();
+    // BlobPart wants an ArrayBuffer-backed view; a slice gives one.
     form.append(
       "file",
-      new Blob([bytes as unknown as ArrayBuffer], { type: contentType }),
+      new Blob([bytes.slice() as unknown as ArrayBuffer], { type: contentType }),
       fileName,
     );
-    const up = await this.req("/files", { method: "POST", body: form });
-    const fileId = (up as { id?: string }).id;
-    if (!fileId) throw new Error("upload did not return a file id");
-    try {
-      return await this.req(`/libraries/${encodeURIComponent(libraryId)}/documents`, {
-        method: "POST",
-        body: JSON.stringify({ file_id: fileId, name: fileName }),
-      });
-    } catch (e) {
-      // Don't orphan the uploaded file when the document create fails.
-      try {
-        await this.req(`/files/${encodeURIComponent(fileId)}`, { method: "DELETE" });
-      } catch { /* best effort */ }
-      throw e;
-    }
+    return await this.req(`/libraries/${encodeURIComponent(libraryId)}/documents`, {
+      method: "POST",
+      body: form,
+    });
   }
 
   async uploadDocument(
