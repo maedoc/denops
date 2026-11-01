@@ -72,6 +72,9 @@ export interface TokenRequestInput {
 interface ParsedCredentials {
   clientId: string;
   clientSecret: string;
+  /** Form-decoded variants, when the client encoded them (RFC 6749 §2.3.1). */
+  clientIdDecoded?: string;
+  clientSecretDecoded?: string;
   grantType: string;
 }
 
@@ -88,6 +91,7 @@ export function parseCredentials(input: TokenRequestInput): ParsedCredentials | 
   let clientId = form.get("client_id") ?? "";
   let clientSecret = form.get("client_secret") ?? "";
   const grantType = form.get("grant_type") ?? "";
+  const parsedDecoded: { clientIdDecoded?: string; clientSecretDecoded?: string } = {};
 
   const auth = input.authorization ?? "";
   if (auth.startsWith("Basic ")) {
@@ -99,14 +103,19 @@ export function parseCredentials(input: TokenRequestInput): ParsedCredentials | 
     }
     const sep = decoded.indexOf(":");
     if (sep < 0) return "malformed Basic credentials (expected client_id:client_secret)";
+    clientId = decoded.slice(0, sep);
+    clientSecret = decoded.slice(sep + 1);
+    // RFC 6749 has clients form-encode these before base64, but plenty (curl -u
+    // among them) send the raw values. Decode when possible and accept either
+    // form; a literal '%' in a secret must not be a parse error.
     try {
-      clientId = decodeURIComponent(decoded.slice(0, sep));
-      clientSecret = decodeURIComponent(decoded.slice(sep + 1));
-    } catch {
-      return "malformed percent-encoding in Basic credentials";
-    }
+      const idDecoded = decodeURIComponent(clientId);
+      const secretDecoded = decodeURIComponent(clientSecret);
+      if (idDecoded !== clientId) parsedDecoded.clientIdDecoded = idDecoded;
+      if (secretDecoded !== clientSecret) parsedDecoded.clientSecretDecoded = secretDecoded;
+    } catch { /* raw values, keep as-is */ }
   }
-  return { clientId, clientSecret, grantType };
+  return { clientId, clientSecret, ...parsedDecoded, grantType };
 }
 
 export function handleTokenRequest(req: Request, cfg: OAuthConfig, body: string): Response {
@@ -140,9 +149,11 @@ export function handleTokenRequest(req: Request, cfg: OAuthConfig, body: string)
     );
   }
   // Client id is an identifier, the secret is compared in constant time.
-  if (
-    parsed.clientId !== cfg.clientId || !constantTimeEqual(parsed.clientSecret, cfg.clientSecret)
-  ) {
+  const idOk = parsed.clientId === cfg.clientId || parsed.clientIdDecoded === cfg.clientId;
+  const secretOk = constantTimeEqual(parsed.clientSecret, cfg.clientSecret) ||
+    (parsed.clientSecretDecoded !== undefined &&
+      constantTimeEqual(parsed.clientSecretDecoded, cfg.clientSecret));
+  if (!idOk || !secretOk) {
     return oauthError(401, "invalid_client", "unknown client or bad secret", {
       "www-authenticate": 'Basic realm="denops"',
     });

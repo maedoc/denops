@@ -103,13 +103,42 @@ Deno.test("oauth: failures use the RFC 6749 error shape", async () => {
   }
 });
 
+// The live bearer token contains a literal '%'; a client sending it raw (curl -u,
+// most SDKs) must not be rejected for "malformed percent-encoding".
+Deno.test("oauth: secrets with '%'/'+' work raw and form-encoded", () => {
+  const pctCfg: OAuthConfig = { ...cfg, clientSecret: "a%b+c$d#e&f^g" };
+  const raw = handleTokenRequest(
+    tokenReq({
+      headers: { authorization: `Basic ${btoa("mistral:a%b+c$d#e&f^g")}` },
+      body: "grant_type=client_credentials",
+    }),
+    pctCfg,
+    "grant_type=client_credentials",
+  );
+  assertEquals(raw.status, 200);
+  const encoded = handleTokenRequest(
+    tokenReq({
+      headers: { authorization: basic("mistral", "a%b+c$d#e&f^g") },
+      body: "grant_type=client_credentials",
+    }),
+    pctCfg,
+    "grant_type=client_credentials",
+  );
+  assertEquals(encoded.status, 200);
+});
+
 Deno.test("oauth: Basic parsing is form-urlencoded per RFC 6749", () => {
   const parsed = parseCredentials({
     authorization: basic("cli ent", "sec ret+/="),
     contentType: null,
     body: "",
   });
-  assertEquals(parsed, { clientId: "cli ent", clientSecret: "sec ret+/=", grantType: "" });
+  assert(typeof parsed !== "string");
+  if (typeof parsed !== "string") {
+    assertEquals(parsed.clientIdDecoded, "cli ent");
+    assertEquals(parsed.clientSecretDecoded, "sec ret+/=");
+    assertEquals(parsed.grantType, "");
+  }
   assert(
     typeof parseCredentials({ authorization: "Basic !!!", contentType: null, body: "" }) ===
       "string",
