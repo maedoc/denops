@@ -17,6 +17,54 @@ export interface DenopsConnectorOptions {
   changelogPath?: string;
   /** Live budget of the run in flight, if a harness is attached. */
   budget?: () => Record<string, JsonValue>;
+  /** The derived Deno permission envelope, for denops.about. */
+  permissions?: () => Record<string, JsonValue>;
+  /** File the supervisor tees the server's stdout/stderr into, for denops.logs. */
+  serverLogPath?: string;
+}
+
+// Anything that looks like a credential is masked before a log line leaves the host:
+// the token is in the environment/argv, and connector clients log URLs.
+const SECRET_PATTERNS: [RegExp, string][] = [
+  // header-style first, so "Authorization: Bearer x" is masked once, not twice
+  [/\b(PRIVATE-TOKEN|authorization|x-api-key)(\s*[:=]\s*)([^\n]+)/gi, "$1$2<redacted>"],
+  [/\b(Bearer)\s+[A-Za-z0-9._~+/=-]{8,}/gi, "$1 <redacted>"],
+  [
+    /([?&](?:access_?token|token|api_?key|password|secret|client_secret)=)[^&\s"']+/gi,
+    "$1<redacted>",
+  ],
+  [/\bgh[pousr]_[A-Za-z0-9]{20,}\b/g, "<redacted-github-token>"],
+  [/\b[A-Za-z0-9_-]{60,}\b/g, "<redacted-long-token>"],
+];
+
+/**
+ * Connector log lines carry their op arguments (that is what makes them useful to an
+ * operator, and it includes mail bodies). `denops.logs` is an agent-facing op, so the
+ * argument values are reduced to keys + size here — the same posture as `denops.oplog`,
+ * which returns no args at all. Op names, events and errors still come through.
+ */
+export function summarizeConnectorLine(line: string): string {
+  const prefix = "[connector] ";
+  if (!line.startsWith(prefix)) return line;
+  try {
+    const entry = JSON.parse(line.slice(prefix.length)) as Record<string, unknown>;
+    if (entry && typeof entry === "object" && "args" in entry) {
+      const raw = JSON.stringify(entry.args ?? {});
+      entry.args = {
+        keys: Object.keys((entry.args ?? {}) as Record<string, unknown>),
+        bytes: new TextEncoder().encode(raw).length,
+      };
+    }
+    return prefix + JSON.stringify(entry);
+  } catch {
+    return line;
+  }
+}
+
+export function redactLine(line: string): string {
+  let out = line;
+  for (const [re, replacement] of SECRET_PATTERNS) out = out.replace(re, replacement);
+  return out;
 }
 
 const MAX_ERROR_CHARS = 240;
@@ -140,6 +188,25 @@ export function denopsConnector(opts: DenopsConnectorOptions): Connector {
         argSchema: compose(rejectUnknown()),
       },
       {
+        name: "denops.logs",
+        tier: "open",
+        doc:
+          "Tail the server's own stdout/stderr (the supervisor tees it to data/server.log), redacted for credentials. " +
+          "This is what to read when a promotion failed to start or a connector is misbehaving. args: { lines? (default 120, max 2000), grep? (literal substring filter) }. " +
+          "Returns { available, path, lines: string[], matched, fileBytes }.",
+        argSchema: compose(
+          rejectUnknown(),
+          optNum("lines"),
+          optStr("grep", 200),
+          (a) => {
+            const n = (a as { lines?: unknown }).lines;
+            if (n === undefined) return null;
+            const v = Number(n);
+            return Number.isInteger(v) && v > 0 && v <= 2000 ? null : "lines: expected 1..2000";
+          },
+        ),
+      },
+      {
         name: "denops.oplog",
         tier: "open",
         doc:
@@ -187,6 +254,9 @@ export function denopsConnector(opts: DenopsConnectorOptions): Connector {
           skillUpdatedAt: updatedAt,
           skillBytes: new TextEncoder().encode(text).length,
           connectors: opts.connectors(),
+          // the derived --allow-* envelope: the fastest way to answer "can this
+          // server even reach host X / read path Y?"
+          ...(opts.permissions ? { permissions: opts.permissions() } : {}),
         } as JsonValue;
       },
       "version": async () => {
@@ -200,6 +270,43 @@ export function denopsConnector(opts: DenopsConnectorOptions): Connector {
       "budget": () => {
         if (!opts.budget) return Promise.resolve({ available: false } as JsonValue);
         return Promise.resolve({ available: true, ...opts.budget() } as JsonValue);
+      },
+      "logs": async (a) => {
+        const r = a as { lines?: number; grep?: string };
+        const path = opts.serverLogPath;
+        const want = Math.min(Number(r.lines ?? 120), 2000);
+        if (!path) return { available: false, path: null, lines: [], matched: 0 } as JsonValue;
+        let text: string;
+        let fileBytes = 0;
+        try {
+          const info = await Deno.stat(path);
+          fileBytes = info.size;
+          text = await Deno.readTextFile(path);
+        } catch {
+          return {
+            available: false,
+            path,
+            lines: [],
+            matched: 0,
+            note: "the supervisor writes this file at the next start",
+          } as JsonValue;
+        }
+        const all = text.split(/\r?\n/).filter((l) => l !== "")
+          .map((l) => redactLine(summarizeConnectorLine(l)));
+        const needle = String(r.grep ?? "").trim().toLowerCase();
+        const picked = needle === "" ? all : all.filter((l) => l.toLowerCase().includes(needle));
+        ctx.log({
+          connector: "denops",
+          op: "denops.logs",
+          args: { lines: want, grep: r.grep ?? null },
+        });
+        return {
+          available: true,
+          path,
+          fileBytes,
+          matched: picked.length,
+          lines: picked.slice(-want),
+        } as JsonValue;
       },
       "oplog": async (a) => {
         const r = a as { limit?: number; runId?: string; ops?: number };

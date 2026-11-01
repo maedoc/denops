@@ -1,5 +1,5 @@
 import { parseYaml } from "../src/config.ts";
-import { derivePermissions, permissionFlags } from "../src/permissions.ts";
+import { permissionFlags, serverPlan } from "../src/permissions.ts";
 
 // Launcher: reads config.yaml (the only file it may read besides the secrets JSON at
 // startup), derives the permission envelope for src/server.ts, and starts it. The
@@ -11,22 +11,9 @@ const configPath = Deno.args[0] ?? "config.yaml";
 const configText = await Deno.readTextFile(configPath);
 const cfg = parseYaml(configText);
 
-const plan = derivePermissions(cfg, {
-  // relative to the live checkout's cwd; gitignored runtime state under data/
-  read: [
-    "config.yaml",
-    "secrets.json",
-    "data/",
-    "deno.json",
-    "deno.lock",
-    "SKILL.md",
-    "CHANGELOG.md",
-    "src/",
-    "scripts/",
-  ],
-  write: ["data/"],
-  connectorRun: true,
-});
+// the envelope itself lives in src/permissions.ts — the same function reports it
+// through `denops.about`
+const plan = serverPlan(cfg);
 
 const args = [
   "run",

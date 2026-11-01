@@ -115,6 +115,20 @@ export function devConnector(opts: DevConnectorOptions): Connector {
         ),
       },
       {
+        name: "dev.sync",
+        tier: "approval",
+        summarize: (a) => {
+          const { root } = a as { root: string };
+          return `git fetch origin and fast-forward the current branch in dev root ${root} ` +
+            `(no reset: a diverged branch fails instead of discarding work)`;
+        },
+        doc:
+          "Bring a dev root up to date with origin: `git fetch --prune origin` then `merge --ff-only @{u}` on the CURRENT branch. args: { root }. " +
+          "No ref or remote comes from the caller, and never a reset, so local work cannot be discarded — a diverged branch fails and asks for a human. " +
+          "Returns { code, stdout, stderr, branch, from, to, changed }.",
+        argSchema: compose(rejectUnknown(), str("root")),
+      },
+      {
         name: "dev.try",
         tier: "open",
         doc:
@@ -201,6 +215,40 @@ export function devConnector(opts: DevConnectorOptions): Connector {
         }
         ctx.log({ connector: "dev", op: "dev.git", args: { root, action } });
         return execSummary(await runArgv(argv, { cwd: r.path, timeoutMs: 60_000 }));
+      },
+
+      "sync": async (a) => {
+        const { root } = a as { root: string };
+        const r = rootOf(root);
+        const branch = await gitAt(r.path, ["rev-parse", "--abbrev-ref", "HEAD"]);
+        if (branch.code !== 0) {
+          throw new Error(`dev.sync: ${r.path} is not a git checkout`);
+        }
+        const name = branch.stdout.trim();
+        if (name === "HEAD") {
+          throw new Error(
+            `dev.sync: ${r.path} is on a detached HEAD; check out a branch (human step) before syncing`,
+          );
+        }
+        const before = await gitAt(r.path, ["rev-parse", "HEAD"]);
+        const fetch = await gitAt(r.path, ["fetch", "--prune", "origin"]);
+        if (fetch.code !== 0) {
+          throw new Error(`dev.sync: git fetch failed: ${fetch.stderr.trim().slice(0, 300)}`);
+        }
+        const merge = await gitAt(r.path, ["merge", "--ff-only", "@{u}"]);
+        const after = await gitAt(r.path, ["rev-parse", "HEAD"]);
+        ctx.log({
+          connector: "dev",
+          op: "dev.sync",
+          args: { root, branch: name, from: before.stdout.trim(), to: after.stdout.trim() },
+        });
+        return {
+          ...(execSummary(merge) as Record<string, JsonValue>),
+          branch: name,
+          from: before.stdout.trim(),
+          to: after.stdout.trim(),
+          changed: before.stdout.trim() !== after.stdout.trim(),
+        } as JsonValue;
       },
 
       "try": async (a) => {

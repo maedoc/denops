@@ -1,6 +1,6 @@
 {
   "name": "denops",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "tasks": {
     "start": "deno run --unstable-worker-options --allow-read=config.yaml,secrets.json --allow-run=deno scripts/start.ts",
     "test": "DENOPS_ALLOW_MOCK_ORIGIN=1 deno test --unstable-worker-options --allow-all tests/",

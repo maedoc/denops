@@ -8,6 +8,18 @@ actually talking to instead of probing behaviour.
 Format: `## <version> — <YYYY-MM-DD>`, newest first, then a short bullet list. Keep bullets about
 the API surface; implementation notes belong in the commit message.
 
+## 0.3.0 — 2026-11-01
+
+- `denops.logs({lines?, grep?})`: the supervisor now tees the server's stdout/stderr into
+  `data/server.log` (2 MB tail kept across restarts) and this op returns it redacted — bearer
+  tokens, `?token=`/`api_key=` parameters, `Authorization`/`PRIVATE-TOKEN` headers and 60+ char
+  tokens masked. A failed start is diagnosable from a run instead of from journald.
+- `denops.about` reports the live permission envelope (`permissions.net/read/write/run`), derived by
+  the same `serverPlan()` the launcher uses.
+- `dev.sync({root})` (approval): `git fetch --prune origin` + `merge --ff-only @{u}` on the current
+  branch. No caller-supplied ref, remote or flag, and never a reset — a diverged branch fails and a
+  detached HEAD is refused, so local work cannot be discarded.
+
 ## 0.2.2 — 2026-11-01
 
 - GitLab pagination works: `perPage`/`page` are camelCase at the op boundary but were copied

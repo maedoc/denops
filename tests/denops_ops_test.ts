@@ -1,5 +1,10 @@
 import { assert, assertEquals, assertStringIncludes } from "jsr:@std/assert@1";
-import { denopsConnector, summarizeRun } from "../src/connectors/denops/manifest.ts";
+import {
+  denopsConnector,
+  redactLine,
+  summarizeConnectorLine,
+  summarizeRun,
+} from "../src/connectors/denops/manifest.ts";
 import { Harness } from "../src/harness/worker.ts";
 import type { JsonValue } from "../src/harness/types.ts";
 
@@ -184,6 +189,106 @@ Deno.test("summarizeRun survives a truncated log (manifest only)", () => {
   ]) as unknown as Record<string, unknown>;
   assertEquals(summary.finalStatus, null);
   assertEquals(summary.ops, []);
+});
+
+Deno.test("denops.logs tails the server log, filtered and redacted", async () => {
+  const dataDir = await Deno.makeTempDir();
+  try {
+    const logPath = `${dataDir}/server.log`;
+    await Deno.writeTextFile(
+      logPath,
+      [
+        "=== 2026-11-01T17:00:00Z supervisor: starting abc ===",
+        "[denops] listening on http://127.0.0.1:3100/mcp",
+        '[connector] {"event":"gitlab","authorization":"Bearer abcdefghijklmnopqrstuvwxyz"}',
+        "fetch https://api.example/v1/models?api_key=sk-verysecretvalue&x=1",
+        "PRIVATE-TOKEN: f00b4r-token-value",
+        "error: invalid host: '[:53'",
+        "another line with no secrets",
+      ].join("\n"),
+    );
+    const conn = denopsConnector({
+      skillPath: await tmpSkill(),
+      version: "0.3.0",
+      connectors: () => [],
+      dataDir,
+      serverLogPath: logPath,
+    });
+    const c = client(conn);
+
+    const tail = await c["logs"]({ lines: 3 }) as {
+      available: boolean;
+      lines: string[];
+      matched: number;
+      fileBytes: number;
+    };
+    assertEquals(tail.available, true);
+    assertEquals(tail.lines.length, 3);
+    assertStringIncludes(tail.lines[2], "no secrets");
+    assert(tail.fileBytes > 0);
+
+    const hit = await c["logs"]({ grep: "invalid host" }) as { lines: string[]; matched: number };
+    assertEquals(hit.matched, 1);
+    assertStringIncludes(hit.lines[0], "invalid host");
+
+    const all = (await c["logs"]({ lines: 2000 }) as { lines: string[] }).lines.join("\n");
+    assert(!all.includes("abcdefghijklmnopqrstuvwxyz"), "bearer token must be masked");
+    assert(!all.includes("sk-verysecretvalue"), "api_key query parameter must be masked");
+    assert(!all.includes("f00b4r-token-value"), "PRIVATE-TOKEN must be masked");
+    assertStringIncludes(all, "<redacted>");
+
+    // a missing log is a fact, not an error
+    const missing = denopsConnector({
+      skillPath: await tmpSkill(),
+      version: "0.3.0",
+      connectors: () => [],
+      dataDir,
+      serverLogPath: `${dataDir}/nope.log`,
+    });
+    const empty = await client(missing)["logs"]({}) as { available: boolean; note?: string };
+    assertEquals(empty.available, false);
+    assertStringIncludes(empty.note ?? "", "at the next start");
+  } finally {
+    await Deno.remove(dataDir, { recursive: true });
+  }
+});
+
+Deno.test("denops.logs summarises connector args instead of echoing them", () => {
+  const line =
+    '[connector] {"connector":"mail","op":"mail.drafts.save","args":{"body":"a private body"}}';
+  const summarized = summarizeConnectorLine(line);
+  assert(!summarized.includes("a private body"), summarized);
+  assertStringIncludes(summarized, '"op":"mail.drafts.save"');
+  assertStringIncludes(summarized, '"bytes":');
+  // a non-JSON or non-connector line is left alone
+  assertEquals(summarizeConnectorLine("plain line"), "plain line");
+  assertEquals(summarizeConnectorLine("[connector] not json"), "[connector] not json");
+});
+
+Deno.test("redactLine masks credentials without mangling ordinary text", () => {
+  assertEquals(
+    redactLine("Authorization: Bearer abcd1234efgh5678"),
+    "Authorization: <redacted>",
+  );
+  assertStringIncludes(redactLine("GET /x?token=abcdef123456"), "token=<redacted>");
+  // a 40-char git sha and 64-char ssh fingerprint-ish words are fine to keep
+  const sha = "0123456789abcdef0123456789abcdef01234567";
+  assertStringIncludes(redactLine(`starting ${sha}`), sha);
+  assertEquals(redactLine("plain line"), "plain line");
+});
+
+Deno.test("denops.about reports the derived permission envelope", async () => {
+  const conn = denopsConnector({
+    skillPath: await tmpSkill(),
+    version: "0.3.0",
+    connectors: () => ["web"],
+    permissions: () => ({ net: ["arxiv.org"], read: ["src/"], write: ["data/"], run: [] }),
+  });
+  const about = await client(conn)["about"]({}) as {
+    permissions: { net: string[]; run: string[] };
+  };
+  assertEquals(about.permissions.net, ["arxiv.org"]);
+  assertEquals(about.permissions.run, []);
 });
 
 Deno.test("denops.budget reports the live harness budget", async () => {

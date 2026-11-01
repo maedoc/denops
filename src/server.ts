@@ -14,7 +14,7 @@ import { agentGuide } from "./guide.ts";
 import { deployConfigFrom, deployConnector } from "./connectors/deploy/manifest.ts";
 import { devConnector, devRootsFromConfig } from "./connectors/dev/manifest.ts";
 import { webConnector, webOptionsFromConfig } from "./connectors/web/manifest.ts";
-import { derivePermissions } from "./permissions.ts";
+import { derivePermissions, serverPlan } from "./permissions.ts";
 import { mistralTierOverride } from "./connectors/mistral/tiers.ts";
 import { denopsConnector } from "./connectors/denops/manifest.ts";
 import { handleOAuthRoute, newOAuthState, type OAuthConfig } from "./security/oauth.ts";
@@ -194,14 +194,27 @@ export async function buildApp(configPath: string, secretsPath: string): Promise
   registry.register(
     denopsConnector({
       skillPath: "SKILL.md",
-      version: "0.2.2",
+      version: "0.3.0",
       // the supervisor exports the commit it checked out
       commit: Deno.env.get("DENOPS_COMMIT") ?? undefined,
       connectors: () => registry.list().map((c) => c.id),
       dataDir: config.dataDir,
       changelogPath: "CHANGELOG.md",
+      serverLogPath: `${config.dataDir}/server.log`,
       // read lazily: the harness is created before this registry is registered
       budget: () => harness.budgetSnapshot() as unknown as Record<string, JsonValue>,
+      // the same derivation scripts/start.ts uses, so "can this server reach X?" is
+      // one call instead of a journal dive
+      permissions: () => {
+        const p = serverPlan({
+          server: config.server as unknown as Record<string, unknown>,
+          connectors: config.connectors,
+        });
+        return { net: p.net, read: p.read, write: p.write, run: p.run } as unknown as Record<
+          string,
+          JsonValue
+        >;
+      },
     }),
   );
 

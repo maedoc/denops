@@ -52,7 +52,7 @@ async function allConnectors(): Promise<Connector[]> {
     devConnector({ roots: devRoots }),
     webConnector({ allowedHosts: ["example.org"] }),
     ...(deploy ? [deployConnector(deploy)] : []),
-    denopsConnector({ skillPath, version: "0.2.2", connectors: () => [] }),
+    denopsConnector({ skillPath, version: "0.3.0", connectors: () => [] }),
   ];
 }
 
@@ -120,7 +120,7 @@ Deno.test("SKILL.md states the invariants the server enforces", () => {
 });
 
 Deno.test("denops.skill serves SKILL.md, optionally filtered by section", async () => {
-  const conn = denopsConnector({ skillPath, version: "0.2.2", connectors: () => ["mail", "fs"] });
+  const conn = denopsConnector({ skillPath, version: "0.3.0", connectors: () => ["mail", "fs"] });
   const client = conn.client({ config: {}, secrets: {}, log: () => {} });
   const full = await client["skill"]({}) as { content: string; bytes: number; updatedAt: string };
   assertEquals(full.content, skill);
@@ -136,6 +136,6 @@ Deno.test("denops.skill serves SKILL.md, optionally filtered by section", async 
   assert(!section.content.includes("## 6."), "filtered output keeps only matching sections");
 
   const about = await client["about"]({}) as { version: string; connectors: string[] };
-  assertEquals(about.version, "0.2.2");
+  assertEquals(about.version, "0.3.0");
   assertEquals(about.connectors, ["mail", "fs"]);
 });

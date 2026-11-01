@@ -88,7 +88,7 @@ them): `glob`, `list`, `read` (line windows with `hasMore`), `grep` (regex, capp
   root.
 - **Grants are levelled**: approving the first op on a root records `fs:<root>:read` or
   `fs:<root>:write` (implies read); `fs.rm`/`fs.exec` are never grant-covered.
-  `grants({action, key})`. **denops** (5 ops) — `denops.skill` (this document; `{ section }`
+  `grants({action, key})`. **denops** (6 ops) — `denops.skill` (this document; `{ section }`
   filters), `denops.about` (version, skill freshness, connector families), `denops.version`
   (version, commit, CHANGELOG head — check this instead of probing whether a fix deployed),
   `denops.budget` (remaining wall clock and op count for THIS run — call it before long loops or
@@ -100,7 +100,7 @@ them): `glob`, `list`, `read` (line windows with `hasMore`), `grep` (regex, capp
 are reachable; private/loopback/link-local addresses are refused (SSRF guard) and redirects are
 re-validated. A refused host is a config question for the operator, not something to work around.
 
-**dev** (4 ops) / **deploy** (3 ops) — work on this server's own code without a shell: `dev.roots`,
+**dev** (5 ops) / **deploy** (3 ops) — work on this server's own code without a shell: `dev.roots`,
 `dev.run({root, task})` (`check`/`test`/`fmt`/`lint`… argv from config, no shell; returns
 `{code, stdout, stderr, sha, dirty}` and records the outcome against the current **tree**, by exit
 code and tree identity, never by output), `dev.git({root, action, message?})`,

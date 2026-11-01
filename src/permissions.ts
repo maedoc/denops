@@ -180,6 +180,33 @@ export function confine(root: string, rel: string): string {
   return target;
 }
 
+/**
+ * Paths the launcher always allows, relative to the live checkout. One list, used by
+ * scripts/start.ts and reported by `denops.about` — a second copy would drift and
+ * tell the model something untrue about what the server can read.
+ */
+export const SERVER_READ_BASE = [
+  "config.yaml",
+  "secrets.json",
+  "data/",
+  "deno.json",
+  "deno.lock",
+  "SKILL.md",
+  "CHANGELOG.md",
+  "src/",
+  "scripts/",
+];
+export const SERVER_WRITE_BASE = ["data/"];
+
+/** The live server's plan: base paths + everything the configured connectors need. */
+export function serverPlan(src: PermissionSource): PermissionPlan {
+  return derivePermissions(src, {
+    read: SERVER_READ_BASE,
+    write: SERVER_WRITE_BASE,
+    connectorRun: true,
+  });
+}
+
 /** Turn a plan into `deno run` flags. Never emits a bare --allow-all/read/write/net. */
 export function permissionFlags(plan: PermissionPlan): string[] {
   const flags = [`--allow-net=${plan.net.join(",")}`];

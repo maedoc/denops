@@ -6,6 +6,7 @@
 #                    deploy.rollback; absent means "keep running last-good")
 #   last-good        last commit that started, answered /health, and survived the soak
 #   restart-request  written by the deploy connector to ask for a restart
+#   server.log       the child server's stdout+stderr, tailed by `denops.logs`
 #   deploy.jsonl     append-only audit log of promote/rollback/soak/auto-revert
 #
 # Behaviour: check out the desired commit detached, warm the module graph, start the
@@ -90,8 +91,17 @@ while true; do
     continue
   fi
 
+  # The child's stdout/stderr is teed into data/server.log: after a failed start it is
+  # the only evidence of *why*, and `denops.logs` has to read it without a shell. The
+  # supervisor's own lines still go to journald. Keep the previous 2 MB across restarts.
+  SERVER_LOG="$STATE/server.log"
+  if [ -f "$SERVER_LOG" ]; then
+    tail -c 2000000 "$SERVER_LOG" > "$SERVER_LOG.tmp" 2>/dev/null && mv "$SERVER_LOG.tmp" "$SERVER_LOG"
+  fi
+  printf '=== %s supervisor: starting %s ===\n' "$(date -Is)" "$desired" >>"$SERVER_LOG"
+
   # expose the running commit to the server (denops.about) and to any child
-  DENOPS_COMMIT="$desired" setsid deno task start &
+  DENOPS_COMMIT="$desired" setsid deno task start >>"$SERVER_LOG" 2>&1 &
   child=$!
 
   healthy=0

@@ -403,6 +403,7 @@ connectors:
 | `dev.roots`                         | open                          | configured roots, task names, and which task gates `dev.try`               |
 | `dev.run({root, task})`             | open                          | runs one declared task; returns `{code, stdout, stderr, sha, dirty}`       |
 | `dev.git({root, action, message?})` | `commit` = approval           | `status`, `diff`, `log`, `commit -am "<msg>"` — no model-supplied flags    |
+| `dev.sync({root})`                  | approval                      | `git fetch --prune origin` + `merge --ff-only @{u}` — never a reset        |
 | `dev.try({root, op, args})`         | open (open-tier targets only) | runs one op from the **dev checkout's own registry** against the real APIs |
 
 `dev.try` refuses approval-tier ops: those are exercised by promoting. It runs **committed, checked
@@ -451,6 +452,7 @@ data/last-good        last commit that started, answered /health, and survived t
 data/restart-request  written by the deploy connector to request a restart
 data/deploy.jsonl     append-only audit: promote-test, promote, soak-ok, main-advanced, rollback,
                       auto-revert (with reason), crash
+data/server.log       the child's stdout/stderr, 2 MB tail kept across restarts (denops.logs serves it)
 ```
 
 Each start: `git checkout --detach <desired>` → `deno cache src/server.ts` → start `deno task start`
@@ -467,6 +469,11 @@ Because the live checkout runs detached, updating the live tree is done through 
 Rehearsed on the live deployment: healthy promote (soak → last-good → main advanced), a commit that
 passed 92 tests but threw at startup (auto-revert in ~2 s, main untouched), recovery by reverting
 the break, and an explicit rollback to a previous sha.
+
+**The supervisor script itself comes from the live checkout**
+(`ExecStart=…/scripts/live-supervisor.sh`), so a promotion that changes it is read by an
+already-running bash. Restart the unit after such a promotion (`sudo systemctl restart denops`)
+instead of trusting bash to reload it cleanly.
 
 ---
 
@@ -568,6 +575,9 @@ ssh homelab 'cd ~/denops-dev && git fetch origin && git reset --hard origin/main
   `422 Field required at loc ['file','file']`; let the runtime set the multipart boundary.
 - **mtime is too coarse for hot-reload** — two edits in the same millisecond share an mtime; hot
   reload keys on `mtime:size`.
+- **`rejectUnknown` caps the number of keys, it does not reject unknown names.** An extra argument
+  is silently ignored rather than refused, so an op that reads only the fields it names still
+  behaves predictably — but do not describe it to a caller as "unknown args are rejected".
 - **A capability check must precede the approval gate.** `requireWrite` lived inside the client, so
   a write to a read-only root suspended, and would have executed if a human rubber-stamped it.
   Capability violations now fail in `precheck` and create no pending.
