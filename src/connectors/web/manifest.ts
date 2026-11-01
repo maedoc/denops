@@ -17,6 +17,12 @@ import { htmlToText } from "../../text.ts";
 export interface WebConnectorOptions {
   /** Allowed hosts: `example.org`, `*.example.org`, optionally `host:port`. */
   allowedHosts: string[];
+  /**
+   * Resolvers used for the SSRF check, as `ip` or `ip:port`. The server runs with a
+   * scoped --allow-net, and Deno.resolveDns needs permission for the *resolver*
+   * (not just the name), so the resolvers have to be listed here to be reachable.
+   */
+  dnsServers?: string[];
   maxBytes?: number;
   timeoutMs?: number;
   userAgent?: string;
@@ -137,7 +143,7 @@ export async function assertFetchable(
   const literal = /^\d+\.\d+\.\d+\.\d+$/.test(host) || host.includes(":");
   const addresses = literal ? [host] : await resolve(host);
   if (addresses.length === 0) {
-    throw new Error(`cannot resolve ${host}`);
+    throw new Error(`cannot resolve ${host}: no addresses returned`);
   }
   for (const ip of addresses) {
     if (isPrivateAddress(ip)) {
@@ -149,17 +155,41 @@ export async function assertFetchable(
   return { url, addresses };
 }
 
-async function resolveAll(host: string): Promise<string[]> {
-  const out: string[] = [];
-  for (const type of ["A", "AAAA"] as const) {
-    try {
-      const records = await Deno.resolveDns(host, type);
-      out.push(...records.map((r) => String(r)));
-    } catch {
-      // a host with no AAAA record is normal
-    }
+function parseServer(entry: string): { ipAddr: string; port: number } {
+  const idx = entry.lastIndexOf(":");
+  if (idx > 0 && /^\d+$/.test(entry.slice(idx + 1))) {
+    return { ipAddr: entry.slice(0, idx), port: Number(entry.slice(idx + 1)) };
   }
-  return out;
+  return { ipAddr: entry, port: 53 };
+}
+
+async function resolveAll(host: string, servers: string[]): Promise<string[]> {
+  const answer = async (nameServer?: { ipAddr: string; port: number }): Promise<string[]> => {
+    const out: string[] = [];
+    for (const type of ["A", "AAAA"] as const) {
+      try {
+        const records = nameServer
+          ? await Deno.resolveDns(host, type, { nameServer })
+          : await Deno.resolveDns(host, type);
+        out.push(...records.map((r) => String(r)));
+      } catch {
+        // no AAAA record is normal; a permission error is not, and the caller sees
+        // an explicit message below if nothing resolved
+      }
+    }
+    return out;
+  };
+  for (const entry of servers) {
+    const found = await answer(parseServer(entry));
+    if (found.length > 0) return found;
+  }
+  // last resort: the host's own resolver (works when --allow-net happens to cover it)
+  const fallback = await answer();
+  if (fallback.length > 0) return fallback;
+  throw new Error(
+    `DNS lookup failed for ${host}: no resolver reachable. ` +
+      `Add the resolver to connectors.web.dnsServers (it must also be in --allow-net)`,
+  );
 }
 
 async function readCapped(
@@ -193,7 +223,8 @@ export function webConnector(opts: WebConnectorOptions): Connector {
   const allowed = opts.allowedHosts ?? [];
   const maxBytes = opts.maxBytes ?? DEFAULT_MAX_BYTES;
   const timeoutMs = opts.timeoutMs ?? 20_000;
-  const resolve = opts.resolve ?? resolveAll;
+  const dnsServers = opts.dnsServers ?? [];
+  const resolve = opts.resolve ?? ((host: string) => resolveAll(host, dnsServers));
   const userAgent = opts.userAgent ?? "denops/0.2 (+https://wdmn.hd.free.fr)";
 
   const fetchOne = async (raw: string, format: "text" | "html", cap: number) => {
@@ -291,8 +322,12 @@ export function webOptionsFromConfig(raw: Record<string, unknown>): WebConnector
   const allowed = Array.isArray(raw.allowedHosts)
     ? (raw.allowedHosts as unknown[]).map((h) => String(h)).filter((h) => h !== "")
     : [];
+  const dnsServers = Array.isArray(raw.dnsServers)
+    ? (raw.dnsServers as unknown[]).map((d) => String(d)).filter((d) => d !== "")
+    : [];
   return {
     allowedHosts: allowed,
+    dnsServers,
     ...(raw.maxBytes === undefined ? {} : { maxBytes: Number(raw.maxBytes) }),
     ...(raw.timeoutMs === undefined ? {} : { timeoutMs: Number(raw.timeoutMs) }),
     ...(raw.userAgent === undefined ? {} : { userAgent: String(raw.userAgent) }),

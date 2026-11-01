@@ -104,6 +104,9 @@ startup:
 #   web:
 #     enabled: true
 #     allowedHosts: [arxiv.org, export.arxiv.org, "*.githubusercontent.com"]
+#     # resolvers for the SSRF check: Deno.resolveDns needs net access to the
+#     # resolver itself, and derivePermissions adds these to --allow-net
+#     dnsServers: ["1.1.1.1:53", "9.9.9.9:53"]
 #     maxBytes: 262144
 #     timeoutMs: 20000
 #     userAgent: "denops/0.2 (+https://example.org)"

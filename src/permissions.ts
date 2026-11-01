@@ -55,11 +55,23 @@ export function derivePermissions(
       }
     }
     if (name === "web") {
-      // web.fetch is allowed to reach exactly the hosts the operator listed; Deno
-      // enforces that too, so a bug in the SSRF guard is not the only line of defence.
+      // web.fetch may reach exactly the hosts the operator listed (Deno enforces it
+      // too, so a bug in the SSRF guard is not the only line of defence), plus the
+      // resolvers the guard queries: Deno.resolveDns needs net access to the
+      // resolver, not only to the name being resolved.
       for (const host of (c.allowedHosts ?? []) as unknown[]) {
         const h = String(host).trim();
-        if (h !== "") net.add(h.includes(":") ? h : h);
+        if (h !== "") net.add(h);
+      }
+      for (const dns of (c.dnsServers ?? []) as unknown[]) {
+        const d = String(dns).trim();
+        if (d === "") continue;
+        if (/:\d+$/.test(d)) {
+          net.add(d);
+        } else {
+          // bare address: assume :53, bracketing IPv6 (Deno wants host:port form)
+          net.add(d.includes(":") ? `[${d}]:53` : `${d}:53`);
+        }
       }
     }
     if (name === "mistral") {
