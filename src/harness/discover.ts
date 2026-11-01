@@ -30,9 +30,9 @@ export function search(registry: Registry, query: string, connector?: string): s
     // Say how big the registry actually is: "no matching ops" alone reads as
     // "this server has no ops", which is how a caller concluded a 35-op server
     // exposed two.
-    return `no matching ops${connector ? ` in ${connector}` : ""} (this server registers ${
+    return `no matching ops${connector ? ` in ${connector}` : ""}: ${
       describeSize(all, connector)
-    }).`;
+    }.`;
   }
   const header = tokens.length === 0
     ? `${describeSize(all, connector)}: showing ${scored.length}${
