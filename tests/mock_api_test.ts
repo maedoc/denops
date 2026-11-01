@@ -387,6 +387,13 @@ Deno.test("gitlab: exact user lookup, issue-state default, id types", async () =
     // numeric project ids are accepted by the string-typed ops too
     await clients["issues.list"]({ projectId: 42, state: "all" });
     assertEquals(recorded[3].path, "/api/v4/projects/42/issues?state=all");
+    // pagination is camelCase at the boundary but snake_case on the wire: sending
+    // `perPage` verbatim made GitLab ignore it and always answer with 20 rows
+    await clients["issues.list"]({ projectId: 42, perPage: 5, page: 2 });
+    const paged = recorded.at(-1)!.path;
+    assertStringIncludes(paged, "per_page=5");
+    assertStringIncludes(paged, "page=2");
+    assert(!paged.includes("perPage"), paged);
     assertEquals(
       conn.ops.find((o) => o.name === "gitlab.issues.create")!.argSchema({
         projectId: 42,

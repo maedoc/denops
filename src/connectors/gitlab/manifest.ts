@@ -728,12 +728,21 @@ function enc(s: string): string {
 function encPath(s: string): string {
   return encodeURIComponent(s);
 }
+// Query parameters are GitLab's snake_case; the ops expose camelCase for the model's
+// convenience (perPage, not per_page). Copying the key verbatim meant GitLab ignored
+// `perPage` as an unknown parameter and always answered with its default page size.
+function toQueryKey(key: string): string {
+  return key.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`);
+}
+
 function pick(a: unknown, keys: string[]): Record<string, string | number | boolean> {
   const out: Record<string, string | number | boolean> = {};
   if (typeof a === "object" && a !== null) {
     for (const k of keys) {
       const v = (a as Record<string, unknown>)[k];
-      if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") out[k] = v;
+      if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") {
+        out[toQueryKey(k)] = v;
+      }
     }
   }
   return out;

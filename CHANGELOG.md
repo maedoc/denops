@@ -8,6 +8,12 @@ actually talking to instead of probing behaviour.
 Format: `## <version> — <YYYY-MM-DD>`, newest first, then a short bullet list. Keep bullets about
 the API surface; implementation notes belong in the commit message.
 
+## 0.2.2 — 2026-11-01
+
+- GitLab pagination works: `perPage`/`page` are camelCase at the op boundary but were copied
+  verbatim into the query string, so GitLab ignored `perPage` and always answered with its default
+  20 rows. Query keys are now emitted in the API's snake_case (`per_page`).
+
 ## 0.2.1 — 2026-11-01
 
 - `gitlab.issues.list` no longer requires `state`: it accepts omission again and applies its
