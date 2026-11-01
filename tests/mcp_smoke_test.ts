@@ -29,6 +29,66 @@ async function writeConfig(dir: string): Promise<{ config: string; secrets: stri
   return { config, secrets };
 }
 
+// The approval flow end to end over MCP: a run with two gated ops must hand back a
+// *new* pendingId after the first approval, and only then complete.
+Deno.test("MCP smoke: chained approvals hand back each pendingId", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const { config, secrets } = await writeConfig(dir);
+    const app = await buildApp(config, secrets);
+    const port = 3125;
+    app.config.server.token = "test-token";
+    const srv = Deno.serve(
+      { hostname: "127.0.0.1", port, onListen: () => {} },
+      (req, info) => createHttpHandler(app)(req, info),
+    );
+    const call = async (name: string, args: Record<string, unknown>) => {
+      const r = await fetch(`http://127.0.0.1:${port}/mcp`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          accept: "application/json, text/event-stream",
+          authorization: "Bearer test-token",
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: { name, arguments: args },
+        }),
+      });
+      const text = await r.text();
+      const line = text.split("\n").find((l) => l.startsWith("data:"));
+      assert(line, "expected SSE data line");
+      const msg = JSON.parse(line.slice(5)) as {
+        result: { content: Array<{ text: string }> };
+      };
+      return JSON.parse(msg.result.content[0].text) as Record<string, unknown>;
+    };
+
+    const first = await call("execute", {
+      code:
+        `const a = await debug.gated({ step: 1 }); const b = await debug.gated({ step: 2 }); return { a, b };`,
+    });
+    assertEquals(first.status, "awaiting_approval");
+    assertEquals(first.seq, 1);
+
+    const second = await call("approve", { pendingId: first.pendingId, decision: "approve" });
+    assertEquals(second.status, "awaiting_approval", "second gated op must still ask");
+    assert(typeof second.pendingId === "string" && second.pendingId !== first.pendingId);
+    assertEquals((second.args as { step: number }).step, 2);
+
+    const third = await call("approve", { pendingId: second.pendingId, decision: "approve" });
+    assertEquals(third.status, "completed");
+    const result = third.result as { a: { args: { step: number } }; b: { args: { step: number } } };
+    assertEquals(result.a.args, { step: 1 });
+    assertEquals(result.b.args, { step: 2 });
+    await srv.shutdown();
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 Deno.test("MCP smoke: initialize, tools/list, execute echo via streamable HTTP", async () => {
   const dir = await Deno.makeTempDir();
   try {

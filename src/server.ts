@@ -324,14 +324,17 @@ export function registerTools(app: AppContext, server: McpServer): void {
       }
       await app.pendingStore.remove(pendingId);
       if (decision === "approve") {
+        // The marker is written for every approval, not just fs root grants: replay
+        // reads these to know which calls are already approved, so a run with
+        // several approval ops does not re-ask for the ones already decided.
+        await new RunLog(app.dataDir, pending.runId, app.budgets.maxLogBytes).recordOp({
+          op: pending.op,
+          status: "approved",
+          call: pending.seq,
+        });
         const grantKey = fsGrantKey(pending.op, pending.args);
         if (grantKey) {
           await app.grants.grant(grantKey);
-          await new RunLog(app.dataDir, pending.runId, app.budgets.maxLogBytes).recordOp({
-            op: pending.op,
-            status: "approved",
-            call: pending.seq,
-          });
           console.error(`[denops] granted root ${grantKey} (approved ${pending.op})`);
         }
       }
@@ -380,6 +383,31 @@ export function registerTools(app: AppContext, server: McpServer): void {
       }
       const log = new RunLog(app.dataDir, pending.runId, app.budgets.maxLogBytes);
       const outcome = await app.harness.run(pending.runId, manifest.code, log, replay);
+      // A run with several approval ops re-suspends on the next one: register and
+      // hand back its pendingId, or the caller has no way to continue.
+      if (outcome.status === "awaiting_approval" && outcome.pending) {
+        app.approvals.add(outcome.pending);
+        await app.pendingStore.add(outcome.pending);
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify({
+              status: "awaiting_approval",
+              runId: pending.runId,
+              approvedOp: pending.op,
+              approvedSummary: pending.summary,
+              resumedFrom: pendingId,
+              op: outcome.pending.op,
+              seq: outcome.pending.seq,
+              pendingId: outcome.pending.pendingId,
+              summary: outcome.pending.summary,
+              args: outcome.pending.args,
+              note:
+                "This run has another approval-tier op. Review `summary`, then call approve(pendingId, 'approve'|'reject') again.",
+            }),
+          }],
+        };
+      }
       return {
         content: [{
           type: "text",
