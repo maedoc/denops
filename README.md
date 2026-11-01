@@ -5,9 +5,11 @@ Mode** pattern: instead of enumerating every API operation as an MCP tool, the s
 `search`, `execute`, `approve` (plus `grants` when a filesystem root is configured) and the model
 writes JavaScript that runs in a sandboxed worker against pre-authenticated, host-side API clients.
 
-It ships with connectors for GitLab, IMAP mail, Mistral libraries, the local filesystem, and — for
-this deployment — a narrow "dev/deploy" surface that lets an agent improve the server's own code
-without a shell, with an approval-gated, auto-reverting deployment pipeline.
+It ships with connectors for GitLab, IMAP mail (threaded reply drafts included), Mistral libraries,
+the local filesystem, a guarded `web.fetch`, and — for this deployment — a narrow "dev/deploy"
+surface that lets an agent improve the server's own code without a shell, with an approval-gated,
+auto-reverting deployment pipeline. `CHANGELOG.md` records what each running version can do;
+`denops.version` serves it from inside a run.
 
 ---
 
@@ -19,7 +21,7 @@ Host (main isolate)                            MCP endpoint /mcp (streamable HTT
   connector clients hold ALL credentials       JSONL op log under data/runs/<runId>.jsonl
         │ postMessage { op, args, callId }
 Guest (worker, deno permissions: "none")       fetch/WebSocket/Deno.* stubbed
-  model-written JS + handles: debug.* gitlab.* mail.* mistral.* fs.* dev.* deploy.*
+  model-written JS + handles: debug.* gitlab.* mail.* mistral.* fs.* web.* dev.* deploy.* denops.*
 ```
 
 Security invariants:
@@ -510,6 +512,8 @@ token.
 | typecheck / test               | `deno task check`, `deno task test` (mock HTTP + MCP smoke; no live calls)                                  |
 | live smoke                     | `deno task smoke:live` (read-only, needs real credentials)                                                  |
 | pending approvals from the CLI | `deno task pending data list`, `… approve <id> config.yaml secrets.json`, `… reject <id>`                   |
+| audit what ran                 | `denops.oplog` op (redacted: ops, statuses, approval/error counts — no args, no result bodies)              |
+| clear stale pendings           | `rm data/pending.json` (only when no run is in flight)                                                      |
 
 ---
 
@@ -521,6 +525,14 @@ flows), and hermetic dev/deploy rehearsals in throwaway git repos — no network
 `DENOPS_ALLOW_MOCK_ORIGIN=1` is set by the task so the Mistral client accepts a mock origin.
 
 Lint and format: `deno lint src tests scripts`, `deno fmt`.
+
+**Run the Linux task before promoting.** `deploy.promote` runs the dev root's `test` task on the
+homelab, so a macOS-only green is a refused promotion (it has happened twice, both times a test that
+assumed the wrong platform binaries):
+
+```bash
+ssh homelab 'cd ~/denops-dev && git fetch origin && git reset --hard origin/main && deno task test'
+```
 
 ---
 
@@ -547,6 +559,8 @@ Lint and format: `deno lint src tests scripts`, `deno fmt`.
 - **`--allow-run` scoping matters.** `Deno.kill` needs an unscoped `--allow-run`; `proc.kill` works
   for your own children. `fs.exec` also needs `/usr/bin/setsid` and `/bin/kill` allowed.
 - **systemd starts services with a minimal PATH** — the supervisor must add `~/.deno/bin`.
+- **Never hard-code `content-type: application/json` for a FormData body.** It produced Mistral's
+  `422 Field required at loc ['file','file']`; let the runtime set the multipart boundary.
 - **mtime is too coarse for hot-reload** — two edits in the same millisecond share an mtime; hot
   reload keys on `mtime:size`.
 - **A capability check must precede the approval gate.** `requireWrite` lived inside the client, so
@@ -562,6 +576,18 @@ Lint and format: `deno lint src tests scripts`, `deno fmt`.
   checkout, write: its data dir, net: live-declared hosts, no `--allow-run`) plus "committed code,
   checked for this tree" closes it; `dev.try` now also has to be able to _trust_ its own result, so
   the gate keys on exit code and tree identity, never on stdout.
+- **A minimal YAML reader plus `for…of` is a host-grant generator.** `dnsServers: ["1.1.1.1:53", …]`
+  came back as a single string, `derivePermissions` iterated it character by character and produced
+  `--allow-net=…,[:53,1:53,.:53` — deno refused to start and the supervisor auto-reverted. The
+  reader now understands flow sequences, and consumers accept an array _or_ a comma-separated scalar
+  but never iterate a string.
+- **`Deno.resolveDns` needs the resolver, not the name.** Under a scoped `--allow-net` it asked for
+  `127.0.0.53:53` (systemd-resolved) even though `arxiv.org` was allowed, so the SSRF guard saw "no
+  addresses" and `web.fetch` failed. Resolvers are now explicit config (`connectors.web.dnsServers`)
+  and part of `--allow-net`.
+- **A test that only runs green on macOS is a promotion hazard.** One asserted `/bin/sh` in the
+  permission plan while configuring an fs root without `exec`, so it passed locally and failed the
+  Linux test task. See "run the Linux task before promoting".
 - **Fuzzy search looks like a small registry.** `search` silently capped at 20 with no totals, and a
   miss said "no matching ops"; both now report the true size and show the inventory.
 
@@ -590,6 +616,24 @@ scripts/pending.ts         CLI for pending approvals
 deploy/denops.service      systemd unit for the supervisor
 tests/                     unit, mock-API, MCP smoke, security, OAuth, dev/deploy rehearsals
 ```
+
+## Known gaps / next
+
+- **`dev.try` hardening, phase 2 (P5):** a scoped read-only dev token for the child, and/or
+  approval-gating `dev.try` when a connector manifest changed in the commit being tried. Today the
+  child holds the checkout's credentials (a symlink to the live `secrets.json`) and may reach the
+  hosts the live config declares — the same authority the server has, reviewed by the promotion
+  diff.
+- **Staging pruning is manual** (`mistral.staging.clear({olderThanHours})`); a TTL sweep was
+  deferred.
+- **Quoted replies keep the parent's zero-width junk.** `quoteBlock` copies the parent's
+  `text/plain` verbatim, including runs of `U+200B`–`U+200F` and `U+FEFF` that some senders embed.
+  Harmless in OWA/Apple Mail (verified), still worth stripping.
+- **No mail delete op.** Cleaning up a draft is `mail.messages.move` (approval) to the trash folder.
+- **`dev.run` output is capped** at 64 KiB per stream, so a long failure log gets truncated;
+  `deploy.status`/`denops.oplog` are the places to reconstruct what happened.
+
+---
 
 ## Limits and non-goals
 
