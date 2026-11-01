@@ -90,7 +90,8 @@ while true; do
     continue
   fi
 
-  setsid deno task start &
+  # expose the running commit to the server (denops.about) and to any child
+  DENOPS_COMMIT="$desired" setsid deno task start &
   child=$!
 
   healthy=0
