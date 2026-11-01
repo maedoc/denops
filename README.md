@@ -232,13 +232,45 @@ cross-account SHA-256 verified copy-then-expunge)_. No SMTP: send is absent by o
 Background connection errors (socket inactivity, server BYE, dropped tunnel) are absorbed: the
 account marks itself disconnected and reconnects on the next op, instead of taking the process down.
 
-### mistral — Libraries API
+### mistral — Libraries API (15 ops)
 
-`libraries.list/get/create*(approval)*/delete*(approval)*`,
-`documents.list/get/upload/delete*(approval)*`, `documents.share/unshare/shares` (share/unshare are
-approval), `connectors.list/get`, `models.list`. Sensitive endpoints are keyed by run-scoped
-ownership: a library created _in this run_ can be uploaded to or deleted open; pre-existing
-libraries require approval.
+Read, and _write knowledge back_:
+
+| group     | ops                                                                                                                                                               |
+| --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| libraries | `libraries.list`, `libraries.get`, `libraries.create`, `libraries.delete` _(approval)_, `libraries.share`/`unshare` _(approval)_, `libraries.shares.list`         |
+| documents | `documents.list`, `documents.get`, `documents.read`, `documents.stage`, `documents.put`, `documents.replace`, `documents.upload`, `documents.delete` _(approval)_ |
+| workspace | `connectors.list`, `connectors.get`, `models.list`                                                                                                                |
+
+Reading is staged in two steps because documents have no `/content` endpoint:
+
+1. **metadata first** — `documents.list`/`documents.get` return summaries carrying `size`,
+   `mime_type`, `process_status` and the extracted `summary` (ask for it with
+   `fields: ["name","size","summary"]`). A 553 KB PDF is 627 characters of summary, so an agent can
+   often answer without downloading.
+2. **then decide** — `documents.read` returns text inline for `text/*`-ish types up to
+   `inlineReadMaxBytes` (default 64 KiB) and _refuses binary_ with guidance; `documents.stage`
+   downloads any document (via `GET .../documents/{id}/signed-url`, fetched **without** the API key)
+   into `stagingRoot`, returning `{ path, bytes, mime, sha256 }`. That directory is exposed as the
+   read-only `denops-stage` fs root, so `fs.grep`/`fs.read` can work through it.
+
+Writing takes text, not base64: `documents.put({libraryId, fileName, text, contentType?})`;
+`documents.replace` is **replace-by-name** (the oldest document with that name is deleted and
+re-uploaded, or a new document is created), which is how a canvas accumulates revisions.
+`documents.upload` remains for base64 payloads. Uploads are a single multipart POST to
+`/libraries/{id}/documents` — the Files API (`/files`) is a different surface that requires a
+`purpose` and rejects document payloads.
+
+```yaml
+connectors:
+  mistral:
+    enabled: true
+    stagingRoot: /home/freebox/denops-stage # also a read-only fs root
+    inlineReadMaxBytes: 65536
+```
+
+Uploads/overwrites are open for now (a deliberate decision); deletes are approval-tier unless the
+library was created earlier in the same run, which is tracked in the run state.
 
 ### fs — local filesystem, root-allowlisted
 
