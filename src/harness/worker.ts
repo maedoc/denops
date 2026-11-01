@@ -146,6 +146,20 @@ export class Harness {
       }
     }
 
+    // Pre-flight parse: a guest module that fails to *parse* reports through an
+    // unhandled rejection in this isolate ("Unhandled error in child worker"),
+    // which is fatal for the whole process — one syntax error from a model would
+    // take the server down. Compiling the same wrapper here costs nothing and
+    // turns it into a normal failed run.
+    try {
+      // deno-lint-ignore no-new-func
+      new Function(`return (async () => {\n${code}\n});`);
+    } catch (e) {
+      const msg = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+      await log.recordFinal({ status: "failed", error: msg });
+      return { status: "failed", error: msg };
+    }
+
     const guest = guestSource(this.connectorIds, code);
 
     // blob: rather than data: — a data: URL embeds the whole guest source, so any

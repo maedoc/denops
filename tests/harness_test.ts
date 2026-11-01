@@ -111,6 +111,29 @@ Deno.test("sandbox: inert Deno data is readable, Deno APIs stay blocked", async 
   }
 });
 
+// A model can emit invalid JS. That must be a failed run, not a dead server: a
+// guest module that fails to parse used to surface as
+// "Uncaught (in promise) Error: Unhandled error in child worker".
+Deno.test("sandbox: unparsable guest code fails the run without killing the host", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const { harness } = setup();
+    const log = new RunLog(dir, "t-syntax", budgets.maxLogBytes);
+    await log.init({ runId: "t-syntax", code: "", connectors: ["debug"] });
+    for (const bad of ["return (;", "const x = ;", "await await"]) {
+      const out = await harness.run("t-syntax", bad, log);
+      assertEquals(out.status, "failed", `expected failure for ${JSON.stringify(bad)}`);
+      assertStringIncludes(String(out.error), "SyntaxError");
+      assert(!String(out.error).includes("blob:"), "no worker/internals in the error");
+    }
+    // the harness is still usable afterwards
+    const ok = await harness.run("t-syntax", `return await debug.echo({ n: 1 });`, log);
+    assertEquals(ok.status, "completed");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 Deno.test("sandbox: fetch and Deno namespace are blocked in worker", async () => {
   const dir = await Deno.makeTempDir();
   try {

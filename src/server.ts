@@ -459,6 +459,18 @@ async function main(): Promise<void> {
   await server.finished;
 }
 
+// A worker whose module fails to load reports through an unhandled rejection in
+// this isolate, which would otherwise be fatal — the run itself is already
+// failed by the harness (its 'error' listener), so log it and carry on. Anything
+// else stays fatal so real bugs are not hidden.
+globalThis.addEventListener("unhandledrejection", (e) => {
+  const reason = String((e as PromiseRejectionEvent).reason);
+  if (reason.includes("Unhandled error in child worker")) {
+    console.error(`[denops] worker failed: ${reason.slice(0, 200)}`);
+    e.preventDefault();
+  }
+});
+
 if (import.meta.main) {
   await main();
 }
