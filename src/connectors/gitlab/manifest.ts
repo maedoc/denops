@@ -572,8 +572,12 @@ export function gitlabConnector(
 // Default projections: upstream GitLab objects are ~4KB each, which is context
 // abuse for an LLM caller. Callers override with `fields: ["a", "b.c"]` or ask
 // for the raw object with `full: true`.
-const SHAPE_HINT =
-  ' Returns a summary projection of the GitLab object; pass fields: ["..."] or full: true for the raw object.';
+// List ops return arrays of summaries, get ops a single summary; saying which
+// saves the caller an introspection round trip.
+const SHAPE_HINT_LIST =
+  ' Returns an array of summary objects; pass fields: ["..."] or full: true for the raw GitLab objects.';
+const SHAPE_HINT_GET =
+  ' Returns a summary object; pass fields: ["..."] or full: true for the raw GitLab object.';
 
 const PROJECT_FIELDS = [
   "id",
