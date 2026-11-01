@@ -80,6 +80,25 @@ export function deployConnector(cfg: DeployConfig): Connector {
       {
         name: "deploy.promote",
         tier: "approval",
+        summarize: async () => {
+          const dev = await devSha();
+          const subject = (await git(["log", "-1", "--format=%s", dev])).stdout.trim();
+          const stat = (await git(["diff", "--stat", `main..${dev}`])).stdout.trim();
+          const changed = (await git(["diff", "--name-only", `main..${dev}`])).stdout
+            .trim().split("\n").filter(Boolean);
+          const testsTouched = changed.filter((f) => f.startsWith("tests/"));
+          return [
+            `Ship ${dev.slice(0, 12)} to live: "${subject}"`,
+            stat.split("\n").slice(-1)[0] ?? "",
+            changed.length
+              ? `files: ${changed.slice(0, 12).join(", ")}${
+                changed.length > 12 ? `, +${changed.length - 12} more` : ""
+              }`
+              : "",
+            testsTouched.length ? `NOTE: touches ${testsTouched.length} test file(s)` : "",
+            "Runs the dev root's `test` task first; the supervisor reverts if it fails to stay up.",
+          ].filter(Boolean).join("\n");
+        },
         doc:
           "Ship the dev branch: runs the dev root's `test` task, fast-forwards main to it, records the new commit as desired, and asks the supervisor to restart. The human approval summary names the commit, its message and the test result. args: {}",
         argSchema: compose(rejectUnknown()),
@@ -87,6 +106,16 @@ export function deployConnector(cfg: DeployConfig): Connector {
       {
         name: "deploy.rollback",
         tier: "approval",
+        summarize: async (a) => {
+          const requested = String((a as { commit?: string }).commit ?? "").trim();
+          const target = requested || (await readState("last-good")) || "(no last-good recorded)";
+          const subject = /^[0-9a-f]{7,40}$/.test(target)
+            ? (await git(["log", "-1", "--format=%s", target])).stdout.trim()
+            : "";
+          return `Restart live on ${target.slice(0, 12)}${subject ? ` ("${subject}")` : ""}${
+            requested ? " (explicit sha)" : " (last known good)"
+          }.`;
+        },
         doc:
           "Roll back: set the desired commit to last-good (or an explicit sha from the deploy log) and ask the supervisor to restart. args: { commit? }",
         argSchema: compose(rejectUnknown(), optStr("commit", 64)),

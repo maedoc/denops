@@ -167,6 +167,44 @@ Deno.test("deploy: promote refuses dirty trees and red tests, then fast-forwards
   }
 });
 
+// The approval prompt is the human's only view of what ships: it must name the
+// commit, its subject and the files, not just "deploy.promote {}".
+Deno.test("deploy: promote/rollback approval summaries describe the change", async () => {
+  const { live, dev, root } = await makeRepoPair();
+  try {
+    const dataDir = `${root}/data`;
+    const devRoot =
+      devRootsFromConfig([{ name: "dev", path: dev, tasks: { test: ["/usr/bin/true"] } }])[0];
+    const conn = deployConnector(
+      deployConfigFrom(
+        { enabled: true, liveDir: live, devBranch: "agent/dev" },
+        [devRoot],
+        dataDir,
+      )!,
+    );
+    await Deno.writeTextFile(`${dev}/README.md`, "v2\n");
+    await Deno.writeTextFile(`${dev}/tests-extra.txt`, "x\n");
+    await git(dev, "add", ".");
+    await git(dev, "commit", "-qm", "add a thing");
+
+    const promote = conn.ops.find((o) => o.name === "deploy.promote")!;
+    const summary = await promote.summarize!({});
+    const devSha = await git(dev, "rev-parse", "HEAD");
+    assert(summary.includes(devSha.slice(0, 12)), summary);
+    assert(summary.includes("add a thing"), summary);
+    assert(summary.includes("README.md"), summary);
+
+    await Deno.mkdir(dataDir, { recursive: true });
+    await Deno.writeTextFile(`${dataDir}/last-good`, `${await git(live, "rev-parse", "HEAD")}\n`);
+    const rollback = conn.ops.find((o) => o.name === "deploy.rollback")!;
+    const rbSummary = await rollback.summarize!({});
+    assert(rbSummary.includes("last known good"), rbSummary);
+    assert(rbSummary.includes("initial"), rbSummary);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
 Deno.test("deploy: rollback targets last-good (or an explicit sha) and refuses junk", async () => {
   const { live, dev, root } = await makeRepoPair();
   try {

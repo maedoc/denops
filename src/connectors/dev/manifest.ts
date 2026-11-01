@@ -54,6 +54,12 @@ export function devConnector(opts: { roots: DevRootConfig[]; timeoutMs?: number 
       {
         name: "dev.git",
         tier: "open",
+        summarize: (a) => {
+          const { root, action, message } = a as { root: string; action: string; message?: string };
+          return action === "commit"
+            ? `git commit -am "${message}" in dev root ${root}`
+            : `git ${action} in dev root ${root}`;
+        },
         doc:
           "Fixed git verbs in a dev root. args: { root, action: 'status'|'diff'|'log'|'commit', message? } (message required for commit). Returns { code, stdout, stderr }.",
         argSchema: compose(

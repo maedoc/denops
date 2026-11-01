@@ -275,7 +275,8 @@ export class Harness {
       const approved = replay?.approvedSeqs.has(opSeq) ?? false;
       if (effectiveTier === "approval" && !approved && !granted) {
         const pendingId = crypto.randomUUID();
-        awaiting = { pendingId, runId, op, args, summary: summarizeOp(op, args), seq: opSeq };
+        const summary = spec.summarize ? await spec.summarize(args) : summarizeOp(op, args);
+        awaiting = { pendingId, runId, op, args, summary, seq: opSeq };
         await log.recordOp({ op, args, status: "pending", call: opSeq });
         await log.recordFinal({ status: "awaiting_approval", pendingId });
         finish({ status: "awaiting_approval", pending: awaiting });
