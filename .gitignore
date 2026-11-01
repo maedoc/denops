@@ -2,5 +2,6 @@ secrets.json
 config.yaml
 config.local.yaml
 data/
+data-dev/
 *.log
 .DS_Store

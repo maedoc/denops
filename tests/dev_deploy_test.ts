@@ -143,7 +143,13 @@ Deno.test("deploy: promote refuses dirty trees and red tests, then fast-forwards
       to: string;
     };
     assertEquals(promoted.status, "restart_requested");
-    assertEquals(await git(live, "rev-parse", "main"), await git(dev, "rev-parse", "HEAD"));
+    // main is advanced by the supervisor only after the soak, never by promote
+    assertEquals(await git(live, "rev-parse", "main"), await git(live, "rev-parse", "HEAD~0"));
+    assertEquals(
+      await git(live, "rev-parse", "main"),
+      await git(live, "rev-parse", "agent/dev~1"),
+      "a failed or pending promotion must not move main",
+    );
     const desired = (await Deno.readTextFile(`${dataDir}/desired-commit`)).trim();
     assertEquals(desired, await git(dev, "rev-parse", "HEAD"));
     assertEquals((await Deno.readTextFile(`${dataDir}/restart-request`)).trim(), desired);
@@ -153,7 +159,9 @@ Deno.test("deploy: promote refuses dirty trees and red tests, then fast-forwards
     // status reports the pipeline state
     const status = await client["status"]({}) as Record<string, JsonValue>;
     assertEquals(status.restartPending, true);
-    assertEquals(status.devAhead, 0);
+    // main lags the dev branch until the supervisor's soak succeeds
+    assertEquals(status.devAhead, 1);
+    assertEquals(status.mainCommit, await git(live, "rev-parse", "main"));
   } finally {
     await Deno.remove(root, { recursive: true });
   }

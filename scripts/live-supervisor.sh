@@ -124,6 +124,18 @@ while true; do
     write_state last-good "$last_good"
     audit "soak-ok" "\"commit\":\"$desired\",\"soakSec\":$SOAK_SEC"
     log "commit $desired passed the ${SOAK_SEC}s soak and is now last-good"
+    # Only a proven commit advances main: a failed promotion never lands there, so a
+    # later fast-forward starts from something known to run.
+    if git -C "$LIVE" merge-base --is-ancestor main "$desired" 2>/dev/null; then
+      if git -C "$LIVE" update-ref refs/heads/main "$desired" 2>/dev/null; then
+        audit "main-advanced" "\"commit\":\"$desired\""
+        log "main advanced to $desired"
+      else
+        log "could not advance main to $desired"
+      fi
+    else
+      log "not advancing main: $desired is not a descendant of main"
+    fi
     consecutive_failures=0
   fi
 

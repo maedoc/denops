@@ -117,6 +117,7 @@ export function deployConnector(cfg: DeployConfig): Connector {
           devBehind: Number(behind.stdout.trim() || 0),
           pendingCommits: shortlog.stdout.trim().split("\n").filter(Boolean),
           liveDirty: await isDirty(cfg.liveDir),
+          mainCommit: (await git(["rev-parse", "main"])).stdout.trim(),
           devDirty: await isDirty(cfg.devRoot.path),
           restartPending,
           recentDeploys: await recentDeploys(5),
@@ -154,13 +155,10 @@ export function deployConnector(cfg: DeployConfig): Connector {
           );
         }
 
-        // Fast-forward main to the dev tip. --ff-only: no merge commits, no rebases,
-        // and a diverged main fails loudly instead of inventing history.
-        const ff = await git(["-c", "advice.detachedHead=false", "merge", "--ff-only", cfg.devBranch]);
-        if (ff.code !== 0) {
-          throw new Error(`fast-forward merge failed (code ${ff.code}): ${ff.stdout}${ff.stderr}`);
-        }
-        const now = await liveSha();
+        // main is NOT touched here: the supervisor advances it only after the new
+        // commit passes its soak, so a broken commit never lands on the branch that
+        // a later promotion fast-forwards from.
+        const now = target;
         await writeState("desired-commit", now);
         await writeState("restart-request", now);
         await audit({ action: "promote", commit: now, previous: live, tests: tests.code });
@@ -170,7 +168,7 @@ export function deployConnector(cfg: DeployConfig): Connector {
           to: now,
           tests: { code: tests.code, stdout: tests.stdout.slice(-800) },
           note:
-            "The supervisor restarts into this commit, probes /health, and soaks it; if it fails, it reverts to last-good automatically. deploy.status shows what happened.",
+            "The supervisor restarts into this commit, probes /health, and soaks it. On success it advances main to this commit and records it as last-good; on failure it reverts to last-good and main is untouched.",
         } as JsonValue;
       },
 
@@ -187,7 +185,12 @@ export function deployConnector(cfg: DeployConfig): Connector {
         const live = await liveSha();
         await writeState("desired-commit", target);
         await writeState("restart-request", target);
-        await audit({ action: "rollback", commit: target, previous: live, requested: requested || "last-good" });
+        await audit({
+          action: "rollback",
+          commit: target,
+          previous: live,
+          requested: requested || "last-good",
+        });
         return {
           status: "restart_requested",
           from: live,
@@ -212,9 +215,7 @@ export function deployConfigFrom(
   const liveDir = String(raw.liveDir ?? "");
   if (!liveDir) throw new Error("connectors.deploy.liveDir is required");
   const devRootName = raw.devRoot ? String(raw.devRoot) : "";
-  const devRoot = devRootName
-    ? devRoots.find((r) => r.name === devRootName)
-    : devRoots[0];
+  const devRoot = devRootName ? devRoots.find((r) => r.name === devRootName) : devRoots[0];
   if (!devRoot) throw new Error("connectors.deploy requires a dev root (see connectors.dev.roots)");
   return {
     liveDir,
