@@ -213,7 +213,20 @@ export function imapConnector(deps: ImapConnectorDeps): Connector {
 // caller needs to choose a message, not whole MIME envelopes.
 const SHAPE_HINT = ' Returns a summary; pass fields: ["..."] or full: true for the raw object.';
 
-const MAIL_SHAPE: Record<string, string[]> = {
-  "messages.list": ["uid", "subject", "from", "date", "flags"],
+// messages.list returns { mailbox, total, page, limit, messages: [...] }: the
+// wrapper keys are part of the answer, the envelope fields inside each message
+// are what gets trimmed.
+export const MAIL_SHAPE: Record<string, string[]> = {
+  "messages.list": [
+    "mailbox",
+    "total",
+    "page",
+    "limit",
+    "messages.uid",
+    "messages.subject",
+    "messages.from",
+    "messages.date",
+    "messages.flags",
+  ],
   "messages.search": ["mailbox", "uids"],
 };
