@@ -3,9 +3,59 @@ import type { Registry } from "./registry.ts";
 const MAX_OPS = 20;
 const MAX_CHARS_PER_OP = 4096;
 
+// Words that carry no discriminative meaning in a discovery query. Callers ask
+// for "all available ops" or "list everything" as often as they search by name;
+// scoring those as literals matched almost nothing and looked like an empty
+// registry. Dropping them makes such a query a listing request.
+const STOPWORDS = new Set([
+  "a",
+  "all",
+  "an",
+  "any",
+  "and",
+  "available",
+  "capabilities",
+  "describe",
+  "do",
+  "each",
+  "enumerate",
+  "every",
+  "everything",
+  "for",
+  "function",
+  "functions",
+  "have",
+  "help",
+  "i",
+  "in",
+  "is",
+  "it",
+  "list",
+  "ls",
+  "me",
+  "of",
+  "op",
+  "operation",
+  "operations",
+  "ops",
+  "please",
+  "show",
+  "supported",
+  "the",
+  "there",
+  "these",
+  "to",
+  "tool",
+  "tools",
+  "what",
+  "which",
+  "you",
+]);
+
 export function search(registry: Registry, query: string, connector?: string): string {
   const q = query.trim().toLowerCase();
-  const tokens = q.split(/\s+/).filter(Boolean);
+  const raw = q.split(/\s+/).filter(Boolean);
+  const tokens = raw.filter((t) => !STOPWORDS.has(t));
   const everything = registry.index();
   const all = everything.filter((e) => !connector || e.name.startsWith(`${connector}.`));
   const matched = all
