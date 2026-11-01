@@ -10,6 +10,19 @@ export interface RootGrantsOptions {
 // approve tool or pending CLI), the root is granted and all later fs.* ops
 // on that root run open, so follow-up work in the same root needs no more
 // approvals. Grants are keyed by connector-qualified root name (e.g. "fs:myrepo").
+// Grant keys carry a level for filesystem roots: fs:<root>:read / :write. A write
+// grant implies read; the legacy unlevelled key (fs:<root>) is treated as write so
+// grants recorded before levels existed keep working.
+export function grantSatisfies(grants: Iterable<string>, key: string): boolean {
+  const have = grants instanceof Set ? grants : new Set(grants);
+  if (have.has(key)) return true;
+  const m = /^fs:(.+):(read|write)$/.exec(key);
+  if (!m) return false;
+  const root = m[1];
+  if (have.has(`fs:${root}`)) return true; // legacy unlevelled key = write-level
+  return m[2] === "read" && have.has(`fs:${root}:write`);
+}
+
 export class RootGrants {
   private file: string;
   private grants = new Set<string>();
@@ -39,7 +52,12 @@ export class RootGrants {
   }
 
   isGranted(key: string): boolean {
-    return this.grants.has(key);
+    return grantSatisfies(this.grants, key);
+  }
+
+  /** A copy of the raw grant keys (levels included). */
+  set(): Set<string> {
+    return new Set(this.grants);
   }
 
   // grantKeyFor returns the grant key for an op/args pair, or null if the op

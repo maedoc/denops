@@ -941,3 +941,35 @@ Deno.test("mistral stage returns root + relative path", async () => {
     await Deno.remove(staging, { recursive: true });
   }
 });
+
+// Staged copies accumulate; the connector that wrote them owns pruning them, since
+// the staging root is deliberately read-only to fs writes.
+Deno.test("mistral staging.clear removes staged files (optionally by age)", async () => {
+  const staging = await Deno.makeTempDir();
+  const srv = mockServer({}, []);
+  const port = (srv.addr as Deno.NetAddr).port;
+  const conn = mistralConnector({
+    apiKey: "k",
+    origin: `http://127.0.0.1:${port}`,
+    apiPath: "/v1",
+    stagingRoot: staging,
+  });
+  const client = conn.client({ config: {}, secrets: {}, log: () => {} });
+  try {
+    await Deno.writeTextFile(`${staging}/old.pdf`, "x");
+    await Deno.writeTextFile(`${staging}/new.pdf`, "y");
+    const past = new Date(Date.now() - 5 * 3600_000);
+    await Deno.utime(`${staging}/old.pdf`, past, past);
+
+    const aged = await client["staging.clear"]({ olderThanHours: 1 }) as { removed: string[] };
+    assertEquals(aged.removed, ["old.pdf"]);
+    assertEquals([...Deno.readDirSync(staging)].map((e) => e.name), ["new.pdf"]);
+
+    const all = await client["staging.clear"]({}) as { removed: string[] };
+    assertEquals(all.removed, ["new.pdf"]);
+    assertEquals([...Deno.readDirSync(staging)].length, 0);
+  } finally {
+    await srv.shutdown();
+    await Deno.remove(staging, { recursive: true });
+  }
+});

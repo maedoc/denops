@@ -16,7 +16,7 @@ import { devConnector, devRootsFromConfig } from "./connectors/dev/manifest.ts";
 import { mistralTierOverride } from "./connectors/mistral/tiers.ts";
 import { handleOAuthRoute, newOAuthState, type OAuthConfig } from "./security/oauth.ts";
 import { defaultBanPolicy } from "./security/ban.ts";
-import { RootGrants } from "./harness/grants.ts";
+import { grantSatisfies, RootGrants } from "./harness/grants.ts";
 import { fsConnector, fsGrantKey } from "./connectors/fs/manifest.ts";
 import { debugConnector } from "./connectors/debug/manifest.ts";
 import { gitlabConnector } from "./connectors/gitlab/manifest.ts";
@@ -246,7 +246,8 @@ export async function buildApp(configPath: string, secretsPath: string): Promise
 
   const grants = new RootGrants({ dataDir: config.dataDir, isGrantOp: fsGrantKey });
   await grants.init();
-  harness.setGrantLookup(fsGrantKey, (key) => grants.isGranted(key));
+  // Level-aware: a write grant covers reads; the legacy unlevelled key counts as write.
+  harness.setGrantLookup(fsGrantKey, (key) => grantSatisfies(grants.set(), key));
 
   return {
     config,
@@ -490,7 +491,7 @@ export function createMcpServer(app: AppContext): McpServer {
       "grants",
       {
         description:
-          "List or revoke root grants. Approving an fs.* op on a root grants it; later fs.* ops on that root run without further approval. args: { action: 'list' | 'revoke', key? } (key like 'fs:myrepo', required for revoke)",
+          "List or revoke root grants. Approving an fs.* op records a levelled grant — fs:<root>:read for browse/read/grep, fs:<root>:write for write/edit (implies read); fs.rm and fs.exec always need approval. args: { action: 'list' | 'revoke', key? } (key like 'fs:myrepo:write', required for revoke)",
         inputSchema: {
           action: z.enum(["list", "revoke"]),
           key: z.string().optional(),

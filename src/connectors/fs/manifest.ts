@@ -38,6 +38,33 @@ export function fsConnector(opts: {
 
   const pathArg = strMax("path", 4096);
   const rootNames = opts.roots.map((r) => r.name);
+  const rootsByName = new Map(opts.roots.map((r) => [r.name, r]));
+
+  // precheck: immutable capabilities, evaluated before the approval gate so a
+  // read-only or exec-less root can never be "approved into" doing the op.
+  const capability = (
+    kind: "read" | "write" | "exec",
+  ): (args: unknown) => string | null =>
+  (args) => {
+    const root = (args as { root?: unknown }).root;
+    if (typeof root !== "string" || root === "") return "root: required";
+    const cfg = rootsByName.get(root);
+    if (!cfg) return `unknown root ${JSON.stringify(root)}`;
+    if (kind === "write" && !cfg.write) {
+      return `root ${
+        JSON.stringify(root)
+      } is read-only (write not enabled); the op was rejected without an approval`;
+    }
+    if (kind === "exec" && !cfg.exec) {
+      return `root ${
+        JSON.stringify(root)
+      } does not allow exec; the op was rejected without an approval`;
+    }
+    return null;
+  };
+  const readOnlyCheck = capability("read");
+  const writeCheck = capability("write");
+  const execCheck = capability("exec");
 
   return {
     id: "fs",
@@ -50,6 +77,7 @@ export function fsConnector(opts: {
       },
       {
         name: "fs.glob",
+        precheck: readOnlyCheck,
         tier: "approval",
         doc:
           "Glob files under a root. First call per root needs approval; approving grants the root for later calls. args: { root, pattern, maxEntries? }",
@@ -62,6 +90,7 @@ export function fsConnector(opts: {
       },
       {
         name: "fs.list",
+        precheck: readOnlyCheck,
         tier: "approval",
         doc: "List directory entries under a root. args: { root, path?, recursive? }",
         argSchema: compose(
@@ -73,6 +102,7 @@ export function fsConnector(opts: {
       },
       {
         name: "fs.read",
+        precheck: readOnlyCheck,
         tier: "approval",
         doc:
           "Read a text file under a root with line windowing. args: { root, path, offset?, limit? } (offset/limit are 0-based line numbers)",
@@ -86,6 +116,7 @@ export function fsConnector(opts: {
       },
       {
         name: "fs.grep",
+        precheck: readOnlyCheck,
         tier: "open",
         doc:
           "Regex search through files under the root (a file or a directory), without a shell. " +
@@ -103,6 +134,7 @@ export function fsConnector(opts: {
       },
       {
         name: "fs.write",
+        precheck: writeCheck,
         tier: "approval",
         doc:
           "Create or overwrite a file under a root (root must have write:true). args: { root, path, content }",
@@ -110,6 +142,7 @@ export function fsConnector(opts: {
       },
       {
         name: "fs.edit",
+        precheck: writeCheck,
         tier: "approval",
         doc:
           "Replace one exact text passage in a file (must match exactly once). args: { root, path, oldText, newText }",
@@ -123,6 +156,7 @@ export function fsConnector(opts: {
       },
       {
         name: "fs.editRegex",
+        precheck: writeCheck,
         tier: "approval",
         doc:
           "Replace one regex match (supports $1 group refs). args: { root, path, pattern, replacement }",
@@ -135,7 +169,22 @@ export function fsConnector(opts: {
         ),
       },
       {
+        name: "fs.rm",
+        tier: "approval",
+        precheck: writeCheck,
+        doc:
+          "Delete a file (or a directory with recursive: true) inside a writable root. args: { root, path, recursive? }. " +
+          "Always approval-tier: a grant buys read/write, not deletion. Use staging.clear for staged downloads.",
+        argSchema: compose(
+          rejectUnknown(),
+          oneOf("root", rootNames),
+          pathArg,
+          optBool("recursive"),
+        ),
+      },
+      {
         name: "fs.exec",
+        precheck: execCheck,
         tier: "approval",
         doc:
           "Run a shell command with cwd = the root (root must have exec:true), scrubbed environment, timeout and output caps. args: { root, command, timeout? (seconds) }",
@@ -164,14 +213,24 @@ export function fsConnector(opts: {
       "write": (args) => client.write(args),
       "edit": (args) => client.edit(args),
       "editRegex": (args) => client.editRegex(args),
+      "rm": (args) => client.rm(args),
       "exec": (args) => client.exec(args),
     }),
   };
 }
 
 // grantKey extracts the fs root grant key from op args, or null for non-fs ops.
+export type FsGrantLevel = "read" | "write";
+
+// fsGrantKey maps an op to the grant it needs: read-level for browse/search ops,
+// write-level (which implies read) for mutations. exec is deliberately not grantable
+// — it stays approval-gated per call when enabled.
+const WRITE_OPS = new Set(["fs.write", "fs.edit", "fs.editRegex"]);
+
 export function fsGrantKey(op: string, args: JsonValue): string | null {
   if (!op.startsWith("fs.")) return null;
   const root = (args as { root?: unknown } | null)?.root;
-  return typeof root === "string" && root.length > 0 ? `fs:${root}` : null;
+  if (typeof root !== "string" || root.length === 0) return null;
+  const level: FsGrantLevel = WRITE_OPS.has(op) ? "write" : "read";
+  return `fs:${root}:${level}`;
 }

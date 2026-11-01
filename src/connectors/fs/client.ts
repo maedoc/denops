@@ -412,6 +412,21 @@ export class FSClient {
     return { root, path: rel, edited: true } as JsonValue;
   }
 
+  async rm(args: JsonValue): Promise<JsonValue> {
+    const root = this.arg<string>(args, "root");
+    this.requireWrite(root, "fs.rm");
+    const rel = this.arg<string>(args, "path");
+    if (rel === "." || rel === "") throw new Error("path: refusing to delete the root itself");
+    const recursive = this.arg<boolean>(args, "recursive") ?? false;
+    const abs = await this.resolve(root, rel);
+    const info = await Deno.lstat(abs);
+    if (info.isDirectory && !recursive) {
+      throw new Error(`${JSON.stringify(rel)} is a directory; pass recursive: true`);
+    }
+    await Deno.remove(abs, { recursive });
+    return { root, path: rel, removed: true, directory: info.isDirectory } as JsonValue;
+  }
+
   async exec(args: JsonValue): Promise<JsonValue> {
     const root = this.arg<string>(args, "root");
     this.requireExec(root);

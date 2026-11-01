@@ -189,6 +189,33 @@ export class MistralClient {
     };
   }
 
+  /**
+   * Remove staged downloads. The staging root is read-only to fs writes by design,
+   * so the connector that wrote those files owns pruning them.
+   */
+  async clearStaging(olderThanHours = 0): Promise<{ removed: string[] }> {
+    const removed: string[] = [];
+    const cutoff = olderThanHours > 0 ? Date.now() - olderThanHours * 3600_000 : Infinity;
+    let entries: Deno.DirEntry[];
+    try {
+      entries = [...Deno.readDirSync(this.stagingRoot)];
+    } catch {
+      return { removed };
+    }
+    for (const entry of entries) {
+      if (!entry.isFile) continue;
+      const path = `${this.stagingRoot}/${entry.name}`;
+      try {
+        const info = Deno.statSync(path);
+        const mtime = info.mtime?.getTime() ?? 0;
+        if (mtime > cutoff) continue;
+        Deno.removeSync(path);
+        removed.push(entry.name);
+      } catch { /* raced or unreadable: ignore */ }
+    }
+    return { removed };
+  }
+
   /** Upload text as a new library document (no base64 in the caller). */
   async putDocument(
     libraryId: string,

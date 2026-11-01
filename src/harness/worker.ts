@@ -1,5 +1,6 @@
 import { guestSource } from "../guest/bootstrap.ts";
 import { serializedSize, validateArgs } from "./boundary.ts";
+import { grantSatisfies } from "./grants.ts";
 import { RunLog } from "./log.ts";
 import type { Budgets, Connector, JsonValue, OpSpec } from "./types.ts";
 
@@ -239,6 +240,27 @@ export class Harness {
         reply(callId, { error: `invalid args for ${op}: ${argErr}` });
         return;
       }
+      // Capability checks come before the tier gate: an op that cannot run on this
+      // root must fail outright, not suspend and then fail after a human approves.
+      if (spec.precheck) {
+        let capErr: string | null;
+        try {
+          capErr = spec.precheck(args);
+        } catch (e) {
+          capErr = e instanceof Error ? e.message : String(e);
+        }
+        if (capErr) {
+          await log.recordOp({
+            op,
+            args,
+            status: "error",
+            error: `capability: ${capErr}`,
+            call: opSeq,
+          });
+          reply(callId, { error: `capability_denied: ${capErr}` });
+          return;
+        }
+      }
       const argBytes = serializedSize(args);
       if (argBytes > this.budgets.maxOpArgsBytes) {
         reply(callId, {
@@ -268,8 +290,10 @@ export class Harness {
 
       const effectiveTier = this.tierOverride?.(op, args, runState) ?? spec.tier;
       const grantKey = this.grantKeyOf?.(op, args) ?? null;
+      // Levels: a write grant covers read, and the legacy unlevelled key counts as
+      // write, so replaying a run recorded before levels existed still skips the gate.
       const granted = grantKey !== null &&
-        ((replay?.grantKeys?.has(grantKey)) || this.isGranted?.(grantKey));
+        (grantSatisfies(replay?.grantKeys ?? [], grantKey) || this.isGranted?.(grantKey) === true);
       // Approval is per call, not per op name: approving one issues.create must not
       // silently approve the next one in the same run.
       const approved = replay?.approvedSeqs.has(opSeq) ?? false;

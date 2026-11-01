@@ -136,6 +136,14 @@ export function mistralConnector(
         ),
       },
       {
+        name: "mistral.staging.clear",
+        tier: "open",
+        doc:
+          "Delete staged document copies (the files documents.stage wrote). args: { olderThanHours? } " +
+          "(0 = all, the default). Returns { removed: [names] }. Only the staging root is touched.",
+        argSchema: compose(rejectUnknown(), optNum("olderThanHours")),
+      },
+      {
         name: "mistral.documents.put",
         tier: "approval",
         doc:
@@ -270,6 +278,10 @@ export function mistralConnector(
           // result (no absolute-path → root surgery in the caller)
           const rel = out.path.slice(out.path.lastIndexOf("/") + 1);
           return { ...out, root: "denops-stage", absPath: out.path, path: rel } as JsonValue;
+        },
+        "staging.clear": async (a) => {
+          const hours = Number((a as { olderThanHours?: number }).olderThanHours ?? 0);
+          return await client.clearStaging(hours) as JsonValue;
         },
         "documents.put": async (a) => {
           const r = a as {

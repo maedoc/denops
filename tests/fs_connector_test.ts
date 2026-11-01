@@ -232,12 +232,21 @@ Deno.test("ungranted root suspends for approval; granted root runs open", async 
     );
     assertEquals(out.status, "awaiting_approval");
     assertEquals(out.pending?.op, "fs.read");
-    // simulate approve: grant + replay
-    await grants.grant(fsGrantKey("fs.read", { root: "repo", path: "README.md" })!);
+    // simulate approve: grant + replay (read-level grant only)
+    const readKey = fsGrantKey("fs.read", { root: "repo", path: "README.md" })!;
+    assertEquals(readKey, "fs:repo:read");
+    await grants.grant(readKey);
     out = await runCode(harness, dir, `return await fs.read({ root: "repo", path: "README.md" });`);
     assertEquals(out.status, "completed", outcomeText(out));
     assertStringIncludes(outcomeText(out), "# hello");
-    // write on a granted root also runs open
+    // a read grant does NOT authorize writes: level checks are independent
+    out = await runCode(
+      harness,
+      dir,
+      `return await fs.write({ root: "repo", path: "ok.txt", content: "x" });`,
+    );
+    assertEquals(out.status, "awaiting_approval", "read-level grant must not permit writes");
+    await grants.grant(fsGrantKey("fs.write", { root: "repo", path: "ok.txt" })!);
     out = await runCode(
       harness,
       dir,
