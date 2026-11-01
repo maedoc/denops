@@ -130,7 +130,7 @@ Deno.test("server envelope: connector-driven, and still no --allow-all", () => {
   const plan = derivePermissions({
     server: { host: "127.0.0.1", port: 3100 },
     connectors: {
-      fs: { enabled: true, roots: [{ path: "/srv/dev", write: true }] },
+      fs: { enabled: true, roots: [{ path: "/srv/dev", write: true, exec: true }] },
       dev: { enabled: true, roots: [{ path: "/srv/dev" }] },
       mistral: { enabled: true, origin: "https://api.mistral.ai" },
       imap: { enabled: true, accounts: [{ host: "imap.example.org", port: 993 }] },
@@ -147,7 +147,11 @@ Deno.test("server envelope: connector-driven, and still no --allow-all", () => {
   assert(plan.read.includes("/srv/dev"));
   assert(plan.write.includes("/srv/dev"));
   assert(plan.run.includes("deno") && plan.run.includes("git"));
-  if (Deno.build.os === "linux") assert(plan.run.includes("/bin/sh"));
+  // fs.exec is what pulls in the shell (and, on Linux, the setsid/kill wrappers)
+  assert(plan.run.includes("/bin/sh"));
+  if (Deno.build.os === "linux") {
+    assert(plan.run.includes("/usr/bin/setsid") && plan.run.includes("/bin/kill"));
+  }
   assert(!permissionFlags(plan).some((f) => f.startsWith("--allow-all")));
   // connectorRun is what turns --allow-run on; the try child never asks for it
   assertEquals(derivePermissions({ connectors: { dev: { enabled: true } } }).run, []);
