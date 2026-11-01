@@ -54,8 +54,13 @@ export function deployConnector(cfg: DeployConfig): Connector {
   const liveSha = async (): Promise<string> => (await git(["rev-parse", "HEAD"])).stdout.trim();
   const devSha = async (): Promise<string> =>
     (await git(["rev-parse", cfg.devBranch])).stdout.trim();
+  // Untracked files cannot enter a commit, so they must not block a promotion —
+  // scratch files in the dev worktree are normal. Modified/staged tracked files do.
   const isDirty = async (cwd: string): Promise<boolean> =>
-    (await git(["status", "--porcelain"], cwd)).stdout.trim() !== "";
+    (await git(["status", "--porcelain", "--untracked-files=no"], cwd)).stdout.trim() !== "";
+  const untrackedCount = async (cwd: string): Promise<number> =>
+    (await git(["ls-files", "--others", "--exclude-standard"], cwd)).stdout.trim().split("\n")
+      .filter(Boolean).length;
 
   const recentDeploys = async (n: number): Promise<JsonValue[]> => {
     let text = "";
@@ -148,6 +153,7 @@ export function deployConnector(cfg: DeployConfig): Connector {
           liveDirty: await isDirty(cfg.liveDir),
           mainCommit: (await git(["rev-parse", "main"])).stdout.trim(),
           devDirty: await isDirty(cfg.devRoot.path),
+          devUntracked: await untrackedCount(cfg.devRoot.path),
           restartPending,
           recentDeploys: await recentDeploys(5),
         } as JsonValue;
@@ -155,7 +161,10 @@ export function deployConnector(cfg: DeployConfig): Connector {
 
       "promote": async () => {
         if (await isDirty(cfg.devRoot.path)) {
-          throw new Error(`refusing to promote: ${cfg.devRoot.path} has uncommitted changes`);
+          throw new Error(
+            `refusing to promote: ${cfg.devRoot.path} has uncommitted changes to tracked files ` +
+              `(commit or revert them; untracked scratch files are fine)`,
+          );
         }
         const target = await devSha();
         const live = await liveSha();

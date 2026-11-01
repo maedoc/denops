@@ -124,7 +124,9 @@ Deno.test("deploy: promote refuses dirty trees and red tests, then fast-forwards
     // nothing to promote yet
     await assertRejects(() => client["promote"]({}), "nothing to promote");
 
-    // dirty tree blocks
+    // an untracked scratch file does NOT block promotion...
+    await Deno.writeTextFile(`${dev}/scratch.txt`, "notes\n");
+    // ...but a modified tracked file does
     await Deno.writeTextFile(`${dev}/README.md`, "v2\n");
     await assertRejects(() => client["promote"]({}), "uncommitted changes");
     await git(dev, "commit", "-qam", "v2");
