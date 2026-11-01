@@ -181,12 +181,12 @@ export class BanStore {
   private entries = new Map<string, BanEntry>();
   private ipFailures = new Map<string, number[]>();
   private banFile?: string;
-  private banFileMtime = 0;
+  private banFileStamp = "";
   private blacklistFile?: string;
-  private blacklistMtime = 0;
+  private blacklistStamp = "";
   private blacklist: Array<{ net: bigint; bits: number; v6: boolean }> = [];
   private whitelistFile?: string;
-  private whitelistMtime = 0;
+  private whitelistStamp = "";
   private whitelist: Array<{ net: bigint; bits: number; v6: boolean }> = [];
   private trustedProxy: { net: bigint; bits: number; v6: boolean } | null = null;
   private skipLoopback: boolean;
@@ -342,24 +342,29 @@ export class BanStore {
     if (oldestKey !== undefined) this.entries.delete(oldestKey);
   }
 
-  private statMtime(path: string | undefined): number {
-    if (!path) return 0;
+  // statStamp identifies a file's state for hot-reload purposes. Size is part
+  // of it because mtime alone is too coarse: two edits inside the same
+  // millisecond share an mtime, so a truncation (bans cleared, CIDR file
+  // emptied) would otherwise go unnoticed.
+  private statStamp(path: string | undefined): string {
+    if (!path) return "";
     try {
-      return Deno.statSync(path).mtime?.getTime() ?? 0;
+      const st = Deno.statSync(path);
+      return `${st.mtime?.getTime() ?? 0}:${st.size}`;
     } catch {
-      return 0;
+      return "";
     }
   }
 
   private maybeReload(_now: number): void {
-    if (this.banFile && this.statMtime(this.banFile) !== this.banFileMtime) {
+    if (this.banFile && this.statStamp(this.banFile) !== this.banFileStamp) {
       this.entries = new Map();
       this.loadPersisted();
     }
-    if (this.blacklistFile && this.statMtime(this.blacklistFile) !== this.blacklistMtime) {
+    if (this.blacklistFile && this.statStamp(this.blacklistFile) !== this.blacklistStamp) {
       this.reloadBlacklist();
     }
-    if (this.whitelistFile && this.statMtime(this.whitelistFile) !== this.whitelistMtime) {
+    if (this.whitelistFile && this.statStamp(this.whitelistFile) !== this.whitelistStamp) {
       this.reloadWhitelist();
     }
   }
@@ -376,7 +381,7 @@ export class BanStore {
     try {
       Deno.writeTextFileSync(tmp, lines.join("\n") + (lines.length ? "\n" : ""), { mode: 0o600 });
       Deno.renameSync(tmp, this.banFile);
-      this.banFileMtime = this.statMtime(this.banFile);
+      this.banFileStamp = this.statStamp(this.banFile);
     } catch {
       // Persistence is best-effort; in-memory state stays authoritative.
     }
@@ -401,16 +406,16 @@ export class BanStore {
       e.bannedAt = expiry * 1000 - this.policy.durationMs;
       this.entries.set(fields[1], e);
     }
-    this.banFileMtime = this.statMtime(this.banFile);
+    this.banFileStamp = this.statStamp(this.banFile);
   }
 
   private reloadBlacklist(): void {
     this.blacklist = this.blacklistFile ? loadCidrFile(this.blacklistFile) : [];
-    this.blacklistMtime = this.statMtime(this.blacklistFile);
+    this.blacklistStamp = this.statStamp(this.blacklistFile);
   }
 
   private reloadWhitelist(): void {
     this.whitelist = this.whitelistFile ? loadCidrFile(this.whitelistFile) : [];
-    this.whitelistMtime = this.statMtime(this.whitelistFile);
+    this.whitelistStamp = this.statStamp(this.whitelistFile);
   }
 }
