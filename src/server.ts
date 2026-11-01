@@ -10,6 +10,7 @@ import type { Budgets, Connector, JsonValue } from "./harness/types.ts";
 import { Harness, summarizeOp } from "./harness/worker.ts";
 import { type Config, loadConfig, loadSecrets } from "./config.ts";
 import { createHandler, DEFAULT_MAX_BODY_BYTES, serveWithTimeouts } from "./security/http.ts";
+import { agentGuide } from "./guide.ts";
 import { defaultBanPolicy } from "./security/ban.ts";
 import { RootGrants } from "./harness/grants.ts";
 import { fsConnector, fsGrantKey } from "./connectors/fs/manifest.ts";
@@ -376,7 +377,25 @@ export function registerTools(app: AppContext, server: McpServer): void {
 }
 
 export function createMcpServer(app: AppContext): McpServer {
-  const server = new McpServer({ name: "denops", version: "0.1.0" });
+  // `instructions` is delivered in the initialize result: one agent-oriented
+  // usage guide per session, instead of the model discovering the contract by
+  // failing calls.
+  const server = new McpServer({ name: "denops", version: "0.1.0" }, {
+    instructions: agentGuide({
+      connectors: app.registry.list().map((c) => ({
+        id: c.id,
+        ops: c.ops.filter((o) => o.tier !== "absent").length,
+      })),
+      totalOps: app.registry
+        .list()
+        .reduce((n, c) => n + c.ops.filter((o) => o.tier !== "absent").length, 0),
+      budgets: {
+        wallClockMs: app.budgets.wallClockMs,
+        maxOpsPerRun: app.budgets.maxOpsPerRun,
+        maxOpResultBytes: app.budgets.maxOpResultBytes,
+      },
+    }),
+  });
   registerTools(app, server);
   server.registerTool(
     "grants",

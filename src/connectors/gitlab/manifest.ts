@@ -45,6 +45,30 @@ export function gitlabConnector(
         argSchema: compose(rejectUnknown(), str("search"), optNum("perPage"), optNum("page")),
       },
       {
+        name: "gitlab.get",
+        tier: "open",
+        doc:
+          "Generic read: GET any path under the GitLab API root, e.g. { path: '/projects/42/labels', query: { per_page: 20 } }. " +
+          "Covers endpoints without a curated op (pipelines, releases, tags, members, labels, milestones, wiki, ...). " +
+          'Returns the raw JSON; narrow with fields: ["..."] (dotted paths allowed).',
+        argSchema: compose(rejectUnknown(), str("path"), checkGitlabReadPath, checkQueryObject),
+      },
+      {
+        name: "gitlab.mutate",
+        tier: "approval",
+        doc:
+          "Generic write: POST/PUT/DELETE any path under the GitLab API root, e.g. { method: 'PUT', path: '/projects/42/issues/7', body: { state_event: 'close' } }. " +
+          "Approval tier — the run suspends until approve(). Returns the raw JSON.",
+        argSchema: compose(
+          rejectUnknown(),
+          oneOf("method", ["POST", "PUT", "DELETE"]),
+          str("path"),
+          checkGitlabPath,
+          checkQueryObject,
+          checkBodyObject,
+        ),
+      },
+      {
         name: "gitlab.projects.create",
         tier: "approval",
         doc:
@@ -295,6 +319,18 @@ export function gitlabConnector(
         argSchema: compose(rejectUnknown()),
       },
       {
+        name: "gitlab.users.search",
+        tier: "open",
+        doc:
+          "Search users (needed for assignee_ids). args: { search, perPage?, page? }. Returns a user summary.",
+        argSchema: compose(
+          rejectUnknown(),
+          str("search"),
+          optNum("perPage"),
+          optNum("page"),
+        ),
+      },
+      {
         name: "gitlab.groups.list",
         tier: "open",
         doc: "List groups. args: { search?, perPage?, page? }",
@@ -311,6 +347,19 @@ export function gitlabConnector(
         "projects.list": (a) =>
           client.get("/projects", pick(a, ["search", "perPage", "page", "membership"])),
         "projects.get": (a) => client.get(`/projects/${enc(String((a as { id: string }).id))}`),
+        "get": (a) => {
+          const r = a as { path: string; query?: Record<string, unknown>; fields?: unknown };
+          return client.request("GET", r.path, { query: r.query });
+        },
+        "mutate": (a) => {
+          const r = a as {
+            method: "POST" | "PUT" | "DELETE";
+            path: string;
+            query?: Record<string, unknown>;
+            body?: JsonValue;
+          };
+          return client.request(r.method, r.path, { query: r.query, body: r.body });
+        },
         "projects.create": (a) => {
           const r = a as {
             name: string;
@@ -479,6 +528,7 @@ export function gitlabConnector(
           return client.put(`/projects/${enc(r.id)}`, pick(a, ["name", "description"]));
         },
         "users.current": () => client.get("/user"),
+        "users.search": (a) => client.get("/users", pick(a, ["search", "perPage", "page"])),
         "groups.list": (a) => client.get("/groups", pick(a, ["search", "perPage", "page"])),
       }, GITLAB_SHAPE),
     validateStartup: async () => {
@@ -567,7 +617,64 @@ const GITLAB_SHAPE: Record<string, string[]> = {
   "repository.branches.list": ["name", "default", "protected", "merged", "commit.short_id"],
   "groups.list": ["id", "name", "full_path", "visibility", "web_url"],
   "users.current": ["id", "username", "name", "state", "web_url"],
+  "users.search": ["id", "username", "name", "state", "web_url"],
 };
+
+// Paths are relative to the pinned API root: no scheme, no host, no traversal.
+// Reads that would dump credentials are refused — use a curated op if one exists.
+const READ_DENY =
+  /\/(variables|access_tokens|deploy_tokens|secure_files|identities|personal_access_tokens)(\/|$)/;
+
+function checkGitlabPath(args: unknown): string | null {
+  const path = (args as { path?: unknown }).path;
+  if (typeof path !== "string") return "path: expected string";
+  if (!path.startsWith("/")) return "path: must start with '/' (relative to the API root)";
+  if (path.length > 1000) return "path: too long (max 1000 chars)";
+  if (path.includes("//") || path.includes("..") || /[\s\\?#]/.test(path)) {
+    return "path: must not contain '//', '..', whitespace, backslashes, '?' or '#' (use query)";
+  }
+  if (!/^\/[A-Za-z0-9._~!$&'()*+,;=:@%\/-]*$/.test(path)) {
+    return "path: contains unsupported characters";
+  }
+  return null;
+}
+
+// Reads of credential-bearing endpoints are refused: they would pull secrets into
+// the model's context. Writes still go through gitlab.mutate, where the approval
+// summary shows the path to a human before anything is executed.
+function checkGitlabReadPath(args: unknown): string | null {
+  const err = checkGitlabPath(args);
+  if (err) return err;
+  const path = (args as { path: string }).path;
+  if (READ_DENY.test(path)) {
+    return `path: ${path} exposes credentials; read it outside the agent if truly needed`;
+  }
+  return null;
+}
+
+function checkQueryObject(args: unknown): string | null {
+  const query = (args as { query?: unknown }).query;
+  if (query === undefined) return null;
+  if (!query || typeof query !== "object" || Array.isArray(query)) return "query: expected object";
+  const entries = Object.entries(query as Record<string, unknown>);
+  if (entries.length > 30) return `query: too many keys (${entries.length} > 30)`;
+  for (const [k, v] of entries) {
+    const scalar = typeof v === "string" || typeof v === "number" || typeof v === "boolean";
+    if (scalar || v === null) continue;
+    if (Array.isArray(v) && v.every((x) => typeof x === "string" || typeof x === "number")) {
+      continue;
+    }
+    return `query.${k}: expected string, number, boolean or array of those`;
+  }
+  return null;
+}
+
+function checkBodyObject(args: unknown): string | null {
+  const body = (args as { body?: unknown }).body;
+  if (body === undefined) return null;
+  if (!body || typeof body !== "object" || Array.isArray(body)) return "body: expected object";
+  return null;
+}
 
 // issueWriteFields passes the optional issue attributes through unchanged, so
 // assignment/metadata is not silently dropped by the op surface.

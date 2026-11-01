@@ -188,6 +188,9 @@ Deno.test("gitlab projects.create and issue write attributes reach the API", asy
       body: { iid: 1, ...JSON.parse(r.body!) },
     }),
     "PUT /api/v4/projects/99/issues/1": (r) => ({ body: { iid: 1, ...JSON.parse(r.body!) } }),
+    "GET /api/v4/users": () => ({
+      body: [{ id: 5, username: "duke", name: "Duke", state: "active", web_url: "https://x/duke" }],
+    }),
   }, recorded);
   const port = (srv.addr as Deno.NetAddr).port;
   const conn = gitlabConnector({
@@ -241,6 +244,13 @@ Deno.test("gitlab projects.create and issue write attributes reach the API", asy
       due_date: "2027-01-15",
     });
 
+    // user ids for assignee_ids are discoverable
+    const users = await clients["users.search"]({ search: "duke" }) as Array<
+      Record<string, unknown>
+    >;
+    assertEquals(users[0].id, 5);
+    assertEquals(recorded[3].path, "/api/v4/users?search=duke");
+
     // invalid due_date is rejected at the boundary, before any HTTP call
     const err = (conn.ops.find((o) => o.name === "gitlab.issues.create")!.argSchema)({
       projectId: "99",
@@ -248,6 +258,78 @@ Deno.test("gitlab projects.create and issue write attributes reach the API", asy
       due_date: "01/12/2026",
     });
     assertEquals(err, "due_date: expected YYYY-MM-DD");
+  } finally {
+    await srv.shutdown();
+  }
+});
+
+// Code mode composition is free, but coverage was only what someone had curated.
+// gitlab.get/gitlab.mutate reach the rest of the v4 API (reads open, writes
+// approval) with the pinned origin and a credential-path guard.
+Deno.test("gitlab.get / gitlab.mutate cover uncatalogued endpoints", async () => {
+  const recorded: RecordedReq[] = [];
+  const srv = mockServer({
+    "GET /api/v4/projects/42/labels": () => ({
+      body: [{ id: 1, name: "bug", color: "#d9534f", description: "x".repeat(200) }],
+    }),
+    "POST /api/v4/projects/42/releases": (r) => ({
+      status: 201,
+      body: { tag_name: JSON.parse(r.body!).tag_name },
+    }),
+    "DELETE /api/v4/projects/42/issues/7": () => ({ body: {} }),
+  }, recorded);
+  const port = (srv.addr as Deno.NetAddr).port;
+  const conn = gitlabConnector({
+    token: "tok",
+    origin: `http://127.0.0.1:${port}`,
+    apiPath: "/api/v4",
+  });
+  const registry = new Registry();
+  registry.register(conn);
+  assertEquals(registry.tierOf("gitlab.get"), "open");
+  assertEquals(registry.tierOf("gitlab.mutate"), "approval");
+  const clients = conn.client({ config: {}, secrets: {}, log: () => {} });
+  try {
+    const labels = await clients["get"]({ path: "/projects/42/labels", query: { per_page: 20 } });
+    assertEquals((labels as Array<Record<string, unknown>>)[0].name, "bug");
+    assertEquals(recorded[0].path, "/api/v4/projects/42/labels?per_page=20");
+
+    const picked = await clients["get"]({ path: "/projects/42/labels", fields: ["name"] });
+    assertEquals(picked, [{ name: "bug" }]);
+
+    await clients["mutate"]({
+      method: "POST",
+      path: "/projects/42/releases",
+      body: { tag_name: "v1" },
+    });
+    assertEquals(JSON.parse(recorded[2].body!), { tag_name: "v1" });
+
+    // DELETE with no body is fine
+    await clients["mutate"]({ method: "DELETE", path: "/projects/42/issues/7" });
+    assertEquals(recorded[3].method, "DELETE");
+
+    const getSchema = conn.ops.find((o) => o.name === "gitlab.get")!.argSchema;
+    assertEquals(
+      getSchema({ path: "https://evil.example/api/v4/projects" }),
+      "path: must start with '/' (relative to the API root)",
+    );
+    assertEquals(
+      getSchema({ path: "/projects/../admin/users" })?.startsWith("path: must not contain"),
+      true,
+    );
+    assertEquals(
+      getSchema({ path: "/projects/42/variables" }),
+      "path: /projects/42/variables exposes credentials; read it outside the agent if truly needed",
+    );
+    const mutateSchema = conn.ops.find((o) => o.name === "gitlab.mutate")!.argSchema;
+    assertEquals(
+      mutateSchema({ method: "POST", path: "projects", body: {} }),
+      "path: must start with '/' (relative to the API root)",
+    );
+    assertEquals(
+      mutateSchema({ method: "POST", path: "/projects/42/variables", body: { key: "A" } }),
+      null,
+    );
   } finally {
     await srv.shutdown();
   }
