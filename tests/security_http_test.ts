@@ -144,3 +144,14 @@ Deno.test("addSecurityHeaders does not clobber an existing HSTS header", () => {
   const out = addSecurityHeaders(res);
   assertEquals(out.headers.get("strict-transport-security"), "max-age=1");
 });
+
+// The app owns the edge headers so a TLS-terminating proxy can stay thin: Caddy
+// appends rather than replaces on proxied responses, which duplicated whatever
+// both sides set.
+Deno.test("addSecurityHeaders sets the full edge header set", () => {
+  const out = addSecurityHeaders(new Response("x"));
+  assertEquals(out.headers.get("x-content-type-options"), "nosniff");
+  assertEquals(out.headers.get("cache-control"), "no-store");
+  assertEquals(out.headers.get("referrer-policy"), "no-referrer");
+  assertEquals(out.headers.get("strict-transport-security"), "max-age=31536000; includeSubDomains");
+});

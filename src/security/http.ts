@@ -40,6 +40,7 @@ export function addSecurityHeaders(res: Response): Response {
   const headers = new Headers(res.headers);
   headers.set("x-content-type-options", "nosniff");
   headers.set("cache-control", "no-store");
+  headers.set("referrer-policy", "no-referrer");
   if (!headers.has("strict-transport-security")) {
     headers.set("strict-transport-security", "max-age=31536000; includeSubDomains");
   }
