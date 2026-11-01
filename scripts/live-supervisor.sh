@@ -13,6 +13,10 @@
 # to last-good automatically. A crash after it restarts the same commit with backoff.
 set -uo pipefail
 
+# systemd starts us with a minimal PATH; deno lives in ~/.deno/bin.
+export PATH="${DENOPS_PATH:-$HOME/.deno/bin:/usr/local/bin:/usr/bin:/bin:$PATH}"
+export HOME="${HOME:-/home/freebox}"
+
 LIVE="${DENOPS_LIVE_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 STATE="$LIVE/data"
 HEALTH_URL="${DENOPS_HEALTH_URL:-http://127.0.0.1:3100/health}"

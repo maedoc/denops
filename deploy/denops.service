@@ -24,6 +24,7 @@ RestartSec=3
 # the process group, but this also reaps anything it missed.
 KillMode=control-group
 TimeoutStopSec=25
+Environment=PATH=/home/freebox/.deno/bin:/usr/local/bin:/usr/bin:/bin
 Environment=DENOPS_SOAK_SEC=60
 Environment=DENOPS_HEALTH_URL=http://127.0.0.1:3100/health
 # Modest hardening; the service needs write access to its own tree (git checkout)
