@@ -14,6 +14,8 @@ export interface ServerConfig {
     clientId?: string;
     publicUrl?: string;
     ttlSec?: number;
+    /** Redirect hosts accepted for the pre-registered client id. */
+    redirectHosts?: string[];
   };
   ban?: {
     file?: string;
@@ -85,6 +87,9 @@ export function normalize(parsed: Record<string, unknown>): Config {
           clientId: o.clientId ? String(o.clientId) : "mistral",
           publicUrl: o.publicUrl ? String(o.publicUrl).replace(/\/+$/, "") : undefined,
           ttlSec: positive(o.ttlSec, "server.oauth.ttlSec"),
+          redirectHosts: Array.isArray(o.redirectHosts)
+            ? (o.redirectHosts as unknown[]).map((h) => String(h))
+            : undefined,
         };
       })(),
       ban: (() => {

@@ -17,6 +17,10 @@ server:
   #   clientId: mistral
   #   publicUrl: https://mcp.example.com  # default: derived from the request Host
   #   ttlSec: 3600                        # advisory expires_in
+  #   # redirect hosts accepted for browser (authorization_code) flows with the
+  #   # pre-registered client id; defaults cover Google/Anthropic/OpenAI
+  #   # redirecters plus loopback. The consent page's token check is the real gate.
+  #   redirectHosts: [oauth-redirect.googleusercontent.com, localhost, 127.0.0.1]
   # skipLoopbackBan: true     # loopback peers are never auto-banned
   # ban:                      # fail2ban-style brute-force protection
   #   file: data/bans         # persist auto-bans; truncate the file to reset live bans

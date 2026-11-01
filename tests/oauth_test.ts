@@ -281,6 +281,76 @@ Deno.test("oauth: consent page is served, and a wrong token grants nothing", asy
   assertEquals(state.codes.size, 0, "no code issued for a bad consent token");
 });
 
+// Gemini's connector uses the pre-registered client id (no DCR) and redirects to
+// Google's hosted redirector; that must reach the consent page, not "unknown
+// client_id", while arbitrary hosts stay refused.
+Deno.test("oauth: pre-registered client id works with an allowlisted redirector", async () => {
+  const state = newOAuthState();
+  const googleCfg: OAuthConfig = { ...cfg, publicUrl: "https://wdmn.example.org" };
+  const challenger = await challengeFor(VERIFIER);
+  const uri =
+    "https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-108742248246697572952-x";
+  const url = new URL("https://wdmn.example.org/authorize");
+  for (
+    const [k, v] of Object.entries({
+      response_type: "code",
+      client_id: "mistral",
+      redirect_uri: uri,
+      scope: "mcp",
+      resource: "https://wdmn.example.org/mcp",
+      code_challenge: challenger,
+      code_challenge_method: "S256",
+      state: "gemini-state",
+    })
+  ) url.searchParams.set(k, v);
+
+  const page = await handleOAuthRoute(new Request(url), url, "", googleCfg, state);
+  assertEquals(page!.status, 200, "consent page, not 'unknown client_id'");
+  assertStringIncludes(await page!.text(), "pre-registered");
+
+  const consent = await handleOAuthRoute(
+    new Request(url, { method: "POST" }),
+    url,
+    formBody({
+      client_id: "mistral",
+      redirect_uri: uri,
+      state: "gemini-state",
+      code_challenge: challenger,
+      scope: "mcp",
+      token: cfg.clientSecret,
+    }),
+    googleCfg,
+    state,
+  );
+  assertEquals(consent!.status, 302);
+  const location = new URL(consent!.headers.get("location")!);
+  assertEquals(location.hostname, "oauth-redirect.googleusercontent.com");
+  assertEquals(location.searchParams.get("state"), "gemini-state");
+  const code = location.searchParams.get("code")!;
+
+  const exchanged = await handleTokenRequest(
+    tokenReq({ headers: { "content-type": "application/x-www-form-urlencoded" }, body: "" }),
+    googleCfg,
+    formBody({
+      grant_type: "authorization_code",
+      code,
+      client_id: "mistral",
+      redirect_uri: uri,
+      code_verifier: VERIFIER,
+    }),
+    state,
+  );
+  assertEquals(exchanged.status, 200);
+
+  // Unlisted host is refused even for the static client (no open redirect).
+  const evil = new URL(url);
+  evil.searchParams.set("redirect_uri", "https://evil.example/cb");
+  assertEquals(
+    (await handleOAuthRoute(new Request(evil), evil, "", googleCfg, state))!.status,
+    400,
+  );
+});
+
 Deno.test("oauth: full authorization_code + PKCE flow issues a working token", async () => {
   const { state, client, consent } = await registerAndAuthorize();
   assertEquals(consent.status, 302);

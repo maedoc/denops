@@ -23,7 +23,23 @@ export interface OAuthConfig {
   /** Public origin of this server, e.g. https://mcp.example.com (no trailing /). */
   publicUrl: string;
   ttlSec?: number;
+  /**
+   * Redirect hosts accepted for the pre-registered client id (browser flows).
+   * Hosted redirecters used by LLM providers plus loopback for CLI clients; the
+   * consent page's token check is what actually gates issuance.
+   */
+  redirectHosts?: string[];
 }
+
+export const DEFAULT_REDIRECT_HOSTS = [
+  "oauth-redirect.googleusercontent.com",
+  "claude.ai",
+  "claude.com",
+  "chatgpt.com",
+  "localhost",
+  "127.0.0.1",
+  "[::1]",
+];
 
 const DEFAULT_TTL_SEC = 3600;
 const CODE_TTL_MS = 5 * 60 * 1000;
@@ -176,6 +192,21 @@ export function isAllowedRedirectUri(uri: string): boolean {
   }
   if (url.hash !== "" || url.username !== "" || url.password !== "") return false;
   if (url.protocol === "https:") return true;
+  return url.protocol === "http:" &&
+    ["localhost", "127.0.0.1", "[::1]", "::1"].includes(url.hostname);
+}
+
+export function isAllowedStaticRedirect(uri: string, cfg: OAuthConfig): boolean {
+  if (uri.length === 0 || uri.length > MAX_REDIRECT_LEN) return false;
+  let url: URL;
+  try {
+    url = new URL(uri);
+  } catch {
+    return false;
+  }
+  if (url.hash !== "" || url.username !== "" || url.password !== "") return false;
+  const hosts = cfg.redirectHosts ?? DEFAULT_REDIRECT_HOSTS;
+  if (url.protocol === "https:") return hosts.includes(url.hostname);
   return url.protocol === "http:" &&
     ["localhost", "127.0.0.1", "[::1]", "::1"].includes(url.hostname);
 }
@@ -335,20 +366,27 @@ export function authorizeGet(url: URL, cfg: OAuthConfig, state: OAuthState): Res
     });
   }
   const client = state.clients.get(parsed.clientId);
-  if (!client) {
+  // The pre-registered client id (e.g. "mistral") is usable without DCR: clients
+  // configured with a static id still run the browser flow.
+  const isStatic = !client && parsed.clientId === cfg.clientId;
+  if (!client && !isStatic) {
     return new Response("unknown client_id; register first or use client_credentials", {
       status: 400,
       headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" },
     });
   }
-  // Never redirect to an unregistered URI: that would be an open redirect.
-  if (!client.redirectUris.includes(parsed.redirectUri)) {
-    return new Response("redirect_uri is not registered for this client", {
+  // Never redirect anywhere unvetted: registered URIs for DCR clients, an allowlist
+  // of provider redirecters (plus loopback) for the static one.
+  const redirectOk = client
+    ? client.redirectUris.includes(parsed.redirectUri)
+    : isAllowedStaticRedirect(parsed.redirectUri, cfg);
+  if (!redirectOk) {
+    return new Response("redirect_uri is not allowed for this client", {
       status: 400,
       headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" },
     });
   }
-  return consentPage(cfg, parsed, client.name);
+  return consentPage(cfg, parsed, client ? client.name : `${cfg.clientId} (pre-registered)`);
 }
 
 export function authorizePost(
@@ -375,15 +413,20 @@ export function authorizePost(
       challenge: form.get("code_challenge") ?? parsed.challenge,
     };
   const client = state.clients.get(params.clientId);
-  if (!client || !client.redirectUris.includes(params.redirectUri) || params.challenge === "") {
+  const isStatic = !client && params.clientId === cfg.clientId;
+  const redirectOk = client
+    ? client.redirectUris.includes(params.redirectUri)
+    : isStatic && isAllowedStaticRedirect(params.redirectUri, cfg);
+  if (!redirectOk || params.challenge === "") {
     return new Response("invalid authorization request", {
       status: 400,
       headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" },
     });
   }
+  const clientName = client ? client.name : `${cfg.clientId} (pre-registered)`;
   const token = form.get("token") ?? "";
   if (token === "" || !constantTimeEqual(token, cfg.clientSecret)) {
-    return consentPage(cfg, params, client.name, "That token does not match. Nothing was granted.");
+    return consentPage(cfg, params, clientName, "That token does not match. Nothing was granted.");
   }
   // Possession of the access token proved; mint a single-use, short-lived code
   // bound to the client, redirect URI and PKCE challenge.

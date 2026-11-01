@@ -451,6 +451,7 @@ export function createHttpHandler(
       clientSecret: s.token,
       publicUrl: s.oauth.publicUrl ?? "",
       ttlSec: s.oauth.ttlSec,
+      redirectHosts: s.oauth.redirectHosts,
     };
   })();
   // Metadata needs absolute URLs: prefer the configured public URL, else the
