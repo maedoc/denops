@@ -590,6 +590,14 @@ ssh homelab 'cd ~/denops-dev && git fetch origin && git reset --hard origin/main
   `127.0.0.53:53` (systemd-resolved) even though `arxiv.org` was allowed, so the SSRF guard saw "no
   addresses" and `web.fetch` failed. Resolvers are now explicit config (`connectors.web.dnsServers`)
   and part of `--allow-net`.
+- **"Optional" has to be optional at the boundary, not just in the client.** `gitlab.issues.list`
+  documented `state?` and defaulted it in the client, but its argSchema used the _required_ enum
+  check — so omitting `state` failed before the default could run, and the mock test never noticed
+  because it called the client directly, skipping the boundary. Optional fields now have their own
+  `optOneOf`, and the tests live at the argSchema boundary.
+- **An unknown query parameter is not an error, it is a silent default.** `perPage` was copied
+  verbatim into GitLab's query string, which ignored it and answered with 20 rows forever; the ops'
+  camelCase has to be emitted as the API's snake_case.
 - **A test that only runs green on macOS is a promotion hazard.** One asserted `/bin/sh` in the
   permission plan while configuring an fs root without `exec`, so it passed locally and failed the
   Linux test task. See "run the Linux task before promoting".
