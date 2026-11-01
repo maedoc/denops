@@ -141,6 +141,12 @@ export function parseYaml(text: string): Record<string, unknown> {
     key?: string;
   }[] = [{ indent: -1, obj: root }];
   const scalar = (rest: string): unknown => {
+    // flow sequence: [a, b:53, "*.example.org"] — the shipped configs use this form
+    if (rest.startsWith("[") && rest.endsWith("]")) {
+      const inner = rest.slice(1, -1).trim();
+      if (inner === "") return [];
+      return inner.split(",").map((item) => scalar(item.trim()));
+    }
     if (rest === "[]") return [];
     if (rest === "true" || rest === "false") return rest === "true";
     if (/^-?\d+(\.\d+)?$/.test(rest)) return Number(rest);

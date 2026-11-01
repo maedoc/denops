@@ -55,16 +55,20 @@ export function derivePermissions(
       }
     }
     if (name === "web") {
+      // A list that the YAML reader handed back as a scalar must not be iterated
+      // character by character into --allow-net (it once produced "[:53", "1:53"…).
+      const asList = (v: unknown): string[] =>
+        Array.isArray(v) ? v.map((x) => String(x)) : typeof v === "string" ? v.split(",") : [];
       // web.fetch may reach exactly the hosts the operator listed (Deno enforces it
       // too, so a bug in the SSRF guard is not the only line of defence), plus the
       // resolvers the guard queries: Deno.resolveDns needs net access to the
       // resolver, not only to the name being resolved.
-      for (const host of (c.allowedHosts ?? []) as unknown[]) {
-        const h = String(host).trim();
+      for (const host of asList(c.allowedHosts)) {
+        const h = host.trim();
         if (h !== "") net.add(h);
       }
-      for (const dns of (c.dnsServers ?? []) as unknown[]) {
-        const d = String(dns).trim();
+      for (const dns of asList(c.dnsServers)) {
+        const d = dns.trim();
         if (d === "") continue;
         if (/:\d+$/.test(d)) {
           net.add(d);

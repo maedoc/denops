@@ -319,12 +319,15 @@ export function webConnector(opts: WebConnectorOptions): Connector {
 }
 
 export function webOptionsFromConfig(raw: Record<string, unknown>): WebConnectorOptions {
-  const allowed = Array.isArray(raw.allowedHosts)
-    ? (raw.allowedHosts as unknown[]).map((h) => String(h)).filter((h) => h !== "")
-    : [];
-  const dnsServers = Array.isArray(raw.dnsServers)
-    ? (raw.dnsServers as unknown[]).map((d) => String(d)).filter((d) => d !== "")
-    : [];
+  // tolerate a scalar list from the minimal YAML reader, but never iterate a string
+  const list = (v: unknown): string[] =>
+    Array.isArray(v)
+      ? v.map((x) => String(x).trim()).filter((x) => x !== "")
+      : typeof v === "string"
+      ? v.split(",").map((x) => x.trim()).filter((x) => x !== "")
+      : [];
+  const allowed = list(raw.allowedHosts);
+  const dnsServers = list(raw.dnsServers);
   return {
     allowedHosts: allowed,
     dnsServers,
