@@ -108,11 +108,19 @@ export async function buildApp(configPath: string, secretsPath: string): Promise
     const apiKey =
       ((secrets.mistral as Record<string, unknown> | undefined)?.apiKey ?? "") as string;
     if (!apiKey) throw new Error("mistral enabled but secrets.mistral.apiKey missing");
+    // documents.stage writes downloads here; the same path is exposed read-only as
+    // the `denops-stage` fs root so the agent can read/grep staged content.
+    const stagingRoot = String(m.stagingRoot ?? `${config.dataDir}/staging`);
     registry.register(
       mistralConnector({
         apiKey,
         origin: String(m.origin ?? "https://api.mistral.ai"),
         apiPath: String(m.apiPath ?? "/v1"),
+        stagingRoot,
+        maxStagedBytes: m.maxStagedBytes === undefined ? undefined : Number(m.maxStagedBytes),
+        inlineReadMaxBytes: m.inlineReadMaxBytes === undefined
+          ? undefined
+          : Number(m.inlineReadMaxBytes),
       }),
     );
   }

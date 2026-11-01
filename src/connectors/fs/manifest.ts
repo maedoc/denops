@@ -85,6 +85,23 @@ export function fsConnector(opts: {
         ),
       },
       {
+        name: "fs.grep",
+        tier: "open",
+        doc:
+          "Regex search through files under the root (a file or a directory), without a shell. " +
+          "args: { root, path?, pattern, ignoreCase?, maxMatches?, maxBytes? }. " +
+          "Returns { files, matches: [{ file, line, text }], truncated }.",
+        argSchema: compose(
+          rejectUnknown(),
+          str("root"),
+          optStr("path", 4000),
+          str("pattern"),
+          optBool("ignoreCase"),
+          optNum("maxMatches"),
+          optNum("maxBytes"),
+        ),
+      },
+      {
         name: "fs.write",
         tier: "approval",
         doc:
@@ -143,6 +160,7 @@ export function fsConnector(opts: {
       "glob": (args) => client.glob(args),
       "list": (args) => client.list(args),
       "read": (args) => client.read(args),
+      "grep": (args) => client.grep(args),
       "write": (args) => client.write(args),
       "edit": (args) => client.edit(args),
       "editRegex": (args) => client.editRegex(args),

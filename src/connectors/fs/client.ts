@@ -194,6 +194,66 @@ export class FSClient {
     } as JsonValue;
   }
 
+  /**
+   * grep: regex search through files under the root (a file or a directory) without
+   * a shell. Returns line hits with 1-based numbers, capped by matches/bytes/files.
+   */
+  async grep(args: JsonValue): Promise<JsonValue> {
+    const root = this.arg<string>(args, "root");
+    const rel = this.arg<string>(args, "path") ?? ".";
+    const pattern = this.arg<string>(args, "pattern");
+    const ignoreCase = this.arg<boolean>(args, "ignoreCase") ?? false;
+    const maxMatches = Math.min(this.arg<number>(args, "maxMatches") ?? 100, 500);
+    const maxBytes = Math.min(this.arg<number>(args, "maxBytes") ?? 2_000_000, 20_000_000);
+    const maxLineLen = 400;
+    let re: RegExp;
+    try {
+      re = new RegExp(pattern, ignoreCase ? "i" : "");
+    } catch (e) {
+      throw new Error(`pattern: invalid regex (${(e as Error).message})`);
+    }
+    const abs = await this.resolve(root, rel);
+    const info = await Deno.stat(abs);
+    const files: string[] = [];
+    if (info.isFile) files.push(abs);
+    else {
+      for await (const entry of walkFiles(abs, 2000)) files.push(entry);
+    }
+    const matches: Array<{ file: string; line: number; text: string }> = [];
+    let scanned = 0;
+    let truncated = false;
+    for (const file of files) {
+      if (matches.length >= maxMatches || scanned >= maxBytes) {
+        truncated = true;
+        break;
+      }
+      let text = "";
+      try {
+        const stat = await Deno.stat(file);
+        if (!stat.isFile || stat.size > 4_000_000) continue;
+        text = await Deno.readTextFile(file);
+      } catch {
+        continue;
+      } // binary or unreadable: skip
+      scanned += text.length;
+      const relPath = file.slice(abs.length + (info.isFile ? 0 : 1));
+      const lines = text.split("\n");
+      for (let i = 0; i < lines.length; i++) {
+        if (!re.test(lines[i])) continue;
+        matches.push({
+          file: info.isFile ? rel : (relPath || file.split("/").pop()!),
+          line: i + 1,
+          text: lines[i].length > maxLineLen ? lines[i].slice(0, maxLineLen) + "…" : lines[i],
+        });
+        if (matches.length >= maxMatches) {
+          truncated = true;
+          break;
+        }
+      }
+    }
+    return { root, path: rel, pattern, files: files.length, matches, truncated } as JsonValue;
+  }
+
   async list(args: JsonValue): Promise<JsonValue> {
     const root = this.arg<string>(args, "root");
     const rel = this.arg<string>(args, "path") ?? ".";
@@ -442,6 +502,23 @@ export class FSClient {
     }
     if (dropped > 0) buf += `\n...[output truncated, ${dropped} bytes dropped]`;
     return buf;
+  }
+}
+
+async function* walkFiles(dir: string, limit: number): AsyncGenerator<string> {
+  let n = 0;
+  const stack = [dir];
+  while (stack.length > 0 && n < limit) {
+    const current = stack.pop()!;
+    for await (const entry of Deno.readDir(current)) {
+      if (entry.name === ".git" || entry.name === "node_modules") continue;
+      const path = `${current}/${entry.name}`;
+      if (entry.isDirectory) stack.push(path);
+      else if (entry.isFile) {
+        n += 1;
+        yield path;
+      }
+    }
   }
 }
 

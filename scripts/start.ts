@@ -67,6 +67,14 @@ for (const [name, c] of Object.entries(connectors)) {
       netHosts.add(`${acc.host}:${acc.port ?? 993}`);
     }
   }
+  if (name === "mistral") {
+    // documents.stage writes into the staging root; signed URLs point at Azure blob
+    // storage, which is a different host from the API origin.
+    const staging = String(c.stagingRoot ?? "data/staging");
+    fsReadPaths.add(staging);
+    fsWritePaths.add(staging);
+    netHosts.add("*.blob.core.windows.net");
+  }
   if (name === "dev" || name === "deploy") {
     for (const r of (c.roots ?? []) as Array<Record<string, unknown>>) {
       const p = String(r.path);

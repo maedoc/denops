@@ -369,3 +369,44 @@ Deno.test("fs.exec timeout flags the result (1s timeout on sleep 30)", async () 
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+// Stage-then-grep: reading a large downloaded document without a shell.
+Deno.test("fs.grep finds matches in a file and across a directory", async () => {
+  const { dir, harness } = await setup();
+  try {
+    await Deno.writeTextFile(`${dir}/repo/src/a.ts`, "const alpha = 1;\nconst beta = 2;\n");
+    await Deno.writeTextFile(`${dir}/repo/src/b.md`, "# notes\nALPHA here\n");
+    const one = await runCode(
+      harness,
+      dir,
+      `return await fs.grep({ root: "repo", path: "src/a.ts", pattern: "beta" });`,
+      { grantKeys: new Set(["fs:repo"]) },
+    );
+    assertEquals(one.status, "completed", outcomeText(one));
+    const hit = one.result as { matches: Array<{ file: string; line: number; text: string }> };
+    assertEquals(hit.matches.length, 1);
+    assertEquals(hit.matches[0].line, 2);
+    assertStringIncludes(hit.matches[0].text, "beta");
+
+    const many = await runCode(
+      harness,
+      dir,
+      `return await fs.grep({ root: "repo", path: "src", pattern: "alpha", ignoreCase: true });`,
+      { grantKeys: new Set(["fs:repo"]) },
+    );
+    const all = many.result as { matches: Array<{ file: string }>; truncated: boolean };
+    assertEquals(all.matches.length, 2, "case-insensitive across files");
+    assertEquals(all.truncated, false);
+
+    const bad = await runCode(
+      harness,
+      dir,
+      `return await fs.grep({ root: "repo", path: "src", pattern: "(" });`,
+      { grantKeys: new Set(["fs:repo"]) },
+    );
+    assertEquals(bad.status, "failed");
+    assertStringIncludes(outcomeText(bad), "invalid regex");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});

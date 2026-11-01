@@ -1,12 +1,67 @@
-import { compose, oneOf, optStr, rejectUnknown, str } from "../../harness/args.ts";
-import type { Connector, HostContext } from "../../harness/types.ts";
+import { compose, oneOf, optNum, optStr, rejectUnknown, str } from "../../harness/args.ts";
+import { checkShapeArgs, wrapClient } from "../shape.ts";
+import type { Connector, HostContext, JsonValue } from "../../harness/types.ts";
 import { MistralClient } from "./client.ts";
 
+// Default projections: library/document objects carry summaries, tokens counts and
+// sharing metadata an agent rarely needs up front. `fields`/`full` opt out.
+const MISTRAL_SHAPE: Record<string, string[]> = {
+  // list endpoints wrap their rows: keep the envelope keys, project each row
+  "libraries.list": [
+    "pagination",
+    "data.id",
+    "data.name",
+    "data.total_size",
+    "data.nb_documents",
+    "data.updated_at",
+  ],
+  "libraries.get": ["id", "name", "total_size", "nb_documents", "updated_at", "description"],
+  "documents.list": [
+    "pagination",
+    "data.id",
+    "data.name",
+    "data.size",
+    "data.mime_type",
+    "data.extension",
+    "data.created_at",
+    "data.process_status",
+  ],
+  "documents.get": [
+    "id",
+    "name",
+    "size",
+    "mime_type",
+    "extension",
+    "created_at",
+    "process_status",
+    "summary",
+    "url",
+  ],
+  "documents.put": ["id", "name", "size", "mime_type"],
+  // replace() returns a wrapper { created, replaced, document } — keep the wrapper
+  // keys and project the nested document.
+  "documents.replace": [
+    "created",
+    "replaced",
+    "document.id",
+    "document.name",
+    "document.size",
+    "document.mime_type",
+  ],
+};
+
 export function mistralConnector(
-  opts: { apiKey: string; origin: string; apiPath: string },
+  opts: {
+    apiKey: string;
+    origin: string;
+    apiPath: string;
+    stagingRoot?: string;
+    maxStagedBytes?: number;
+    inlineReadMaxBytes?: number;
+  },
 ): Connector {
-  const client = new MistralClient(opts);
-  return {
+  const client = new MistralClient({ stagingRoot: "data/staging", ...opts });
+  const conn: Connector = {
     id: "mistral",
     ops: [
       {
@@ -37,14 +92,77 @@ export function mistralConnector(
       {
         name: "mistral.documents.list",
         tier: "open",
-        doc: "List documents in a Library. args: { libraryId: string }",
+        doc:
+          "List documents in a Library. args: { libraryId: string }. Returns document summaries; `size` and `mime_type` " +
+          "decide whether to read inline (documents.read) or stage+grep (documents.stage), and `summary` is the " +
+          'extracted text summary — ask for it with fields: ["name","size","summary"].',
         argSchema: compose(rejectUnknown(), str("libraryId")),
       },
       {
         name: "mistral.documents.get",
         tier: "open",
-        doc: "Get document metadata. args: { libraryId: string, documentId: string }",
+        doc:
+          "Get document metadata (id, name, size, mime_type, extension, process_status, summary). " +
+          'args: { libraryId: string, documentId: string }. Add "summary" via fields for the extracted text.',
         argSchema: compose(rejectUnknown(), str("libraryId"), str("documentId")),
+      },
+      {
+        name: "mistral.documents.read",
+        tier: "open",
+        doc:
+          "Read a text document's content inline. args: { libraryId, documentId, maxBytes? } (default 64 KiB). " +
+          "Returns { text, bytes, mime, truncated }. Binary documents (application/pdf, …) are refused: use the " +
+          "`summary` field from documents.get, or documents.stage + fs.grep.",
+        argSchema: compose(
+          rejectUnknown(),
+          str("libraryId"),
+          str("documentId"),
+          optNum("maxBytes"),
+        ),
+      },
+      {
+        name: "mistral.documents.stage",
+        tier: "open",
+        doc:
+          "Download a document into the staging root so fs.read / fs.grep can work through it (any size, any type). " +
+          "args: { libraryId, documentId, destName? }. Returns { path, bytes, mime, sha256 } — `path` is relative to " +
+          "the `denops-stage` fs root.",
+        argSchema: compose(
+          rejectUnknown(),
+          str("libraryId"),
+          str("documentId"),
+          optStr("destName", 120),
+        ),
+      },
+      {
+        name: "mistral.documents.put",
+        tier: "open",
+        doc:
+          "Create a library document from text (no base64 needed). args: { libraryId, fileName, text, contentType? } " +
+          "(contentType defaults to text/markdown). Returns the created document metadata.",
+        argSchema: compose(
+          rejectUnknown(),
+          str("libraryId"),
+          str("fileName"),
+          str("text"),
+          optStr("contentType", 200),
+        ),
+      },
+      {
+        name: "mistral.documents.replace",
+        tier: "open",
+        doc:
+          "Overwrite a document in place (delete + re-upload) so a canvas keeps its name and gains a new revision. " +
+          "args: { libraryId, documentId?, fileName, text, contentType? }. If documentId is omitted, the oldest " +
+          "document whose name equals fileName is replaced; if none exists the text is uploaded as a new document.",
+        argSchema: compose(
+          rejectUnknown(),
+          str("libraryId"),
+          optStr("documentId", 64),
+          str("fileName"),
+          str("text"),
+          optStr("contentType", 200),
+        ),
       },
       {
         name: "mistral.documents.upload",
@@ -104,43 +222,115 @@ export function mistralConnector(
         argSchema: compose(rejectUnknown()),
       },
     ],
-    client: (_ctx: HostContext) => ({
-      "libraries.list": () => client.listLibraries(),
-      "libraries.get": (a) => client.getLibrary(String((a as { id: string }).id)),
-      "libraries.create": async (a) => {
-        const r = a as { name: string; description?: string };
-        return await client.createLibrary(r.name, r.description);
-      },
-      "libraries.delete": (a) => client.deleteLibrary(String((a as { id: string }).id)),
-      "documents.list": (a) => client.listDocuments(String((a as { libraryId: string }).libraryId)),
-      "documents.get": async (a) => {
-        const r = a as { libraryId: string; documentId: string };
-        return await client.getDocument(r.libraryId, r.documentId);
-      },
-      "documents.upload": async (a) => {
-        const r = a as {
-          libraryId: string;
-          fileName: string;
-          contentBase64: string;
-          contentType?: string;
-        };
-        return await client.uploadDocument(r.libraryId, r.fileName, r.contentBase64, r.contentType);
-      },
-      "documents.delete": async (a) => {
-        const r = a as { libraryId: string; documentId: string };
-        return await client.deleteDocument(r.libraryId, r.documentId);
-      },
-      "connectors.list": () => client.listConnectors(),
-      "libraries.share": (a) => {
-        const r = a as { id: string; shareWithType: string; shareWithUuid: string; level: string };
-        return client.shareLibrary(r.id, r.shareWithType, r.shareWithUuid, r.level);
-      },
-      "libraries.unshare": (a) => {
-        const r = a as { id: string; shareWithType: string; shareWithUuid: string };
-        return client.unshareLibrary(r.id, r.shareWithType, r.shareWithUuid);
-      },
-      "libraries.shares.list": (a) => client.listShares(String((a as { id: string }).id)),
-    }),
+    client: (_ctx: HostContext) =>
+      wrapClient({
+        "libraries.list": () => client.listLibraries(),
+        "libraries.get": (a) => client.getLibrary(String((a as { id: string }).id)),
+        "libraries.create": async (a) => {
+          const r = a as { name: string; description?: string };
+          return await client.createLibrary(r.name, r.description);
+        },
+        "libraries.delete": (a) => client.deleteLibrary(String((a as { id: string }).id)),
+        "documents.list": (a) =>
+          client.listDocuments(String((a as { libraryId: string }).libraryId)),
+        "documents.get": async (a) => {
+          const r = a as { libraryId: string; documentId: string };
+          return await client.getDocument(r.libraryId, r.documentId);
+        },
+        "documents.upload": async (a) => {
+          const r = a as {
+            libraryId: string;
+            fileName: string;
+            contentBase64: string;
+            contentType?: string;
+          };
+          return await client.uploadDocument(
+            r.libraryId,
+            r.fileName,
+            r.contentBase64,
+            r.contentType,
+          );
+        },
+        "documents.read": async (a) => {
+          const r = a as { libraryId: string; documentId: string; maxBytes?: number };
+          return await client.documentText(r.libraryId, r.documentId, r.maxBytes) as JsonValue;
+        },
+        "documents.stage": async (a) => {
+          const r = a as { libraryId: string; documentId: string; destName?: string };
+          const meta = await client.getDocument(r.libraryId, r.documentId) as { name?: string };
+          const out = await client.stageDocument(
+            r.libraryId,
+            r.documentId,
+            meta.name ?? r.documentId,
+            r.destName,
+          );
+          return { ...out, root: "denops-stage", path: out.path } as JsonValue;
+        },
+        "documents.put": async (a) => {
+          const r = a as {
+            libraryId: string;
+            fileName: string;
+            text: string;
+            contentType?: string;
+          };
+          return await client.putDocument(r.libraryId, r.fileName, r.text, r.contentType);
+        },
+        "documents.replace": async (a) => {
+          const r = a as {
+            libraryId: string;
+            documentId?: string;
+            fileName: string;
+            text: string;
+            contentType?: string;
+          };
+          let documentId = r.documentId;
+          if (!documentId) {
+            const listed = await client.listDocuments(r.libraryId) as {
+              data?: Array<{ id: string; name: string; created_at?: string }>;
+            };
+            const sameName = (listed.data ?? [])
+              .filter((d) => d.name === r.fileName)
+              .sort((x, y) => String(x.created_at).localeCompare(String(y.created_at)));
+            documentId = sameName[0]?.id;
+          }
+          if (!documentId) {
+            return {
+              created: true,
+              document: await client.putDocument(r.libraryId, r.fileName, r.text, r.contentType),
+            } as JsonValue;
+          }
+          return {
+            created: false,
+            replaced: documentId,
+            document: await client.replaceDocument(
+              r.libraryId,
+              documentId,
+              r.fileName,
+              r.text,
+              r.contentType,
+            ),
+          } as JsonValue;
+        },
+        "documents.delete": async (a) => {
+          const r = a as { libraryId: string; documentId: string };
+          return await client.deleteDocument(r.libraryId, r.documentId);
+        },
+        "connectors.list": () => client.listConnectors(),
+        "libraries.share": (a) => {
+          const r = a as {
+            id: string;
+            shareWithType: string;
+            shareWithUuid: string;
+            level: string;
+          };
+          return client.shareLibrary(r.id, r.shareWithType, r.shareWithUuid, r.level);
+        },
+        "libraries.unshare": (a) => {
+          const r = a as { id: string; shareWithType: string; shareWithUuid: string };
+          return client.unshareLibrary(r.id, r.shareWithType, r.shareWithUuid);
+        },
+        "libraries.shares.list": (a) => client.listShares(String((a as { id: string }).id)),
+      }, MISTRAL_SHAPE),
     validateStartup: async (ctx: HostContext) => {
       await client.listModels();
       ctx.log({ event: "mistral key verified via GET /models" });
@@ -187,4 +377,19 @@ export function mistralConnector(
       }
     },
   };
+
+  conn.ops = conn.ops.map((op) => {
+    const short = op.name.slice("mistral.".length);
+    return {
+      ...op,
+      argSchema: compose(op.argSchema, checkShapeArgs),
+      doc: MISTRAL_SHAPE[short] && !op.doc.includes("Returns")
+        ? op.doc +
+          (/\.[a-z]*list$/.test(short) || short === "documents.list"
+            ? ' Returns { pagination, data: [summary] }; pass fields: ["..."] or full: true for raw objects.'
+            : ' Returns a summary object; pass fields: ["..."] or full: true for the raw object.')
+        : op.doc,
+    };
+  });
+  return conn;
 }

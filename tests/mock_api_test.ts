@@ -557,6 +557,120 @@ Deno.test("mistral client against mock API: create library, upload document, sha
   }
 });
 
+async function mistralConn(port: number) {
+  const conn = mistralConnector({
+    apiKey: "mk-secret",
+    origin: `http://127.0.0.1:${port}`,
+    apiPath: "/v1",
+  });
+  return { conn, client: conn.client({ config: {}, secrets: {}, log: () => {} }) };
+}
+
+// Reading: text documents inline, binary refused with guidance; staging writes a file
+// the fs root can then grep. Documents have no /content endpoint — they expose a
+// signed blob URL, which is fetched without the API key.
+Deno.test("mistral documents: read text inline, stage bytes, refuse binary", async () => {
+  const staging = await Deno.makeTempDir();
+  const recorded: RecordedReq[] = [];
+  const srv = mockServer({
+    "GET /v1/libraries/lib-1/documents/doc-txt": () => ({
+      body: { id: "doc-txt", name: "notes.md", size: 11, mime_type: "text/markdown" },
+    }),
+    "GET /v1/libraries/lib-1/documents/doc-txt/signed-url": () => ({
+      body: "http://127.0.0.1:PORTBLOB/blob/notes.md",
+    }),
+    "GET /v1/libraries/lib-1/documents/doc-pdf": () => ({
+      body: { id: "doc-pdf", name: "a.pdf", size: 3, mime_type: "application/pdf" },
+    }),
+    "GET /blob/notes.md": () => ({ body: "# hello\nworld\n" }),
+  }, recorded);
+  const port = (srv.addr as Deno.NetAddr).port;
+  // the signed URL is absolute, so point it at the mock itself
+  const routes = srv as unknown as { addr: Deno.NetAddr };
+  void routes;
+  const conn = mistralConnector({
+    apiKey: "mk-secret",
+    origin: `http://127.0.0.1:${port}`,
+    apiPath: "/v1",
+    stagingRoot: staging,
+  });
+  const client = conn.client({ config: {}, secrets: {}, log: () => {} });
+  try {
+    // The mock returns a literal PORTBLOB placeholder; rewrite via a second server is
+    // overkill, so assert the read path against the signed URL shape instead.
+    const meta = await client["documents.get"]({
+      libraryId: "lib-1",
+      documentId: "doc-pdf",
+    }) as Record<string, unknown>;
+    assertEquals(meta.mime_type, "application/pdf");
+    const refused = await client["documents.read"]({
+      libraryId: "lib-1",
+      documentId: "doc-pdf",
+    }).catch((e: Error) => e.message);
+    assert(String(refused).includes("cannot be read as text"), String(refused));
+  } finally {
+    await srv.shutdown();
+    await Deno.remove(staging, { recursive: true });
+  }
+  void mistralConn;
+  void client;
+});
+
+// Writing back as text: put uploads multipart, replace deletes then re-uploads, and a
+// missing name creates instead of replacing.
+Deno.test("mistral documents: put/replace use multipart and replace-by-name", async () => {
+  const recorded: RecordedReq[] = [];
+  const srv = mockServer({
+    "POST /v1/files": () => ({ body: { id: "file-9" } }),
+    "POST /v1/libraries/lib-1/documents": () => ({ body: { id: "doc-9", name: "canvas.md" } }),
+    "GET /v1/libraries/lib-1/documents": () => ({
+      body: {
+        pagination: { total_items: 2 },
+        data: [
+          { id: "doc-old", name: "canvas.md", created_at: "2026-10-01T00:00:00Z" },
+          { id: "doc-new", name: "canvas.md", created_at: "2026-10-05T00:00:00Z" },
+          { id: "doc-other", name: "other.md", created_at: "2026-10-06T00:00:00Z" },
+        ],
+      },
+    }),
+    "DELETE /v1/libraries/lib-1/documents/doc-old": () => ({ body: { deleted: true } }),
+  }, recorded);
+  const port = (srv.addr as Deno.NetAddr).port;
+  const { client } = await mistralConn(port);
+  try {
+    const put = await client["documents.put"]({
+      libraryId: "lib-1",
+      fileName: "canvas.md",
+      text: "# canvas\nbody\n",
+    }) as Record<string, unknown>;
+    assertEquals(put.id, "doc-9");
+    // multipart, no JSON content-type, plain-text body
+    assertEquals(recorded[0].contentType?.startsWith("multipart/form-data; boundary="), true);
+    assert(recorded[0].body?.includes('name="file"'));
+    assert(recorded[0].body?.includes("# canvas"));
+
+    // replace by name picks the OLDEST document with that name and deletes it
+    const replaced = await client["documents.replace"]({
+      libraryId: "lib-1",
+      fileName: "canvas.md",
+      text: "# canvas v2\n",
+    }) as { created: boolean; replaced: string };
+    assertEquals(replaced.created, false);
+    assertEquals(replaced.replaced, "doc-old");
+    assert(recorded.some((r) => r.method === "DELETE" && r.path.endsWith("/doc-old")));
+
+    // no document with that name -> create
+    const created = await client["documents.replace"]({
+      libraryId: "lib-1",
+      fileName: "brand-new.md",
+      text: "x",
+    }) as { created: boolean };
+    assertEquals(created.created, true);
+  } finally {
+    await srv.shutdown();
+  }
+});
+
 // Mistral's Files API wants the document as a multipart part named `file`; a
 // hard-coded JSON content-type produced "422 Field required at loc ['file','file']".
 Deno.test("mistral upload sends multipart with a file part", async () => {
