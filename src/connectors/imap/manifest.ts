@@ -206,7 +206,7 @@ export function imapConnector(deps: ImapConnectorDeps): Connector {
     return {
       ...op,
       argSchema: compose(op.argSchema, checkShapeArgs),
-      doc: MAIL_SHAPE[short] ? op.doc + SHAPE_HINT : op.doc,
+      doc: MAIL_SHAPE[short] && !op.doc.includes("Returns") ? op.doc + SHAPE_HINT : op.doc,
     };
   });
   return conn;
