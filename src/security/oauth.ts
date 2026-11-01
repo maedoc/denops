@@ -218,7 +218,7 @@ function randomId(prefix: string, bytes = 16): string {
 
 export function registerClient(
   body: string,
-  cfg: OAuthConfig,
+  _cfg: OAuthConfig,
   state: OAuthState,
 ): Response {
   let req: Record<string, unknown>;

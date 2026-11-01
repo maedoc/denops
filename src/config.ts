@@ -159,10 +159,16 @@ function parseYaml(text: string): unknown {
         top.parent[top.key as string] = arr;
         top.obj = arr;
       }
+      const rest = line.slice(2);
+      const m = rest.match(/^([A-Za-z0-9_.-]+):\s*(.*)$/);
+      if (!m) {
+        // scalar list item (e.g. an argv entry under tasks.check)
+        (top.obj as unknown[]).push(scalar(rest));
+        continue;
+      }
       const item: Record<string, unknown> = {};
       (top.obj as unknown[]).push(item);
-      const m = line.slice(2).match(/^([A-Za-z0-9_.-]+):\s*(.*)$/);
-      if (m) item[m[1]] = m[2] === "" ? {} : scalar(m[2]);
+      item[m[1]] = m[2] === "" ? {} : scalar(m[2]);
       stack.push({ indent: indent + 1, obj: item });
       continue;
     }

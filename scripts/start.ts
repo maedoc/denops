@@ -22,10 +22,15 @@ function parseYaml(text: string): Record<string, unknown> {
         top.parent[top.key as string] = arr;
         top.obj = arr;
       }
+      const rest = line.slice(2);
+      const im = rest.match(/^([A-Za-z0-9_.-]+):\s*(.*)$/);
+      if (!im) {
+        (top.obj as unknown[]).push(rest.replace(/^"(.*)"$/, "$1"));
+        continue;
+      }
       const item: Record<string, unknown> = {};
       (top.obj as unknown[]).push(item);
-      const im = line.slice(2).match(/^([A-Za-z0-9_.-]+):\s*(.*)$/);
-      if (im) item[im[1]] = im[2] === "" ? {} : im[2].replace(/^"(.*)"$/, "$1");
+      item[im[1]] = im[2] === "" ? {} : im[2].replace(/^"(.*)"$/, "$1");
       stack.push({ indent: indent + 1, obj: item });
       continue;
     }
@@ -62,6 +67,18 @@ for (const [name, c] of Object.entries(connectors)) {
       netHosts.add(`${acc.host}:${acc.port ?? 993}`);
     }
   }
+  if (name === "dev" || name === "deploy") {
+    for (const r of (c.roots ?? []) as Array<Record<string, unknown>>) {
+      const p = String(r.path);
+      fsReadPaths.add(p);
+      fsWritePaths.add(p);
+    }
+    if (c.path) fsReadPaths.add(String(c.path));
+  }
+  if (name === "deploy" && c.liveDir) {
+    fsReadPaths.add(String(c.liveDir));
+    fsWritePaths.add(String(c.liveDir));
+  }
   if (name === "fs") {
     for (const r of (c.roots ?? []) as Array<Record<string, unknown>>) {
       const p = String(r.path);
@@ -91,7 +108,16 @@ const execBins = [
   "/bin/sh",
   ...(Deno.build.os === "linux" ? ["/usr/bin/setsid", "/bin/kill"] : []),
 ];
-const allowRun = fsExecRoots.size > 0 ? execBins : [];
+// dev runs a project's declared argv tables (deno/git/…); deploy runs git and the
+// dev root's test task. Both are explicit connector opt-ins, never defaults.
+const connectorBins: string[] = [];
+if (connectors.dev?.enabled === true || connectors.dev?.enabled === "true") {
+  connectorBins.push("deno", "git");
+}
+if (connectors.deploy?.enabled === true || connectors.deploy?.enabled === "true") {
+  connectorBins.push("deno", "git");
+}
+const allowRun = [...new Set([...(fsExecRoots.size > 0 ? execBins : []), ...connectorBins])];
 const args = [
   "run",
   "--unstable-worker-options",

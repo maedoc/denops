@@ -91,3 +91,32 @@ startup:
   # full: validate secrets and reachability of all enabled connectors, fail fast on error.
   # none: skip validation (dev only).
   validate: full
+
+# --- agent-assisted development (optional) -----------------------------------
+#  dev:    work on code without a shell — a project's declared argv tables
+#  deploy: record deploy intent for scripts/live-supervisor.sh (restart, health
+#          probe, soak, auto-revert live in the supervisor, not in the server)
+#
+# connectors:
+#   dev:
+#     enabled: true
+#     timeoutMs: 180000
+#     roots:
+#       - name: denops-dev                 # worktree the agent owns
+#         path: /home/freebox/denops-dev
+#         tasks:                           # argv only, never a shell
+#           check:
+#             - deno
+#             - check
+#             - src/server.ts
+#             - tests/
+#           test:
+#             - deno
+#             - task
+#             - test
+#           fmt: [deno, fmt, src, tests, scripts]
+#   deploy:
+#     enabled: true
+#     liveDir: /home/freebox/denops        # live checkout, detached at desired-commit
+#     devBranch: agent/dev
+#     devRoot: denops-dev

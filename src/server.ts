@@ -11,6 +11,8 @@ import { Harness, summarizeOp } from "./harness/worker.ts";
 import { type Config, loadConfig, loadSecrets } from "./config.ts";
 import { createHandler, DEFAULT_MAX_BODY_BYTES, serveWithTimeouts } from "./security/http.ts";
 import { agentGuide } from "./guide.ts";
+import { deployConfigFrom, deployConnector } from "./connectors/deploy/manifest.ts";
+import { devConnector, devRootsFromConfig } from "./connectors/dev/manifest.ts";
 import { handleOAuthRoute, newOAuthState, type OAuthConfig } from "./security/oauth.ts";
 import { defaultBanPolicy } from "./security/ban.ts";
 import { RootGrants } from "./harness/grants.ts";
@@ -132,6 +134,28 @@ export async function buildApp(configPath: string, secretsPath: string): Promise
         maxConcurrentExec: Number(f.maxConcurrentExec ?? 2),
       }),
     );
+  }
+
+  // dev / deploy: work on code without a shell. `dev` runs the argv tables declared
+  // in config.yaml, `deploy` records intent for the supervisor (which owns
+  // restart, health-probe, soak and auto-revert).
+  const devRoots = devRootsFromConfig(config.connectors.dev?.roots);
+  if (enabled("dev")) {
+    if (devRoots.length === 0) {
+      throw new Error("connectors.dev enabled but no dev.roots configured");
+    }
+    registry.register(
+      devConnector({
+        roots: devRoots,
+        timeoutMs: config.connectors.dev?.timeoutMs
+          ? Number(config.connectors.dev.timeoutMs)
+          : undefined,
+      }),
+    );
+  }
+  if (enabled("deploy")) {
+    const deployCfg = deployConfigFrom(config.connectors.deploy ?? {}, devRoots, config.dataDir);
+    if (deployCfg) registry.register(deployConnector(deployCfg));
   }
 
   if (enabled("imap")) {
