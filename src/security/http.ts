@@ -20,6 +20,8 @@ export function constantTimeEqual(a: string, b: string): boolean {
 export interface GateOptions {
   token: string;
   bans: BanStore;
+  /** Value for the 401 challenge's resource_metadata parameter (RFC 9728). */
+  resourceMetadata?: string;
 }
 
 function jsonError(status: number, message: string, extra?: Record<string, string>): Response {
@@ -73,8 +75,13 @@ export function gateRequest(
           }`,
         );
       }
+      // Point spec-aware MCP clients at the protected-resource metadata so they
+      // can start the OAuth flow instead of just failing.
+      const challenge = opts.resourceMetadata
+        ? `Bearer realm="denops", resource_metadata="${opts.resourceMetadata}"`
+        : 'Bearer realm="denops"';
       return jsonError(401, "missing or invalid bearer token", {
-        "www-authenticate": 'Bearer realm="denops"',
+        "www-authenticate": challenge,
       });
     }
     if (ip) void opts.bans.recordSuccess(ip);
@@ -99,6 +106,11 @@ export interface HandlerOptions {
   maxBodyBytes?: number;
   mcpHandler: (req: Request) => Promise<Response>;
   healthHandler?: (req: Request) => Response;
+  /** POST /oauth/token; receives the (already size-checked) request body. */
+  oauthTokenHandler?: (req: Request, body: string) => Promise<Response>;
+  /** GET /.well-known/*; return null to fall through to 404. */
+  wellKnownHandler?: (req: Request, path: string) => Promise<Response | null>;
+  resourceMetadata?: (req: Request) => string | undefined;
 }
 
 export function createHandler(
@@ -121,16 +133,64 @@ export function createHandler(
       res = opts.healthHandler ? opts.healthHandler(req) : Response.json({ ok: true });
       return addSecurityHeaders(res);
     }
-    if (url.pathname !== "/mcp") {
-      return addSecurityHeaders(new Response("not found", { status: 404 }));
-    }
     const addr = info.remoteAddr as { transport?: string; hostname?: string };
     const remoteAddr = addr.transport === "tcp" || addr.hostname !== undefined
       ? (addr.hostname ?? "")
       : "";
+    if (url.pathname.startsWith("/.well-known/")) {
+      const res = opts.wellKnownHandler ? await opts.wellKnownHandler(req, url.pathname) : null;
+      return addSecurityHeaders(res ?? new Response("not found", { status: 404 }));
+    }
+    if (url.pathname === "/oauth/token") {
+      if (!opts.oauthTokenHandler) {
+        return addSecurityHeaders(new Response("not found", { status: 404 }));
+      }
+      const verdict = await bans.banned(req, remoteAddr);
+      if (verdict.banned) {
+        return addSecurityHeaders(
+          new Response(
+            JSON.stringify({
+              error: "temporarily_unavailable",
+              error_description: "too many failed attempts from this network; retry later",
+            }),
+            {
+              status: 429,
+              headers: {
+                "content-type": "application/json",
+                "cache-control": "no-store",
+                "retry-after": String(verdict.retryAfterSec),
+              },
+            },
+          ),
+        );
+      }
+      const len = Number(req.headers.get("content-length") ?? 0);
+      if (len > maxBody) return jsonError(413, "request body too large");
+      const body = req.method === "POST" ? await req.text() : "";
+      if (body.length > maxBody) return jsonError(413, "request body too large");
+      const res = await opts.oauthTokenHandler(req, body);
+      const ip = bans.effectiveClientIp(req, remoteAddr);
+      // Only invalid_client counts toward a ban: unsupported_grant_type is a
+      // client bug, not a guess at the secret.
+      if (res.status === 401 && ip) {
+        const becameBanned = await bans.recordFailure(ip);
+        console.error(
+          `[denops] oauth token failure from ${ip} (${subnetLabel(ip)})${
+            becameBanned ? " -> BANNED" : ""
+          }`,
+        );
+      } else if (res.status === 200 && ip) {
+        void bans.recordSuccess(ip);
+      }
+      return addSecurityHeaders(res);
+    }
+    if (url.pathname !== "/mcp") {
+      return addSecurityHeaders(new Response("not found", { status: 404 }));
+    }
     const denied = await gateRequest(req, remoteAddr, {
       token: opts.token,
       bans,
+      resourceMetadata: opts.resourceMetadata?.(req),
     });
     if (denied) return denied;
     if (req.method === "POST" || req.method === "PUT" || req.method === "PATCH") {

@@ -10,6 +10,13 @@ server:
   # requireToken: true        # hard-fail startup when no token is configured
   # maxBodyBytes: 4194304     # request body cap
   # trustedProxy: 127.0.0.1   # behind Caddy on the same host: trust X-Forwarded-For from here
+  # Static-client OAuth for MCP clients that only speak OAuth (client_credentials).
+  # The client secret IS the bearer token above; /oauth/token returns it as the
+  # access token, so /mcp keeps validating the same value.
+  # oauth:
+  #   clientId: mistral
+  #   publicUrl: https://mcp.example.com  # default: derived from the request Host
+  #   ttlSec: 3600                        # advisory expires_in
   # skipLoopbackBan: true     # loopback peers are never auto-banned
   # ban:                      # fail2ban-style brute-force protection
   #   file: data/bans         # persist auto-bans; truncate the file to reset live bans

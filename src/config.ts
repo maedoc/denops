@@ -9,6 +9,12 @@ export interface ServerConfig {
   maxBodyBytes?: number;
   trustedProxy?: string;
   skipLoopbackBan?: boolean;
+  oauth?: {
+    enabled?: boolean;
+    clientId?: string;
+    publicUrl?: string;
+    ttlSec?: number;
+  };
   ban?: {
     file?: string;
     blacklistFile?: string;
@@ -71,6 +77,16 @@ export function normalize(parsed: Record<string, unknown>): Config {
       maxBodyBytes: positive(server.maxBodyBytes, "server.maxBodyBytes"),
       trustedProxy: server.trustedProxy ? String(server.trustedProxy) : undefined,
       skipLoopbackBan: server.skipLoopbackBan === false ? false : true,
+      oauth: (() => {
+        const o = (server.oauth ?? {}) as Record<string, unknown>;
+        if (Object.keys(o).length === 0 || o.enabled === false) return undefined;
+        return {
+          enabled: true,
+          clientId: o.clientId ? String(o.clientId) : "mistral",
+          publicUrl: o.publicUrl ? String(o.publicUrl).replace(/\/+$/, "") : undefined,
+          ttlSec: positive(o.ttlSec, "server.oauth.ttlSec"),
+        };
+      })(),
       ban: (() => {
         const b = (server.ban ?? {}) as Record<string, unknown>;
         return {

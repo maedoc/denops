@@ -55,8 +55,36 @@ url = "http://127.0.0.1:3100/mcp"
 ```
 
 If `server.token` is set in `config.yaml` (or `serverToken` in `secrets.json`, or `server.tokenFile`
-points at a secret file), clients must send `Authorization: Bearer <token>`. The comparison is
-constant-time. Binding to a **non-loopback** host without any token configured is refused at
+points at a secret file), clients must send `Authorization: Bearer <token>`.
+
+### OAuth for clients that require it (static client)
+
+Clients that only speak OAuth (`client_credentials`) can be served without a real authorization
+server. Enable it in `config.yaml`:
+
+```yaml
+server:
+  oauth:
+    clientId: mistral # the single pre-registered client
+    publicUrl: https://mcp.example.com # default: the request's Host
+    ttlSec: 3600 # advisory expires_in
+```
+
+The **client secret is the existing bearer token** (`secrets.json` `serverToken`), and
+`POST /oauth/token` hands that same value back as the `access_token`, so `/mcp` keeps validating one
+value. Point the client at `https://<host>/mcp` and let it discover the rest:
+
+- `GET /.well-known/oauth-protected-resource` — `resource`, `authorization_servers` (RFC 9728)
+- `GET /.well-known/oauth-authorization-server` — `issuer`, `token_endpoint` (RFC 8414)
+- `POST /oauth/token` — `grant_type=client_credentials`, credentials via `client_secret_basic` or
+  `client_secret_post`; returns `{access_token, token_type: "Bearer", expires_in, scope}`
+- `/mcp` 401s carry `WWW-Authenticate: Bearer realm="denops", resource_metadata="…"` so spec-aware
+  clients start the flow instead of failing
+
+Token failures count toward the same per-subnet bans as bad bearer tokens. Because the access token
+_is_ the client secret, a leaked access token is as sensitive as the secret, `expires_in` is not
+enforced, and there is no refresh: rotating the secret means updating every client. The comparison
+is constant-time. Binding to a **non-loopback** host without any token configured is refused at
 startup; on loopback without a token the server starts with a loud warning (local dev only).
 
 ## Exposure & brute-force protection

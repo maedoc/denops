@@ -11,6 +11,12 @@ import { Harness, summarizeOp } from "./harness/worker.ts";
 import { type Config, loadConfig, loadSecrets } from "./config.ts";
 import { createHandler, DEFAULT_MAX_BODY_BYTES, serveWithTimeouts } from "./security/http.ts";
 import { agentGuide } from "./guide.ts";
+import {
+  authorizationServerMetadata,
+  handleTokenRequest,
+  type OAuthConfig,
+  protectedResourceMetadata,
+} from "./security/oauth.ts";
 import { defaultBanPolicy } from "./security/ban.ts";
 import { RootGrants } from "./harness/grants.ts";
 import { fsConnector, fsGrantKey } from "./connectors/fs/manifest.ts";
@@ -435,6 +441,33 @@ export function createHttpHandler(
   app: AppContext,
 ): (req: Request, info: Deno.ServeHandlerInfo) => Promise<Response> {
   const s = app.config.server;
+  // Static-client OAuth: the pre-registered client's secret IS the server bearer
+  // token, and /oauth/token hands it back as the access token. /mcp keeps
+  // validating exactly the same value.
+  const oauth = ((): OAuthConfig | null => {
+    if (!s.oauth?.enabled) return null;
+    if (!s.token) {
+      throw new Error(
+        "server.oauth requires a bearer token (server.token / tokenFile / secrets.json serverToken) to use as the client secret",
+      );
+    }
+    return {
+      clientId: s.oauth.clientId ?? "mistral",
+      clientSecret: s.token,
+      publicUrl: s.oauth.publicUrl ?? "",
+      ttlSec: s.oauth.ttlSec,
+    };
+  })();
+  // Metadata needs absolute URLs: prefer the configured public URL, else the
+  // Host the request arrived with (Caddy passes it through).
+  const publicUrlFor = (req: Request): string =>
+    oauth?.publicUrl || `https://${req.headers.get("host") ?? new URL(req.url).host}`;
+  const oauthFor = (req: Request): OAuthConfig => ({ ...oauth!, publicUrl: publicUrlFor(req) });
+  console.error(
+    oauth
+      ? `[denops] oauth: client_credentials enabled (client_id=${oauth.clientId}, secret=bearer token)`
+      : "[denops] oauth: disabled",
+  );
   return createHandler({
     token: s.token ?? "",
     policy: {
@@ -450,6 +483,24 @@ export function createHttpHandler(
     skipLoopbackBan: s.skipLoopbackBan ?? true,
     maxBodyBytes: s.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES,
     healthHandler: () => Response.json({ ok: true }),
+    ...(oauth
+      ? {
+        oauthTokenHandler: (req: Request, body: string) =>
+          Promise.resolve(handleTokenRequest(req, oauthFor(req), body)),
+        wellKnownHandler: (req: Request, path: string) => {
+          const cfg = oauthFor(req);
+          if (path === "/.well-known/oauth-protected-resource") {
+            return Promise.resolve(Response.json(protectedResourceMetadata(cfg)));
+          }
+          if (path === "/.well-known/oauth-authorization-server") {
+            return Promise.resolve(Response.json(authorizationServerMetadata(cfg)));
+          }
+          return Promise.resolve(null);
+        },
+        resourceMetadata: (req: Request) =>
+          `${publicUrlFor(req)}/.well-known/oauth-protected-resource`,
+      }
+      : {}),
     mcpHandler: async (req) => {
       const transport = new WebStandardStreamableHTTPServerTransport();
       const server = createMcpServer(app);

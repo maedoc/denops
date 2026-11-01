@@ -152,7 +152,6 @@ export class Harness {
     // take the server down. Compiling the same wrapper here costs nothing and
     // turns it into a normal failed run.
     try {
-      // deno-lint-ignore no-new-func
       new Function(`return (async () => {\n${code}\n});`);
     } catch (e) {
       const msg = e instanceof Error ? `${e.name}: ${e.message}` : String(e);

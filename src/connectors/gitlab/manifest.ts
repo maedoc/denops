@@ -194,7 +194,6 @@ export function gitlabConnector(
             "assignee_ids",
             (
               v,
-              i,
             ) => (typeof v === "number" && v > 0
               ? null
               : `expected positive integer, got ${typeof v}`),
@@ -204,7 +203,6 @@ export function gitlabConnector(
             "labels",
             (
               v,
-              i,
             ) => (typeof v === "string" && v.length > 0 && v.length <= 100
               ? null
               : "expected non-empty string"),
@@ -236,7 +234,6 @@ export function gitlabConnector(
             "assignee_ids",
             (
               v,
-              i,
             ) => (typeof v === "number" && v > 0
               ? null
               : `expected positive integer, got ${typeof v}`),
@@ -246,7 +243,6 @@ export function gitlabConnector(
             "labels",
             (
               v,
-              i,
             ) => (typeof v === "string" && v.length > 0 && v.length <= 100
               ? null
               : "expected non-empty string"),
