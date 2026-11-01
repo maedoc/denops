@@ -49,7 +49,14 @@ try {
     console.log(JSON.stringify({ error: `invalid args: ${schemaError}` }));
     Deno.exit(0);
   }
-  const client = resolved.connector.client({ config: {}, secrets: {}, log: () => {} });
+  // The connector sees the same HostContext shape as the live server, with the dev
+  // checkout's own config and the (usually symlinked) secrets — otherwise an op that
+  // needs a credential can never be exercised here, which is dev.try's whole point.
+  const client = resolved.connector.client({
+    config: app.config.connectors as unknown as Record<string, unknown>,
+    secrets: app.secrets,
+    log: () => {},
+  });
   const method = client[op.slice(resolved.connector.id.length + 1)];
   if (!method) {
     console.log(JSON.stringify({ error: `${op} has no client method in this checkout` }));

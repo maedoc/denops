@@ -13,6 +13,7 @@ import { createHandler, DEFAULT_MAX_BODY_BYTES, serveWithTimeouts } from "./secu
 import { agentGuide } from "./guide.ts";
 import { deployConfigFrom, deployConnector } from "./connectors/deploy/manifest.ts";
 import { devConnector, devRootsFromConfig } from "./connectors/dev/manifest.ts";
+import { derivePermissions } from "./permissions.ts";
 import { mistralTierOverride } from "./connectors/mistral/tiers.ts";
 import { denopsConnector } from "./connectors/denops/manifest.ts";
 import { handleOAuthRoute, newOAuthState, type OAuthConfig } from "./security/oauth.ts";
@@ -154,12 +155,23 @@ export async function buildApp(configPath: string, secretsPath: string): Promise
     if (devRoots.length === 0) {
       throw new Error("connectors.dev enabled but no dev.roots configured");
     }
+    // dev.try's child runs agent-written code, so its network envelope comes from THIS
+    // config (operator-owned), never from the dev checkout's own config.yaml — that one
+    // is writable by the agent and would let it redirect a credentialed op's origin.
+    const livePlan = derivePermissions({
+      server: config.server as unknown as Record<string, unknown>,
+      connectors: config.connectors,
+    });
+    const tryExtraHosts = Array.isArray(config.connectors.dev?.tryExtraHosts)
+      ? (config.connectors.dev.tryExtraHosts as unknown[]).map((h) => String(h))
+      : [];
     registry.register(
       devConnector({
         roots: devRoots,
         timeoutMs: config.connectors.dev?.timeoutMs
           ? Number(config.connectors.dev.timeoutMs)
           : undefined,
+        tryNet: [...livePlan.net, ...tryExtraHosts],
       }),
     );
   }

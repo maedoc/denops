@@ -42,3 +42,12 @@ pending.
 - Anything that invalidates an approval (a capability the root lacks, an impossible argument) must
   be rejected by `precheck`/`argSchema`, never after the human clicks approve.
 - Payloads are money: project list/get results with the shared `shape.ts` helpers (`fields`/`full`).
+- **Permissions are code, not config.** `src/permissions.ts` derives the server's `--allow-*` (for
+  `scripts/start.ts`) and dev.try's child envelope. The child executes agent-written code and
+  imports the agent's worktree, so its envelope is _pinned_: read = the checkout (+ resolved
+  config/secrets), write = the checkout's data dir, net = hosts the **live** config declares, and
+  never `--allow-run`, `--allow-all` or a bare `--allow-read`. Never derive it from the dev
+  checkout's config.yaml — that file is agent-writable.
+- `dev.try` only runs committed code whose tree has a green `checkTask`. Keep the gate on the exit
+  code and the tree object (`git rev-parse <state>^{tree}`), never on command output; a cached
+  `deno check` prints nothing and is a pass.

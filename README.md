@@ -338,16 +338,41 @@ connectors:
           check: [deno, check, src/server.ts, tests/]
           test: [deno, task, test]
           fmt: [deno, fmt, src/, tests/, scripts/]
+        # checkTask: check   # which task gates dev.try (default: check)
+    # hosts dev.try's child may reach, in addition to the ones this config declares
+    # tryExtraHosts: [api.example.org]
 ```
 
 | op                                  | tier                          | does                                                                       |
 | ----------------------------------- | ----------------------------- | -------------------------------------------------------------------------- |
-| `dev.roots`                         | open                          | configured roots + task names                                              |
-| `dev.run({root, task})`             | open                          | runs one declared task; returns `{code, stdout, stderr}`                   |
+| `dev.roots`                         | open                          | configured roots, task names, and which task gates `dev.try`               |
+| `dev.run({root, task})`             | open                          | runs one declared task; returns `{code, stdout, stderr, sha, dirty}`       |
 | `dev.git({root, action, message?})` | `commit` = approval           | `status`, `diff`, `log`, `commit -am "<msg>"` — no model-supplied flags    |
 | `dev.try({root, op, args})`         | open (open-tier targets only) | runs one op from the **dev checkout's own registry** against the real APIs |
 
-`dev.try` refuses approval-tier ops: those are exercised by promoting. Every call is logged.
+`dev.try` refuses approval-tier ops: those are exercised by promoting. It runs **committed, checked
+code only**, and its child gets a **pinned permission envelope**. Enforced in `src/permissions.ts` +
+`src/connectors/dev/manifest.ts`:
+
+- **Clean tracked tree.** Modified/staged tracked files are refused (`--untracked-files=no`, so
+  scratch files are fine): what ran has to be a commit a reviewer sees in the promotion diff.
+- **Green `check` for that exact tree.** Every `dev.run` records `{task, code, tree}` — the exit
+  code and the git tree object, never the output (`deno check` prints nothing on a cache hit and is
+  still a pass). Checking before committing the same content counts, because the tree is the
+  content.
+- **Pinned envelope, not derived from the checkout's config.** The child runs with
+  `--allow-read=<checkout>,<resolved secrets/config>`, `--allow-write=<checkout>/<dataDir>`,
+  `--allow-net=<hosts the LIVE config declares>`, `--allow-env --allow-sys`, and **no
+  `--allow-run`**. The dev `config.yaml` is agent-writable, so deriving from it would let an agent
+  grant itself the live tree, an arbitrary origin (credential exfiltration) or a shell. A new
+  connector whose origin the live config does not know yet needs `connectors.dev.tryExtraHosts`.
+- **Provenance in the result and the log.** `{code, stdout, stderr, commit, subject, dirty, check}`
+  plus a `dev.try` run-log entry naming root, op, commit and dirty flag.
+
+Residual, accepted: the child holds the credentials in the checkout's `secrets.json` (a symlink to
+`~/denops/secrets.json`) and can reach the APIs the live config already declares — the same
+authority the server has, and the promotion approval still reviews the diff. `scripts/dev_try.ts` is
+tracked, so a modified runner shows up there too.
 
 ### deploy (3 ops) — intent for the supervisor
 
@@ -396,8 +421,9 @@ the break, and an explicit rollback to a previous sha.
 2. `fs.glob` / `fs.read` — read code in `~/denops-dev`.
 3. `fs.write` / `fs.edit` / `fs.editRegex` — add an op (e.g. a new `gitlab.*`), with a test.
 4. `dev.run({task:"check"})`, `dev.run({task:"test"})` — iterate until green.
-5. `dev.try({op:"gitlab.x.y", args:{…}})` — exercise the new op against the real API.
-6. `dev.git({action:"commit", message:"…"})` — approval.
+5. `dev.git({action:"commit", message:"…"})` — approval. `dev.try` runs committed code, so the
+   commit comes before the try (checking the same content beforehand still counts).
+6. `dev.try({op:"gitlab.x.y", args:{…}})` — exercise the new op against the real API.
 7. `deploy.promote` — approval; the supervisor restarts, probes, soaks, and either promotes
    (`last-good`, `main` advanced) or auto-reverts. `deploy.status` shows what happened.
 
@@ -482,6 +508,12 @@ Lint and format: `deno lint src tests scripts`, `deno fmt`.
   `fs.exec` resolve to no grant key at all and ask every time.
 - **Docs drift silently.** The agent-facing contract is a file in the repo, served by an op, with a
   test that fails when it names ops that do not exist — prose alone does not survive a refactor.
+- **`--allow-all` on a child that runs agent-written code is a shell.** `dev.try` spawned its runner
+  with `--allow-all`, so an agent could add a "dial host" op whose client appended a key to
+  `~/.ssh/authorized_keys` and have it run unapproved in under a second. A scoped child (read: the
+  checkout, write: its data dir, net: live-declared hosts, no `--allow-run`) plus "committed code,
+  checked for this tree" closes it; `dev.try` now also has to be able to _trust_ its own result, so
+  the gate keys on exit code and tree identity, never on stdout.
 - **Fuzzy search looks like a small registry.** `search` silently capped at 20 with no totals, and a
   miss said "no matching ops"; both now report the true size and show the inventory.
 
@@ -492,6 +524,7 @@ Lint and format: `deno lint src tests scripts`, `deno fmt`.
 ```
 src/server.ts              entry: config load, MCP endpoint, tools, connector wiring
 src/config.ts              config.yaml / secrets.json loading (minimal YAML subset incl. scalar lists)
+src/permissions.ts         Deno --allow-* derivation for the server and dev.try's pinned child
 src/security/              http.ts (gate, bans, headers), ban.ts (CIDR bans), oauth.ts (static-client AS)
 src/harness/               registry, boundary validation, worker sandbox, JSONL log, approvals, discovery
 src/guest/bootstrap.ts     injected worker prelude (handles, stub surface, error boundary)
@@ -499,7 +532,7 @@ src/guide.ts               agent-oriented `instructions` returned at initialize
 SKILL.md                   prompt-facing contract, served by denops.skill (drift-tested)
 AGENTS.md                  repo rules for agents (incl. "keep SKILL.md current")
 src/connectors/<name>/     client.ts (host-only credentials) + manifest.ts (ops, tiers, docs)
-scripts/start.ts           derives Deno permissions from config, then runs the server
+scripts/start.ts           reads config.yaml, derives Deno permissions (src/permissions.ts), runs the server
 scripts/live-supervisor.sh the only thing that decides which commit runs (restart/soak/auto-revert)
 scripts/dev_try.ts         runner behind dev.try (one op from a checkout's own registry)
 scripts/pending.ts         CLI for pending approvals

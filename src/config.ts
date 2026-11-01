@@ -130,7 +130,9 @@ export async function loadSecrets(path: string): Promise<Record<string, unknown>
   return JSON.parse(text) as Record<string, unknown>;
 }
 
-function parseYaml(text: string): unknown {
+// The one YAML reader in the tree: config loading and permission derivation (which
+// must agree about `enabled: true` vs "true") both come through here.
+export function parseYaml(text: string): Record<string, unknown> {
   const root: Record<string, unknown> = {};
   const stack: {
     indent: number;

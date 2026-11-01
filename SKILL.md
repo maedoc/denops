@@ -4,10 +4,9 @@ How to drive this MCP server. Fetch it at runtime with `execute("return await de
 prefer this over guessing, and re-read it after any server upgrade.
 
 <!--
-MAINTENANCE (humans and agents): this file is the prompt-facing contract. Whenever an op, tier,
-capability, config knob, deployment step or error contract changes, update it in the SAME change.
-`tests/skill_test.ts` fails if this file and the live op registry disagree (missing or unknown op
-names), so drift is caught by `deno task test` before a promotion. Keep it under ~120 lines.
+MAINTENANCE: this file is the prompt-facing contract. Any change to an op, tier, capability, config
+knob, deployment step or error contract must update it in the SAME change; `tests/skill_test.ts`
+fails when it drifts (unknown ops, missing families/counts). Keep it under ~120 lines.
 -->
 
 ## 1. What this server is
@@ -72,17 +71,16 @@ refused.
 `documents.list` (each row has `size`, `mime_type`, `process_status`) → then decide:
 
 - small text → `documents.read({libraryId, documentId})` (inline, ≤ `inlineReadMaxBytes`, else
-  `truncated: true`);
-- binary (PDF…) → read the extracted `summary` via
+  `truncated: true`); binary (PDF…) → the extracted `summary` via
   `documents.get({libraryId, documentId, fields:["summary"]})`, or `documents.stage` to download it;
 - search a big staged file → `documents.stage` returns `{root, path, absPath, bytes, mime, sha256}`
-  and you pass `root`+`path` straight to `fs.grep`/`fs.read`. Grep skips binary files
-  (`skippedBinary`). Writing is text-first: `documents.put({libraryId, fileName, text})` creates,
-  and `documents.replace({libraryId, fileName, text})` is replace-by-name (refuses if several
-  documents share the name — pass `documentId` then). `documents.upload` takes base64 for binaries.
+  and you pass `root`+`path` straight to `fs.grep`/`fs.read` (grep skips binaries: `skippedBinary`).
+  Writing is text-first: `documents.put({libraryId, fileName, text})` creates,
+  `documents.replace({libraryId, fileName, text})` is replace-by-name (refuses if several documents
+  share the name — pass `documentId` then), `documents.upload` takes base64 for binaries, and
   `staging.clear({olderThanHours?})` prunes staged copies. Writes/deletes are approval-tier for
-  libraries that already existed; a library created in the same run can be written and cleaned up
-  freely. Mistral assigns the stored `mime_type` itself (text uploads become `text/plain`).
+  libraries that already existed; one created in the same run can be written and cleaned up freely.
+  Mistral assigns the stored `mime_type` itself (text uploads become `text/plain`).
 
 **fs** (10 ops) — named roots only (`fs.roots` lists them). `glob`, `list`, `read` (line windows
 with `hasMore`), `grep` (regex, capped), `write`, `edit`/`editRegex`, `rm`, `exec`.
@@ -102,14 +100,22 @@ way to check the execute/approval plumbing.
 
 **dev** (4 ops) / **deploy** (3 ops) — working on this server's own code without a shell:
 `dev.roots` (roots + task names), `dev.run({root, task})` (`check`, `test`, `fmt`, `lint`… argv from
-config, no shell), `dev.git({root, action:"status"|"diff"|"log"|"commit", message?})`,
+config, no shell; returns `{code, stdout, stderr, sha, dirty}` and records the result against the
+current **tree** — exit code and tree identity, never output, because a cached `deno check` prints
+nothing and is still a pass), `dev.git({root, action:"status"|"diff"|"log"|"commit", message?})`,
 `dev.try({root, op, args})` (runs one **open-tier** op from the dev checkout's own registry against
 the real APIs — this is how you validate new code before shipping), `deploy.status`,
 `deploy.promote` (approval: runs the test task, records intent), `deploy.rollback({commit?})`.
-Promotion flow: edit → `dev.run("check")`/`dev.run("test")` → `dev.try` → `dev.git commit` →
-`deploy.promote` (human approves) → the supervisor restarts into it, probes `/health`, soaks 60 s,
-then advances `main` and records it as last-good. Failure → automatic revert. `deploy.status` shows
-live/main/dev shas, ahead/behind, dirty flags (untracked scratch files do not block a promotion).
+`dev.try` runs **committed, checked code only**: it refuses a dirty tracked tree, and refuses unless
+the root's `check` task passed for the current tree (checking before you commit the same content is
+fine). Its child process gets a pinned envelope — read: the checkout (+ its secrets symlink), write:
+the checkout's own `dataDir`, net: hosts the **live** config declares, and no subprocess at all — so
+`NotCapable` from an op means it tried to leave that envelope (stage files or ship instead). Result:
+`{code, stdout, stderr, commit, subject, dirty, check}`. Promotion flow: edit →
+`dev.run("check")`/`dev.run("test")` → `dev.git commit` → `dev.try` → `deploy.promote` (human
+approves) → the supervisor restarts into it, probes `/health`, soaks 60 s, then advances `main` and
+records it as last-good. Failure → automatic revert. `deploy.status` shows live/main/dev shas,
+ahead/behind, dirty flags (untracked scratch files do not block a promotion).
 
 ## 5. Error and approval semantics worth remembering
 

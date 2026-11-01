@@ -101,9 +101,15 @@ startup:
 #   dev:
 #     enabled: true
 #     timeoutMs: 180000
+#     # extra hosts dev.try's child may reach. Its network envelope comes from THIS
+#     # file (operator-owned) plus this list, never from the dev checkout's own
+#     # config.yaml — an agent can edit that one, and a redirected origin would leak
+#     # the credential the op carries.
+#     tryExtraHosts: []
 #     roots:
 #       - name: denops-dev                 # worktree the agent owns
 #         path: /home/freebox/denops-dev
+#         checkTask: check                 # task that must pass for HEAD before dev.try
 #         tasks:                           # argv only, never a shell
 #           check:
 #             - deno
