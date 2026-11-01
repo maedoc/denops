@@ -11,12 +11,7 @@ import { Harness, summarizeOp } from "./harness/worker.ts";
 import { type Config, loadConfig, loadSecrets } from "./config.ts";
 import { createHandler, DEFAULT_MAX_BODY_BYTES, serveWithTimeouts } from "./security/http.ts";
 import { agentGuide } from "./guide.ts";
-import {
-  authorizationServerMetadata,
-  handleTokenRequest,
-  type OAuthConfig,
-  protectedResourceMetadata,
-} from "./security/oauth.ts";
+import { handleOAuthRoute, newOAuthState, type OAuthConfig } from "./security/oauth.ts";
 import { defaultBanPolicy } from "./security/ban.ts";
 import { RootGrants } from "./harness/grants.ts";
 import { fsConnector, fsGrantKey } from "./connectors/fs/manifest.ts";
@@ -463,6 +458,9 @@ export function createHttpHandler(
   const publicUrlFor = (req: Request): string =>
     oauth?.publicUrl || `https://${req.headers.get("host") ?? new URL(req.url).host}`;
   const oauthFor = (req: Request): OAuthConfig => ({ ...oauth!, publicUrl: publicUrlFor(req) });
+  // Registered clients and one-time authorization codes live in memory: a
+  // restart just means clients re-register (DCR) or re-run client_credentials.
+  const oauthState = newOAuthState();
   console.error(
     oauth
       ? `[denops] oauth: client_credentials enabled (client_id=${oauth.clientId}, secret=bearer token)`
@@ -485,18 +483,8 @@ export function createHttpHandler(
     healthHandler: () => Response.json({ ok: true }),
     ...(oauth
       ? {
-        oauthTokenHandler: (req: Request, body: string) =>
-          Promise.resolve(handleTokenRequest(req, oauthFor(req), body)),
-        wellKnownHandler: (req: Request, path: string) => {
-          const cfg = oauthFor(req);
-          if (path === "/.well-known/oauth-protected-resource") {
-            return Promise.resolve(Response.json(protectedResourceMetadata(cfg)));
-          }
-          if (path === "/.well-known/oauth-authorization-server") {
-            return Promise.resolve(Response.json(authorizationServerMetadata(cfg)));
-          }
-          return Promise.resolve(null);
-        },
+        oauthHandler: (req: Request, url: URL, body: string) =>
+          handleOAuthRoute(req, url, body, oauthFor(req), oauthState),
         resourceMetadata: (req: Request) =>
           `${publicUrlFor(req)}/.well-known/oauth-protected-resource`,
       }

@@ -4,6 +4,7 @@
 // internal/server/server.go (withBearerTokenAndBans) and main.go
 // (http.ListenAndServe -> server with timeouts).
 import { type BanPolicy, BanStore, defaultBanPolicy, subnetOf } from "./ban.ts";
+import { isOAuthPath } from "./oauth.ts";
 
 export const DEFAULT_MAX_BODY_BYTES = 4 * 1024 * 1024;
 
@@ -106,10 +107,11 @@ export interface HandlerOptions {
   maxBodyBytes?: number;
   mcpHandler: (req: Request) => Promise<Response>;
   healthHandler?: (req: Request) => Response;
-  /** POST /oauth/token; receives the (already size-checked) request body. */
-  oauthTokenHandler?: (req: Request, body: string) => Promise<Response>;
-  /** GET /.well-known/*; return null to fall through to 404. */
-  wellKnownHandler?: (req: Request, path: string) => Promise<Response | null>;
+  /**
+   * OAuth surface: /.well-known/*, /register, /authorize, /oauth/token.
+   * Receives the (already size-checked) body, returns null to fall through to 404.
+   */
+  oauthHandler?: (req: Request, url: URL, body: string) => Promise<Response | null>;
   resourceMetadata?: (req: Request) => string | undefined;
 }
 
@@ -137,12 +139,8 @@ export function createHandler(
     const remoteAddr = addr.transport === "tcp" || addr.hostname !== undefined
       ? (addr.hostname ?? "")
       : "";
-    if (url.pathname.startsWith("/.well-known/")) {
-      const res = opts.wellKnownHandler ? await opts.wellKnownHandler(req, url.pathname) : null;
-      return addSecurityHeaders(res ?? new Response("not found", { status: 404 }));
-    }
-    if (url.pathname === "/oauth/token") {
-      if (!opts.oauthTokenHandler) {
+    if (isOAuthPath(url.pathname)) {
+      if (!opts.oauthHandler) {
         return addSecurityHeaders(new Response("not found", { status: 404 }));
       }
       const verdict = await bans.banned(req, remoteAddr);
@@ -168,10 +166,11 @@ export function createHandler(
       if (len > maxBody) return jsonError(413, "request body too large");
       const body = req.method === "POST" ? await req.text() : "";
       if (body.length > maxBody) return jsonError(413, "request body too large");
-      const res = await opts.oauthTokenHandler(req, body);
+      const res = await opts.oauthHandler(req, url, body);
+      if (!res) return addSecurityHeaders(new Response("not found", { status: 404 }));
       const ip = bans.effectiveClientIp(req, remoteAddr);
-      // Only invalid_client counts toward a ban: unsupported_grant_type is a
-      // client bug, not a guess at the secret.
+      // Only 401 counts toward a ban (bad secret, bad consent token); an
+      // unsupported_grant_type or bad redirect_uri is a client bug, not a guess.
       if (res.status === 401 && ip) {
         const becameBanned = await bans.recordFailure(ip);
         console.error(
@@ -179,7 +178,7 @@ export function createHandler(
             becameBanned ? " -> BANNED" : ""
           }`,
         );
-      } else if (res.status === 200 && ip) {
+      } else if (res.status === 200 && url.pathname === "/oauth/token" && ip) {
         void bans.recordSuccess(ip);
       }
       return addSecurityHeaders(res);
