@@ -6,6 +6,7 @@ import type { Budgets, JsonValue } from "../src/harness/types.ts";
 import { Harness } from "../src/harness/worker.ts";
 import { gitlabConnector } from "../src/connectors/gitlab/manifest.ts";
 import { mistralConnector } from "../src/connectors/mistral/manifest.ts";
+import { mistralTierOverride } from "../src/connectors/mistral/tiers.ts";
 
 const budgets: Budgets = {
   wallClockMs: 15_000,
@@ -487,12 +488,14 @@ Deno.test("mistral client against mock API: create library, upload document, sha
   const conn = mistralConnector({ apiKey: "mk-secret", origin, apiPath: "/v1" });
   registry.register(conn);
   const clients = new Map([["mistral", conn.client({ config: {}, secrets: {}, log: () => {} })]]);
+  // mirrors src/server.ts: deletes and document writes are open only for a library
+  // this run created
   const tierOverride: ConstructorParameters<typeof Harness>[4] = (op, args, runState) => {
     if (op === "mistral.libraries.delete") {
       const id = (args as { id?: string }).id;
       if (id && runState.createdLibraryIds.has(id)) return "open";
     }
-    return null;
+    return mistralTierOverride(op, args, runState);
   };
   const harness = harnessFor(registry, clients, ["mistral"], tierOverride);
   const dir = await Deno.makeTempDir();
@@ -627,8 +630,9 @@ Deno.test("mistral documents: put/replace use multipart and replace-by-name", as
         pagination: { total_items: 2 },
         data: [
           { id: "doc-old", name: "canvas.md", created_at: "2026-10-01T00:00:00Z" },
-          { id: "doc-new", name: "canvas.md", created_at: "2026-10-05T00:00:00Z" },
           { id: "doc-other", name: "other.md", created_at: "2026-10-06T00:00:00Z" },
+          { id: "doc-dup1", name: "dup.md", created_at: "2026-10-01T00:00:00Z" },
+          { id: "doc-dup2", name: "dup.md", created_at: "2026-10-07T00:00:00Z" },
         ],
       },
     }),
@@ -648,7 +652,7 @@ Deno.test("mistral documents: put/replace use multipart and replace-by-name", as
     assert(recorded[0].body?.includes('name="file"'));
     assert(recorded[0].body?.includes("# canvas"));
 
-    // replace by name picks the OLDEST document with that name and deletes it
+    // exactly one document with that name: it is replaced in place
     const replaced = await client["documents.replace"]({
       libraryId: "lib-1",
       fileName: "canvas.md",
@@ -665,6 +669,19 @@ Deno.test("mistral documents: put/replace use multipart and replace-by-name", as
       text: "x",
     }) as { created: boolean };
     assertEquals(created.created, true);
+
+    // two documents sharing a name: refuse rather than guess which revision to replace
+    const ambiguous = await client["documents.replace"]({
+      libraryId: "lib-1",
+      fileName: "dup.md",
+      text: "x",
+    }).catch((e: Error) => e.message);
+    assert(String(ambiguous).includes("2 documents are named"), String(ambiguous));
+    // and nothing was deleted for the ambiguous name
+    assert(
+      !recorded.some((r) => r.method === "DELETE" && r.path.includes("dup")),
+      "no delete on collision",
+    );
   } finally {
     await srv.shutdown();
   }
@@ -767,7 +784,6 @@ Deno.test("mistral documents: put/replace use multipart and replace-by-name", as
         pagination: { total_items: 2 },
         data: [
           { id: "doc-old", name: "canvas.md", created_at: "2026-10-01T00:00:00Z" },
-          { id: "doc-new", name: "canvas.md", created_at: "2026-10-05T00:00:00Z" },
           { id: "doc-other", name: "other.md", created_at: "2026-10-06T00:00:00Z" },
         ],
       },
@@ -827,12 +843,14 @@ Deno.test("mistral run-scoped delete is approval when library was NOT created th
   });
   registry.register(conn);
   const clients = new Map([["mistral", conn.client({ config: {}, secrets: {}, log: () => {} })]]);
+  // mirrors src/server.ts: deletes and document writes are open only for a library
+  // this run created
   const tierOverride: ConstructorParameters<typeof Harness>[4] = (op, args, runState) => {
     if (op === "mistral.libraries.delete") {
       const id = (args as { id?: string }).id;
       if (id && runState.createdLibraryIds.has(id)) return "open";
     }
-    return null;
+    return mistralTierOverride(op, args, runState);
   };
   const harness = harnessFor(registry, clients, ["mistral"], tierOverride);
   const dir = await Deno.makeTempDir();

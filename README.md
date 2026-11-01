@@ -255,11 +255,13 @@ Reading is staged in two steps because documents have no `/content` endpoint:
    read-only `denops-stage` fs root, so `fs.grep`/`fs.read` can work through it.
 
 Writing takes text, not base64: `documents.put({libraryId, fileName, text, contentType?})`;
-`documents.replace` is **replace-by-name** (the oldest document with that name is deleted and
-re-uploaded, or a new document is created), which is how a canvas accumulates revisions.
-`documents.upload` remains for base64 payloads. Uploads are a single multipart POST to
-`/libraries/{id}/documents` — the Files API (`/files`) is a different surface that requires a
-`purpose` and rejects document payloads.
+`documents.replace` is **replace-by-name** — it replaces the _only_ document with that name, creates
+one if none exists, and **refuses if several share the name** (pass `documentId`), so an ambiguous
+canvas is never silently overwritten. `documents.upload` remains for base64 payloads. Uploads are a
+single multipart POST to `/libraries/{id}/documents`; the Files API (`/files`) is a different
+surface that requires a `purpose` and rejects document payloads. Mistral assigns the stored
+`mime_type` itself (text uploads become `text/plain`), so `contentType` only labels the multipart
+part.
 
 ```yaml
 connectors:
@@ -269,8 +271,10 @@ connectors:
     inlineReadMaxBytes: 65536
 ```
 
-Uploads/overwrites are open for now (a deliberate decision); deletes are approval-tier unless the
-library was created earlier in the same run, which is tracked in the run state.
+Document writes and deletes are approval-tier **unless the library was created earlier in the same
+run** (tracked in run state), so a chat can build and clean up its own library freely but needs a
+human to touch `hdr`, `E4HB`, … Set `connectors.mistral.allowOpenUploads: true` for the old, ungated
+behaviour.
 
 ### fs — local filesystem, root-allowlisted
 

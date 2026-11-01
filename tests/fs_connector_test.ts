@@ -398,6 +398,21 @@ Deno.test("fs.grep finds matches in a file and across a directory", async () => 
     assertEquals(all.matches.length, 2, "case-insensitive across files");
     assertEquals(all.truncated, false);
 
+    // binary files are skipped rather than matched as noise
+    await Deno.writeFile(
+      `${dir}/repo/src/blob.bin`,
+      new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0, 0, 0, 1]),
+    );
+    const bin = await runCode(
+      harness,
+      dir,
+      `return await fs.grep({ root: "repo", path: "src", pattern: "alpha", ignoreCase: true });`,
+      { grantKeys: new Set(["fs:repo"]) },
+    );
+    const binRes = bin.result as { matches: unknown[]; skippedBinary: number };
+    assertEquals(binRes.matches.length, 2, "binary file contributes no matches");
+    assertEquals(binRes.skippedBinary, 1);
+
     const bad = await runCode(
       harness,
       dir,

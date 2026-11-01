@@ -111,8 +111,9 @@ export function mistralConnector(
         tier: "open",
         doc:
           "Read a text document's content inline. args: { libraryId, documentId, maxBytes? } (default 64 KiB). " +
-          "Returns { text, bytes, mime, truncated }. Binary documents (application/pdf, …) are refused: use the " +
-          "`summary` field from documents.get, or documents.stage + fs.grep.",
+          "Returns { text, bytes, mime, truncated }. Binary documents (application/pdf, …) are refused: read the " +
+          'extracted `summary` via documents.get({fields:["summary"]}) — that is the text Mistral\'s pipeline produced. ' +
+          "documents.stage gives you the bytes, but fs.grep cannot search binary files (it skips them).",
         argSchema: compose(
           rejectUnknown(),
           str("libraryId"),
@@ -125,8 +126,8 @@ export function mistralConnector(
         tier: "open",
         doc:
           "Download a document into the staging root so fs.read / fs.grep can work through it (any size, any type). " +
-          "args: { libraryId, documentId, destName? }. Returns { path, bytes, mime, sha256 } — `path` is relative to " +
-          "the `denops-stage` fs root.",
+          "args: { libraryId, documentId, destName? }. Returns { root, path, absPath, bytes, mime, sha256 }; pass " +
+          "`root` and `path` straight to fs.read/fs.grep (files stay staged; nothing prunes them yet).",
         argSchema: compose(
           rejectUnknown(),
           str("libraryId"),
@@ -136,10 +137,11 @@ export function mistralConnector(
       },
       {
         name: "mistral.documents.put",
-        tier: "open",
+        tier: "approval",
         doc:
-          "Create a library document from text (no base64 needed). args: { libraryId, fileName, text, contentType? } " +
-          "(contentType defaults to text/markdown). Returns the created document metadata.",
+          "Create a library document from text (no base64 needed). args: { libraryId, fileName, text, contentType? }. " +
+          "contentType labels the multipart part only — Mistral assigns the stored mime_type itself (text uploads " +
+          "become text/plain). Approval-tier unless the library was created in this same run.",
         argSchema: compose(
           rejectUnknown(),
           str("libraryId"),
@@ -150,11 +152,11 @@ export function mistralConnector(
       },
       {
         name: "mistral.documents.replace",
-        tier: "open",
+        tier: "approval",
         doc:
           "Overwrite a document in place (delete + re-upload) so a canvas keeps its name and gains a new revision. " +
-          "args: { libraryId, documentId?, fileName, text, contentType? }. If documentId is omitted, the oldest " +
-          "document whose name equals fileName is replaced; if none exists the text is uploaded as a new document.",
+          "args: { libraryId, documentId?, fileName, text, contentType? }. Without documentId it replaces the only " +
+          "document with that name, creates one if none exists, and REFUSES if several share the name (pass documentId).",
         argSchema: compose(
           rejectUnknown(),
           str("libraryId"),
@@ -166,7 +168,7 @@ export function mistralConnector(
       },
       {
         name: "mistral.documents.upload",
-        tier: "open",
+        tier: "approval",
         doc:
           "Upload a document into a Library. args: { libraryId: string, fileName: string, contentBase64: string, contentType?: string }. Content is base64; the host performs the HTTP upload so the API key never leaves the host.",
         argSchema: compose(
@@ -288,9 +290,18 @@ export function mistralConnector(
             const listed = await client.listDocuments(r.libraryId) as {
               data?: Array<{ id: string; name: string; created_at?: string }>;
             };
-            const sameName = (listed.data ?? [])
-              .filter((d) => d.name === r.fileName)
-              .sort((x, y) => String(x.created_at).localeCompare(String(y.created_at)));
+            const sameName = (listed.data ?? []).filter((d) => d.name === r.fileName);
+            // Refuse ambiguity instead of guessing: "the oldest canvas.md" would
+            // silently overwrite the wrong revision.
+            if (sameName.length > 1) {
+              throw new Error(
+                `${sameName.length} documents are named ${
+                  JSON.stringify(r.fileName)
+                } in this library (` +
+                  sameName.map((d) => `${d.id}@${d.created_at ?? "?"}`).join(", ") +
+                  `); pass documentId`,
+              );
+            }
             documentId = sameName[0]?.id;
           }
           if (!documentId) {

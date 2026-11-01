@@ -13,6 +13,7 @@ import { createHandler, DEFAULT_MAX_BODY_BYTES, serveWithTimeouts } from "./secu
 import { agentGuide } from "./guide.ts";
 import { deployConfigFrom, deployConnector } from "./connectors/deploy/manifest.ts";
 import { devConnector, devRootsFromConfig } from "./connectors/dev/manifest.ts";
+import { mistralTierOverride } from "./connectors/mistral/tiers.ts";
 import { handleOAuthRoute, newOAuthState, type OAuthConfig } from "./security/oauth.ts";
 import { defaultBanPolicy } from "./security/ban.ts";
 import { RootGrants } from "./harness/grants.ts";
@@ -236,7 +237,9 @@ export async function buildApp(configPath: string, secretsPath: string): Promise
           (args as { libraryId?: string }).libraryId;
         if (id && runState.createdLibraryIds.has(id)) return "open";
       }
-      return null;
+      return mistralTierOverride(op, args, runState, {
+        allowOpenUploads: config.connectors.mistral?.allowOpenUploads === true,
+      });
     },
   );
   harness.setConnectorIds(registry.list().map((c: Connector) => c.id));

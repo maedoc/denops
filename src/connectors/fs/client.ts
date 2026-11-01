@@ -220,6 +220,7 @@ export class FSClient {
       for await (const entry of walkFiles(abs, 2000)) files.push(entry);
     }
     const matches: Array<{ file: string; line: number; text: string }> = [];
+    let skippedBinary = 0;
     let scanned = 0;
     let truncated = false;
     for (const file of files) {
@@ -231,10 +232,15 @@ export class FSClient {
       try {
         const stat = await Deno.stat(file);
         if (!stat.isFile || stat.size > 4_000_000) continue;
+        const head = (await Deno.readFile(file)).slice(0, 8192);
+        if (head.includes(0)) { // NUL byte ⇒ binary: grep would only match noise
+          skippedBinary += 1;
+          continue;
+        }
         text = await Deno.readTextFile(file);
       } catch {
-        continue;
-      } // binary or unreadable: skip
+        continue; // unreadable: skip
+      }
       scanned += text.length;
       const relPath = file.slice(abs.length + (info.isFile ? 0 : 1));
       const lines = text.split("\n");
@@ -251,7 +257,15 @@ export class FSClient {
         }
       }
     }
-    return { root, path: rel, pattern, files: files.length, matches, truncated } as JsonValue;
+    return {
+      root,
+      path: rel,
+      pattern,
+      files: files.length,
+      skippedBinary,
+      matches,
+      truncated,
+    } as JsonValue;
   }
 
   async list(args: JsonValue): Promise<JsonValue> {
