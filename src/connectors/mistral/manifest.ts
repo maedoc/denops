@@ -266,7 +266,10 @@ export function mistralConnector(
             meta.name ?? r.documentId,
             r.destName,
           );
-          return { ...out, root: "denops-stage", path: out.path } as JsonValue;
+          // root + relative path, so fs.read/fs.grep take these straight from the
+          // result (no absolute-path → root surgery in the caller)
+          const rel = out.path.slice(out.path.lastIndexOf("/") + 1);
+          return { ...out, root: "denops-stage", absPath: out.path, path: rel } as JsonValue;
         },
         "documents.put": async (a) => {
           const r = a as {

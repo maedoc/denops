@@ -900,3 +900,44 @@ Deno.test("boundary: invalid args rejected without hitting the API", async () =>
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+// documents.stage must return paths the fs ops can consume directly: a root name
+// plus a root-relative path (the absolute path is kept for convenience).
+Deno.test("mistral stage returns root + relative path", async () => {
+  const staging = await Deno.makeTempDir();
+  const recorded: RecordedReq[] = [];
+  const srv = mockServer({
+    "GET /v1/libraries/lib-1/documents/doc-1": () => ({
+      body: { id: "doc-1", name: "notes.md", size: 5, mime_type: "text/markdown" },
+    }),
+    "GET /v1/libraries/lib-1/documents/doc-1/signed-url": () => ({
+      body: `http://127.0.0.1:${(srv.addr as Deno.NetAddr).port}/blob/notes.md`,
+    }),
+    "GET /blob/notes.md": () => ({ body: "alpha\nbeta\n" }),
+  }, recorded);
+  const port = (srv.addr as Deno.NetAddr).port;
+  const conn = mistralConnector({
+    apiKey: "k",
+    origin: `http://127.0.0.1:${port}`,
+    apiPath: "/v1",
+    stagingRoot: staging,
+  });
+  const client = conn.client({ config: {}, secrets: {}, log: () => {} });
+  try {
+    const out = await client["documents.stage"]({
+      libraryId: "lib-1",
+      documentId: "doc-1",
+      destName: "staged-notes.md",
+    }) as Record<string, string | number>;
+    assertEquals(out.root, "denops-stage");
+    assertEquals(out.path, "staged-notes.md");
+    assertEquals(out.absPath, `${staging}/staged-notes.md`);
+    // mockServer JSON-encodes bodies, so the staged bytes are the encoded string;
+    // what matters is that the file exists at absPath with the downloaded content.
+    assertStringIncludes(await Deno.readTextFile(String(out.absPath)), "alpha");
+    assert(String(out.sha256).length === 64);
+  } finally {
+    await srv.shutdown();
+    await Deno.remove(staging, { recursive: true });
+  }
+});
