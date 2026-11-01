@@ -176,6 +176,83 @@ Deno.test("gitlab list ops return summaries by default, full objects on request"
   }
 });
 
+// Project creation and the issue write attributes had no op surface at all:
+// callers could create issues/MRs/files but not projects, and issues.create
+// silently dropped assignee_ids/due_date/labels/milestone_id.
+Deno.test("gitlab projects.create and issue write attributes reach the API", async () => {
+  const recorded: RecordedReq[] = [];
+  const srv = mockServer({
+    "POST /api/v4/projects": (r) => ({ status: 201, body: { id: 99, ...JSON.parse(r.body!) } }),
+    "POST /api/v4/projects/99/issues": (r) => ({
+      status: 201,
+      body: { iid: 1, ...JSON.parse(r.body!) },
+    }),
+    "PUT /api/v4/projects/99/issues/1": (r) => ({ body: { iid: 1, ...JSON.parse(r.body!) } }),
+  }, recorded);
+  const port = (srv.addr as Deno.NetAddr).port;
+  const conn = gitlabConnector({
+    token: "tok",
+    origin: `http://127.0.0.1:${port}`,
+    apiPath: "/api/v4",
+  });
+  const registry = new Registry();
+  registry.register(conn);
+  assertEquals(registry.tierOf("gitlab.projects.create"), "approval");
+  const clients = conn.client({ config: {}, secrets: {}, log: () => {} });
+  try {
+    const created = await clients["projects.create"]({
+      name: "smoke",
+      visibility: "private",
+      namespaceId: 7,
+      initializeWithReadme: true,
+    }) as Record<string, unknown>;
+    assertEquals(created.id, 99);
+    assertEquals(JSON.parse(recorded[0].body!), {
+      name: "smoke",
+      visibility: "private",
+      namespace_id: 7,
+      initialize_with_readme: true,
+    });
+
+    await clients["issues.create"]({
+      projectId: "99",
+      title: "t",
+      assignee_ids: [5, 6],
+      due_date: "2026-12-01",
+      labels: ["a", "b"],
+      milestone_id: 3,
+    });
+    assertEquals(JSON.parse(recorded[1].body!), {
+      title: "t",
+      assignee_ids: [5, 6],
+      due_date: "2026-12-01",
+      labels: "a,b",
+      milestone_id: 3,
+    });
+
+    await clients["issues.update"]({
+      projectId: "99",
+      issueIid: 1,
+      assignee_ids: [7],
+      due_date: "2027-01-15",
+    });
+    assertEquals(JSON.parse(recorded[2].body!), {
+      assignee_ids: [7],
+      due_date: "2027-01-15",
+    });
+
+    // invalid due_date is rejected at the boundary, before any HTTP call
+    const err = (conn.ops.find((o) => o.name === "gitlab.issues.create")!.argSchema)({
+      projectId: "99",
+      title: "t",
+      due_date: "01/12/2026",
+    });
+    assertEquals(err, "due_date: expected YYYY-MM-DD");
+  } finally {
+    await srv.shutdown();
+  }
+});
+
 Deno.test("gitlab approval op suspends, approve replays and issues POST live", async () => {
   const recorded: RecordedReq[] = [];
   const srv = mockServer({

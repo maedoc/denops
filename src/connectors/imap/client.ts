@@ -119,30 +119,10 @@ export class ImapAccountClient {
               flags: true,
             })
           ) {
-            messages.push({
-              uid: msg.uid,
-              seq: msg.seq,
-              subject: msg.envelope?.subject ?? null,
-              from: msg.envelope?.from?.map((a) => ({
-                name: a.name ?? null,
-                address: a.address ?? null,
-              })) ?? [],
-              to: msg.envelope?.to?.map((a) => ({
-                name: a.name ?? null,
-                address: a.address ?? null,
-              })) ?? [],
-              date: msg.envelope?.date
-                ? new Date(msg.envelope.date as string | Date).toISOString()
-                : null,
-              flags: [...(msg.flags ?? [])],
-            } as JsonValue);
+            messages.push(envelopeOf(msg));
           }
         }
-        messages.sort((a, b) => {
-          const da = (a as { date?: string | null }).date ?? "";
-          const db = (b as { date?: string | null }).date ?? "";
-          return db.localeCompare(da);
-        });
+        messages.sort(byDateDesc);
         return { mailbox, total, page, limit, messages };
       } finally {
         lock.release();
@@ -166,7 +146,22 @@ export class ImapAccountClient {
           uids.push(msg.uid);
           if (uids.length >= limit) break;
         }
-        return { mailbox, uids };
+        // Envelope pass over the matches: a bare uid list forces the caller into a
+        // second paginated list-and-filter round trip to learn what it matched.
+        const messages: JsonValue[] = [];
+        if (uids.length > 0) {
+          for await (
+            const msg of this.client.fetch({ uid: uids.join(",") }, {
+              uid: true,
+              envelope: true,
+              flags: true,
+            })
+          ) {
+            messages.push(envelopeOf(msg));
+          }
+          messages.sort(byDateDesc);
+        }
+        return { mailbox, uids, messages };
       } finally {
         lock.release();
       }
@@ -398,6 +393,36 @@ export class ImapAccountClient {
     } catch { /* already closed */ }
     this.connected = false;
   }
+}
+
+// envelopeOf is the canonical message summary: the fields a caller needs to pick
+// a message without pulling the whole MIME envelope.
+function envelopeOf(
+  msg: { uid: number; seq: number; flags?: Set<string> | string[]; envelope?: unknown },
+): JsonValue {
+  const env = msg.envelope as {
+    subject?: string | null;
+    date?: string | Date | null;
+    from?: Array<{ name?: string | null; address?: string | null }>;
+    to?: Array<{ name?: string | null; address?: string | null }>;
+  } | undefined;
+  const addr = (list?: Array<{ name?: string | null; address?: string | null }>) =>
+    list?.map((a) => ({ name: a.name ?? null, address: a.address ?? null })) ?? [];
+  return {
+    uid: msg.uid,
+    seq: msg.seq,
+    subject: env?.subject ?? null,
+    from: addr(env?.from),
+    to: addr(env?.to),
+    date: env?.date ? new Date(env.date as string | Date).toISOString() : null,
+    flags: [...(msg.flags ?? [])],
+  } as JsonValue;
+}
+
+function byDateDesc(a: JsonValue, b: JsonValue): number {
+  const da = (a as { date?: string | null }).date ?? "";
+  const db = (b as { date?: string | null }).date ?? "";
+  return db.localeCompare(da);
 }
 
 async function sha256Hex(text: string): Promise<string> {

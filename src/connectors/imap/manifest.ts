@@ -105,15 +105,18 @@ export function imapConnector(deps: ImapConnectorDeps): Connector {
       {
         name: "mail.messages.list",
         tier: "open",
-        doc:
-          "List message envelopes (uid, subject, from, flags) newest-first. args: { account, mailbox, limit?, page? }",
+        doc: "List message envelopes newest-first. args: { account, mailbox, limit?, page? }. " +
+          "Returns { mailbox, total, page, limit, messages: [{ uid, subject, from, date, flags }] } " +
+          "(messages also carry seq/to unless fields/full is used).",
         argSchema: compose(rejectUnknown(), acc, str("mailbox"), optNum("limit"), optNum("page")),
       },
       {
         name: "mail.messages.search",
         tier: "open",
         doc:
-          "Server-side IMAP SEARCH. args: { account, mailbox, query: object, limit? } e.g. query { subject: 'invoice', seen: false }",
+          "Server-side IMAP SEARCH. args: { account, mailbox, query: object, limit? } e.g. query { subject: 'invoice', seen: false }. " +
+          "Returns { mailbox, uids: number[], messages: [{ uid, subject, from, date, flags }] } — envelopes are " +
+          "included, so no second list-and-filter pass is needed.",
         argSchema: compose(rejectUnknown(), acc, str("mailbox"), (a) => {
           if (typeof a !== "object" || a === null || Array.isArray(a)) {
             return "query: expected object";
@@ -228,5 +231,13 @@ export const MAIL_SHAPE: Record<string, string[]> = {
     "messages.date",
     "messages.flags",
   ],
-  "messages.search": ["mailbox", "uids"],
+  "messages.search": [
+    "mailbox",
+    "uids",
+    "messages.uid",
+    "messages.subject",
+    "messages.from",
+    "messages.date",
+    "messages.flags",
+  ],
 };

@@ -1,5 +1,15 @@
-import { compose, num, oneOf, optNum, optStr, rejectUnknown, str } from "../../harness/args.ts";
-import type { Connector, HostContext } from "../../harness/types.ts";
+import {
+  compose,
+  num,
+  oneOf,
+  optArr,
+  optBool,
+  optNum,
+  optStr,
+  rejectUnknown,
+  str,
+} from "../../harness/args.ts";
+import type { Connector, HostContext, JsonValue } from "../../harness/types.ts";
 import { checkShapeArgs, wrapClient } from "../shape.ts";
 import { GitLabClient } from "./client.ts";
 
@@ -33,6 +43,22 @@ export function gitlabConnector(
         tier: "open",
         doc: "Search projects by name. args: { search: string, perPage?, page? }",
         argSchema: compose(rejectUnknown(), str("search"), optNum("perPage"), optNum("page")),
+      },
+      {
+        name: "gitlab.projects.create",
+        tier: "approval",
+        doc:
+          "Create a project. args: { name, path?, description?, visibility?, namespaceId?, initializeWithReadme? }. " +
+          "Returns a project summary.",
+        argSchema: compose(
+          rejectUnknown(),
+          str("name"),
+          optStr("path", 255),
+          optStr("description", 100000),
+          oneOf("visibility", ["private", "internal", "public"]),
+          optNum("namespaceId"),
+          optBool("initializeWithReadme"),
+        ),
       },
       {
         name: "gitlab.repository.files.get",
@@ -132,18 +158,49 @@ export function gitlabConnector(
       {
         name: "gitlab.issues.create",
         tier: "approval",
-        doc: "Create an issue. args: { projectId, title, description? }",
+        doc:
+          "Create an issue. args: { projectId, title, description?, assignee_ids?: number[], due_date?: 'YYYY-MM-DD', labels?: string[], milestone_id? }. " +
+          "Returns an issue summary.",
         argSchema: compose(
           rejectUnknown(),
           str("projectId"),
           str("title"),
           optStr("description", 100000),
+          optArr(
+            "assignee_ids",
+            (
+              v,
+              i,
+            ) => (typeof v === "number" && v > 0
+              ? null
+              : `expected positive integer, got ${typeof v}`),
+          ),
+          optStr("due_date", 10),
+          optArr(
+            "labels",
+            (
+              v,
+              i,
+            ) => (typeof v === "string" && v.length > 0 && v.length <= 100
+              ? null
+              : "expected non-empty string"),
+          ),
+          optNum("milestone_id"),
+          (a) => {
+            const due = (a as { due_date?: unknown }).due_date;
+            if (typeof due === "string" && !/^\d{4}-\d{2}-\d{2}$/.test(due)) {
+              return "due_date: expected YYYY-MM-DD";
+            }
+            return null;
+          },
         ),
       },
       {
         name: "gitlab.issues.update",
         tier: "approval",
-        doc: "Update an issue. args: { projectId, issueIid, title?, description?, state? }",
+        doc:
+          "Update an issue. args: { projectId, issueIid, title?, description?, state?, assignee_ids?: number[], due_date?: 'YYYY-MM-DD', labels?: string[], milestone_id? }. " +
+          "Returns an issue summary.",
         argSchema: compose(
           rejectUnknown(),
           str("projectId"),
@@ -151,6 +208,33 @@ export function gitlabConnector(
           optStr("title", 500),
           optStr("description", 100000),
           oneOf("state", ["opened", "closed"]),
+          optArr(
+            "assignee_ids",
+            (
+              v,
+              i,
+            ) => (typeof v === "number" && v > 0
+              ? null
+              : `expected positive integer, got ${typeof v}`),
+          ),
+          optStr("due_date", 10),
+          optArr(
+            "labels",
+            (
+              v,
+              i,
+            ) => (typeof v === "string" && v.length > 0 && v.length <= 100
+              ? null
+              : "expected non-empty string"),
+          ),
+          optNum("milestone_id"),
+          (a) => {
+            const due = (a as { due_date?: unknown }).due_date;
+            if (typeof due === "string" && !/^\d{4}-\d{2}-\d{2}$/.test(due)) {
+              return "due_date: expected YYYY-MM-DD";
+            }
+            return null;
+          },
         ),
       },
       {
@@ -227,6 +311,26 @@ export function gitlabConnector(
         "projects.list": (a) =>
           client.get("/projects", pick(a, ["search", "perPage", "page", "membership"])),
         "projects.get": (a) => client.get(`/projects/${enc(String((a as { id: string }).id))}`),
+        "projects.create": (a) => {
+          const r = a as {
+            name: string;
+            path?: string;
+            description?: string;
+            visibility?: string;
+            namespaceId?: number;
+            initializeWithReadme?: boolean;
+          };
+          return client.post("/projects", {
+            name: r.name,
+            ...(r.path ? { path: r.path } : {}),
+            ...(r.description ? { description: r.description } : {}),
+            ...(r.visibility ? { visibility: r.visibility } : {}),
+            ...(r.namespaceId !== undefined ? { namespace_id: r.namespaceId } : {}),
+            ...(r.initializeWithReadme !== undefined
+              ? { initialize_with_readme: r.initializeWithReadme }
+              : {}),
+          });
+        },
         "projects.search": (a) => client.get("/projects", pick(a, ["search", "perPage", "page"])),
         "repository.files.get": (a) => {
           const r = a as { projectId: string; filePath: string; ref?: string };
@@ -296,10 +400,18 @@ export function gitlabConnector(
           return client.get(`/projects/${enc(r.projectId)}/merge_requests/${r.mrIid}/changes`);
         },
         "issues.create": (a) => {
-          const r = a as { projectId: string; title: string; description?: string };
+          const r = a as {
+            projectId: string;
+            title: string;
+            description?: string;
+            assignee_ids?: number[];
+            due_date?: string;
+            labels?: string[];
+            milestone_id?: number;
+          };
           return client.post(`/projects/${enc(r.projectId)}/issues`, {
             title: r.title,
-            ...(r.description ? { description: r.description } : {}),
+            ...issueWriteFields(r),
           });
         },
         "issues.update": (a) => {
@@ -312,7 +424,10 @@ export function gitlabConnector(
           };
           return client.put(
             `/projects/${enc(r.projectId)}/issues/${r.issueIid}`,
-            pick(a, ["title", "description", "state"]),
+            {
+              ...pick(a, ["title", "description", "state"]),
+              ...issueWriteFields(a as Record<string, unknown>),
+            } as JsonValue,
           );
         },
         "issues.notes.create": (a) => {
@@ -387,7 +502,8 @@ export function gitlabConnector(
 // Default projections: upstream GitLab objects are ~4KB each, which is context
 // abuse for an LLM caller. Callers override with `fields: ["a", "b.c"]` or ask
 // for the raw object with `full: true`.
-const SHAPE_HINT = ' Returns a summary; pass fields: ["..."] or full: true for the raw object.';
+const SHAPE_HINT =
+  ' Returns a summary projection of the GitLab object; pass fields: ["..."] or full: true for the raw object.';
 
 const PROJECT_FIELDS = [
   "id",
@@ -423,6 +539,7 @@ const GITLAB_SHAPE: Record<string, string[]> = {
   "projects.list": PROJECT_FIELDS,
   "projects.search": PROJECT_FIELDS,
   "projects.get": PROJECT_FIELDS,
+  "projects.create": PROJECT_FIELDS,
   "issues.list": ISSUE_FIELDS,
   "issues.get": ISSUE_FIELDS,
   "issues.notes.list": ["id", "author.username", "created_at", "system"],
@@ -451,6 +568,24 @@ const GITLAB_SHAPE: Record<string, string[]> = {
   "groups.list": ["id", "name", "full_path", "visibility", "web_url"],
   "users.current": ["id", "username", "name", "state", "web_url"],
 };
+
+// issueWriteFields passes the optional issue attributes through unchanged, so
+// assignment/metadata is not silently dropped by the op surface.
+function issueWriteFields(a: {
+  description?: string;
+  assignee_ids?: number[];
+  due_date?: string;
+  labels?: string[];
+  milestone_id?: number;
+}): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (a.description) out.description = a.description;
+  if (a.assignee_ids && a.assignee_ids.length > 0) out.assignee_ids = a.assignee_ids;
+  if (a.due_date) out.due_date = a.due_date;
+  if (a.labels && a.labels.length > 0) out.labels = a.labels.join(",");
+  if (a.milestone_id !== undefined) out.milestone_id = a.milestone_id;
+  return out;
+}
 
 function enc(s: string): string {
   return encodeURIComponent(s);

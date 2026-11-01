@@ -62,3 +62,34 @@ Deno.test("messages.list summary keeps wrapper keys and trims envelopes", () => 
     total: 2,
   });
 });
+
+// search used to return bare uids, forcing a second paginated list-and-filter
+// pass to learn anything about the matches.
+Deno.test("messages.search summary carries envelopes with the uids", () => {
+  const searched = {
+    mailbox: "INBOX",
+    uids: [11],
+    messages: [
+      {
+        uid: 11,
+        seq: 1,
+        subject: "hello",
+        from: [{ name: "A", address: "a@example.org" }],
+        to: [{ name: "B", address: "b@example.org" }],
+        date: "2026-10-31T09:00:00.000Z",
+        flags: ["\\Seen"],
+      },
+    ],
+  };
+  assertEquals(shapeResult(searched, MAIL_SHAPE["messages.search"], {}), {
+    mailbox: "INBOX",
+    uids: [11],
+    messages: [{
+      uid: 11,
+      subject: "hello",
+      from: [{ name: "A", address: "a@example.org" }],
+      date: "2026-10-31T09:00:00.000Z",
+      flags: ["\\Seen"],
+    }],
+  });
+});

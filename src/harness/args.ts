@@ -90,6 +90,26 @@ export function arr(
   };
 }
 
+// optArr validates an optional array field: absent is fine, present must match
+// itemCheck for every entry.
+export function optArr(
+  field: string,
+  itemCheck: (v: unknown, i: number) => string | null,
+): (args: unknown) => string | null {
+  return (args) => {
+    if (!isRecord(args)) return `${field}: expected object args`;
+    const v = args[field];
+    if (v === undefined) return null;
+    if (!Array.isArray(v)) return `${field}: expected array`;
+    if (v.length > 100) return `${field}: too many entries (${v.length} > 100)`;
+    for (let i = 0; i < v.length; i++) {
+      const err = itemCheck(v[i], i);
+      if (err) return `${field}[${i}]: ${err}`;
+    }
+    return null;
+  };
+}
+
 export function compose(
   ...checks: ((args: unknown) => string | null)[]
 ): (args: unknown) => string | null {
