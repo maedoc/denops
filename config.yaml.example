@@ -73,6 +73,7 @@ connectors:
     #   tls: true
     #   user: me@example.org
     #   draftsMailbox: Drafts
+    #   socketTimeoutMs: 300000  # drop + reconnect after this much socket inactivity (default 5 min)
     #   # password lives in secrets.json as mail.work.password
 
 startup:

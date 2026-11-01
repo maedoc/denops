@@ -10,6 +10,8 @@ export interface ImapAccountConfig {
   user: string;
   password: string;
   draftsMailbox: string;
+  /** Socket inactivity timeout; imapflow's default is 300000 (5 min). */
+  socketTimeoutMs?: number;
 }
 
 interface Queue {
@@ -20,6 +22,7 @@ export class ImapAccountClient {
   private client: ImapFlow;
   private queue: Queue = { tail: Promise.resolve() };
   private connected = false;
+  private connError: Error | null = null;
 
   constructor(private cfg: ImapAccountConfig) {
     this.client = this.newClient();
@@ -27,14 +30,36 @@ export class ImapAccountClient {
 
   private newClient(): ImapFlow {
     const cfg = this.cfg;
-    return new ImapFlow({
+    this.connError = null;
+    const client = new ImapFlow({
       host: cfg.host,
       port: cfg.port,
       secure: cfg.tls,
       auth: { user: cfg.user, pass: cfg.password },
       logger: false,
       ...(cfg.allowSelfSigned ? { tls: { rejectUnauthorized: false } } : {}),
+      ...(cfg.socketTimeoutMs ? { socketTimeout: Number(cfg.socketTimeoutMs) } : {}),
     });
+    // imapflow reports background connection failures through the 'error'
+    // event: its socket inactivity timeout (5 min by default), a server BYE, or
+    // a dropped tunnel. An unhandled 'error' event is fatal in Deno, so a single
+    // idle timeout would take the whole server down with it. Treat it as "this
+    // connection is gone": remember why, drop the socket, and let the next op
+    // reconnect instead of failing every later op against a dead client.
+    client.on("error", (err: unknown) => {
+      const e = err instanceof Error ? err : new Error(String(err));
+      if (!this.connError) this.connError = e;
+      this.connected = false;
+      try {
+        // Fire-and-forget: close() is async and rejects on an already-dead
+        // socket, which must not surface as an unhandled rejection.
+        void Promise.resolve(client.close()).catch(() => {});
+      } catch { /* already closed */ }
+    });
+    client.on("close", () => {
+      this.connected = false;
+    });
+    return client;
   }
 
   private enqueue<T>(fn: () => Promise<T>): Promise<T> {
@@ -44,9 +69,18 @@ export class ImapAccountClient {
   }
 
   async connect(): Promise<void> {
-    if (this.connected && !(this.client as unknown as { closed?: boolean }).closed) return;
+    // `usable` is imapflow's own liveness flag; once it is false the client is
+    // permanently dead, so a fresh one is required (`closed` is not a property
+    // imapflow exposes — checking it always read `undefined`).
+    const live = this.client as unknown as { usable?: boolean; isClosed?: boolean };
+    if (this.connected && live.usable === true && live.isClosed !== true) return;
     this.client = this.newClient();
-    await this.client.connect();
+    try {
+      await this.client.connect();
+    } catch (e) {
+      this.connected = false;
+      throw e;
+    }
     this.connected = true;
   }
 
@@ -264,7 +298,10 @@ export class ImapAccountClient {
     });
   }
 
-  async fetchRaw(mailbox: string, uid: number): Promise<{ raw: string; internalDate: Date | null }> {
+  async fetchRaw(
+    mailbox: string,
+    uid: number,
+  ): Promise<{ raw: string; internalDate: Date | null }> {
     return await this.enqueue(async () => {
       await this.connect();
       const lock = await this.client.getMailboxLock(mailbox);
@@ -319,10 +356,11 @@ export class ImapAccountClient {
         const parts: { type: string; sha256: string }[] = [];
         for (const leaf of leaves) {
           if (leaf.type !== "text/plain") continue;
-          const m = (await this.client.fetchOne(String(uid), { bodyParts: [leaf.part] }, { uid: true })) as
-            | { bodyParts?: Map<string, Uint8Array> }
-            | false
-            | null;
+          const m =
+            (await this.client.fetchOne(String(uid), { bodyParts: [leaf.part] }, { uid: true })) as
+              | { bodyParts?: Map<string, Uint8Array> }
+              | false
+              | null;
           const buf = m && m.bodyParts ? m.bodyParts.get(leaf.part) : undefined;
           const raw = buf ? ImapAccountClient.textDecoder.decode(buf) : "";
           parts.push({ type: leaf.type, sha256: await sha256Hex(raw) });
@@ -418,7 +456,9 @@ export class ImapHost {
     }
     if (mapping.some((m) => !m.verified)) {
       throw new Error(
-        `verification failed for uids: ${mapping.filter((m) => !m.verified).map((m) => m.uid).join(",")} — source messages left untouched`,
+        `verification failed for uids: ${
+          mapping.filter((m) => !m.verified).map((m) => m.uid).join(",")
+        } — source messages left untouched`,
       );
     }
     const deleted = await src.deleteAndExpunge(mailbox, uids);

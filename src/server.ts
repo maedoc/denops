@@ -146,6 +146,7 @@ export async function buildApp(configPath: string, secretsPath: string): Promise
         ((mailSecrets[String(a.id)] ?? {}) as Record<string, unknown>).password ?? "",
       ),
       draftsMailbox: String(a.draftsMailbox ?? "Drafts"),
+      ...(a.socketTimeoutMs === undefined ? {} : { socketTimeoutMs: Number(a.socketTimeoutMs) }),
     }));
     if (accounts.length === 0) throw new Error("imap enabled but no accounts configured");
     for (const a of accounts) {
