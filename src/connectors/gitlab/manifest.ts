@@ -563,7 +563,9 @@ export function gitlabConnector(
     return {
       ...op,
       argSchema: compose(op.argSchema, checkShapeArgs),
-      doc: GITLAB_SHAPE[short] && !op.doc.includes("Returns") ? op.doc + SHAPE_HINT : op.doc,
+      doc: GITLAB_SHAPE[short] && !op.doc.includes("Returns")
+        ? op.doc + (/\.(list|search|notes\.list)$/.test(short) ? SHAPE_HINT_LIST : SHAPE_HINT_GET)
+        : op.doc,
     };
   });
   return conn;
