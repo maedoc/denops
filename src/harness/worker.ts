@@ -148,17 +148,25 @@ export class Harness {
 
     const guest = guestSource(this.connectorIds, code);
 
-    const worker = new Worker("data:text/javascript," + encodeURIComponent(guest), {
+    // blob: rather than data: — a data: URL embeds the whole guest source, so any
+    // stack trace the guest reports (or prints back at the caller) carried the
+    // percent-encoded prelude. A blob URL shows up as blob:null/<uuid>:LINE.
+    const blobUrl = URL.createObjectURL(new Blob([guest], { type: "text/javascript" }));
+    const worker = new Worker(blobUrl, {
       type: "module",
       deno: { permissions: "none" },
     });
+    const killWorker = () => {
+      worker.terminate();
+      URL.revokeObjectURL(blobUrl);
+    };
 
     let outcome: RunOutcome | null = null;
     const finish = (o: RunOutcome) => {
       if (outcome) return;
       outcome = o;
       clearTimeout(timer);
-      worker.terminate();
+      killWorker();
     };
 
     const timer = setTimeout(() => {
@@ -285,7 +293,7 @@ export class Harness {
       else if (m.kind === "done") {
         if (outcome) return;
         clearTimeout(timer);
-        worker.terminate();
+        killWorker();
         if (m.error) {
           void log.recordFinal({ status: "failed", error: String(m.error) });
           outcome = { status: "failed", error: String(m.error) };
@@ -299,7 +307,7 @@ export class Harness {
     worker.addEventListener("error", (e) => {
       if (outcome) return;
       clearTimeout(timer);
-      worker.terminate();
+      killWorker();
       void log.recordFinal({ status: "failed", error: e.message });
       outcome = { status: "failed", error: e.message };
     });
