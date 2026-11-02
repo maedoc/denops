@@ -207,12 +207,22 @@ export function serverPlan(src: PermissionSource): PermissionPlan {
   });
 }
 
+/** Options for permissionFlags. */
+export interface permissionFlagsOpts {
+  /**
+   * Omit --allow-env/--allow-sys entirely. For children that execute agent-written
+   * code: an unscoped env grant reads every variable on the host, including
+   * credentials the server itself never needed in-process.
+   */
+  noEnv?: boolean;
+}
+
 /** Turn a plan into `deno run` flags. Never emits a bare --allow-all/read/write/net. */
-export function permissionFlags(plan: PermissionPlan): string[] {
+export function permissionFlags(plan: PermissionPlan, opts: permissionFlagsOpts = {}): string[] {
   const flags = [`--allow-net=${plan.net.join(",")}`];
   if (plan.read.length > 0) flags.push(`--allow-read=${plan.read.join(",")}`);
   if (plan.write.length > 0) flags.push(`--allow-write=${plan.write.join(",")}`);
-  flags.push("--allow-env", "--allow-sys");
+  if (!opts.noEnv) flags.push("--allow-env", "--allow-sys");
   if (plan.run.length > 0) flags.push(`--allow-run=${plan.run.join(",")}`);
   return flags;
 }
