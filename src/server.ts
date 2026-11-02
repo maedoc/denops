@@ -181,6 +181,9 @@ export async function buildApp(configPath: string, secretsPath: string): Promise
           ? Number(config.connectors.dev.timeoutMs)
           : undefined,
         tryNet: [...livePlan.net, ...tryExtraHosts],
+        // The live registry decides tier: a dev checkout that flips an approval op
+        // to open must not be able to run it via dev.try without a human.
+        liveTier: (op) => registry.tierOf(op),
       }),
     );
   }

@@ -8,6 +8,13 @@ actually talking to instead of probing behaviour.
 Format: `## <version> — <YYYY-MM-DD>`, newest first, then a short bullet list. Keep bullets about
 the API surface; implementation notes belong in the commit message.
 
+## 0.3.1 — 2026-11-02
+
+- `dev.try` now refuses, host-side, any op that is approval-tier in the **live** registry. The
+  in-child tier check reads the dev checkout's own manifest, which the agent can edit; flipping an
+  op to `open` there no longer lets `dev.try` run it without a human. The error names the op and
+  says to promote instead.
+
 ## 0.3.0 — 2026-11-01
 
 - `denops.logs({lines?, grep?})`: the supervisor now tees the server's stdout/stderr into

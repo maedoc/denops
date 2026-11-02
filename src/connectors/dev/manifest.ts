@@ -50,6 +50,12 @@ export interface DevConnectorOptions {
   tryNet?: string[];
   /** Require a green checkTask for HEAD before dev.try (default true). */
   requireCheck?: boolean;
+  /**
+   * Tier of an op in the LIVE server registry ("absent" if unknown there). The
+   * child's own tier check reads the checkout's manifest, which the agent can
+   * edit, so the refusal must happen here, host-side.
+   */
+  liveTier?: (op: string) => "open" | "approval" | "absent";
 }
 
 export function devConnector(opts: DevConnectorOptions): Connector {
@@ -279,6 +285,15 @@ export function devConnector(opts: DevConnectorOptions): Connector {
         const { root, op } = a as { root: string; op: string; args?: JsonValue };
         const r = rootOf(root);
         const args = ((a as { args?: JsonValue }).args ?? {}) as JsonValue;
+        // The child's own tier check reads the checkout's manifest, which the agent
+        // edits — flipping an op to "open" there would bypass approval. The live
+        // registry is the authority: if it says approval, dev.try refuses host-side.
+        if (opts.liveTier && opts.liveTier(op) === "approval") {
+          throw new Error(
+            `${op} is approval-tier on the live server; dev.try cannot run it ` +
+              `(the checkout's own manifest does not decide this) — promote it instead`,
+          );
+        }
 
         // Committed, checked code only. The child imports the checkout's own modules, so
         // "what ran" has to be content a reviewer can see in the promotion diff — and a

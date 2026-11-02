@@ -51,7 +51,9 @@ interface Fixture {
   base: string;
   dev: string;
   secretsReal: string;
-  connect: (opts?: { checkTask?: string }) => ReturnType<typeof devConnector>;
+  connect: (
+    opts?: { checkTask?: string; liveTier?: (op: string) => "open" | "approval" | "absent" },
+  ) => ReturnType<typeof devConnector>;
 }
 
 async function makeFixture(
@@ -73,7 +75,9 @@ async function makeFixture(
   await git(dev, "add", "-A");
   await git(dev, "commit", "-qm", "initial");
 
-  const connect = (o: { checkTask?: string } = {}) => {
+  const connect = (
+    o: { checkTask?: string; liveTier?: (op: string) => "open" | "approval" | "absent" } = {},
+  ) => {
     const roots = devRootsFromConfig([{
       name: "dev",
       path: dev,
@@ -256,6 +260,28 @@ Deno.test("dev.try: committed code only — dirtiness and check provenance gate 
       msg = (e as Error).message;
     }
     assertStringIncludes(msg, "tracked files are modified");
+  } finally {
+    await Deno.remove(f.base, { recursive: true });
+  }
+});
+
+Deno.test("dev.try: a live-approval op is refused host-side, even if the checkout opens it", async () => {
+  const f = await makeFixture();
+  try {
+    const c = client(f.connect({
+      liveTier: (op) => op === "gitlab.mutate" ? "approval" : "open",
+    }));
+    await c["run"]({ root: "dev", task: "check" });
+    let msg = "";
+    try {
+      await c["try"]({ root: "dev", op: "gitlab.mutate", args: { path: "/x", method: "POST" } });
+    } catch (e) {
+      msg = (e as Error).message;
+    }
+    assertStringIncludes(msg, "approval-tier on the live server");
+    // an op the live registry knows as open is not blocked
+    const res = await c["try"]({ root: "dev", op: "debug.echo", args: {} }) as { code: number };
+    assertEquals(res.code, 0);
   } finally {
     await Deno.remove(f.base, { recursive: true });
   }

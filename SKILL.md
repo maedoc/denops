@@ -104,7 +104,8 @@ re-validated. A refused host is a config question for the operator, not somethin
 `dev.run({root, task})` (`check`/`test`/`fmt`/`lint`… argv from config, no shell; returns
 `{code, stdout, stderr, sha, dirty}` and records the outcome against the current **tree**, by exit
 code and tree identity, never by output), `dev.git({root, action, message?})`,
-`dev.try({root, op, args})` (one **open-tier** op from the dev checkout's own registry, against the
+`dev.try({root, op, args})` (one op from the dev checkout's own registry that is **open-tier on the
+live server** — the checkout's own manifest cannot reopen an approval op — against the
 real APIs), `deploy.status`, `deploy.promote` (approval: runs the test task, records intent),
 `deploy.rollback({commit?})`. `dev.try` runs **committed, checked code only** — a dirty tracked tree
 is refused and the root's `check` must have passed for this tree — inside a pinned child (read =
