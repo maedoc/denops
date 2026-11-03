@@ -131,7 +131,9 @@ function mockDav(recorded: Recorded[], opts: { quota?: boolean; unlimited?: bool
         status: 200,
         headers: {
           "content-type": path.endsWith(".png") ? "image/png" : "text/plain",
-          etag: node.etag,
+          // Nextcloud appends -gzip to the response ETag; the DAV getetag is the one
+          // If-Match is compared against, so `get` must not report this one.
+          etag: `${node.etag}-gzip`,
           "content-length": String(node.bytes.byteLength),
         },
       });
@@ -334,9 +336,13 @@ Deno.test("dav: get inlines text, caps it honestly, and refuses binary", async (
       text: string;
       bytes: number;
       truncated: boolean;
+      etag: string;
     };
     assertEquals(out.text, "# Intro\nhello\n");
     assertEquals(out.truncated, false);
+    const stat = await h.call("stat", { path: "docs/intro.md" }) as { etag: string };
+    assertEquals(out.etag, stat.etag, "get reports the DAV getetag, not the -gzip one");
+    assert(!String(out.etag).endsWith("-gzip"));
 
     const cut = await h.call("get", { path: "docs/intro.md", maxBytes: 4 }) as {
       text: string;

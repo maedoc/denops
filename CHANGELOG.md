@@ -8,6 +8,16 @@ actually talking to instead of probing behaviour.
 Format: `## <version> — <YYYY-MM-DD>`, newest first, then a short bullet list. Keep bullets about
 the API surface; implementation notes belong in the commit message.
 
+## 0.10.1 — 2026-11-03
+
+- **`dav.get` reports the DAV `getetag`, not the GET response `ETag`.** Nextcloud appends `-gzip`
+  to the ETag of a compressed response, so the value `get` used to return was one a following
+  `dav.put({ ifMatch })` could never match — a guaranteed bogus 412 on the first write after a
+  read. `get` now takes the etag from the same-depth PROPFIND it already makes to confirm the
+  path is a file, which is the value Nextcloud compares `If-Match` against. Found by comparing
+  `dav.stat` and `dav.get` on the same file on the live server, which is the kind of thing only a
+  real Nextcloud says out loud.
+
 ## 0.10.0 — 2026-11-03
 
 - **New `dav` family (14 ops): WebDAV / Nextcloud files, shaped for a caller with a byte budget.**

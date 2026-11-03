@@ -524,18 +524,27 @@ class DavAccount {
   }
 
   /** Refuse a file-shaped op on a collection, before its bytes are fetched. */
-  private async requireFile(op: string, path: DavPath): Promise<void> {
-    const stat = await this.stat(path) as { kind: string };
+  private async requireFile(
+    op: string,
+    path: DavPath,
+  ): Promise<{ kind: string; etag?: string; size?: number; contentType?: string }> {
+    const stat = await this.stat(path) as {
+      kind: string;
+      etag?: string;
+      size?: number;
+      contentType?: string;
+    };
     if (stat.kind !== "file") {
       throw new Error(
         `${op} ${JSON.stringify(path.rel)}: that is a directory, not a file — use dav.list ` +
           `(or dav.find) to see what is inside`,
       );
     }
+    return stat;
   }
 
   async get(path: DavPath, maxBytes: number): Promise<JsonValue> {
-    await this.requireFile("dav.get", path);
+    const meta = await this.requireFile("dav.get", path);
     const cap = Math.min(maxBytes, MAX_INLINE_BYTES);
     const reply = await this.expect("GET", this.urlOf(path), {
       ok: [200],
@@ -561,7 +570,10 @@ class DavAccount {
       ...(Number.isFinite(declared) ? { size: declared } : {}),
       bytes: reply.bytes.byteLength,
       truncated,
-      etag: reply.headers.get("etag") ?? undefined,
+      // The PROPFIND getetag, deliberately NOT the GET response ETag: Nextcloud
+      // appends "-gzip" to the latter when it serves a compressed body, and an
+      // If-Match carrying that value is a bogus 412 on the next write.
+      ...(meta.etag === undefined ? {} : { etag: meta.etag }),
       text: this.decode(slice),
     } as JsonValue;
   }
