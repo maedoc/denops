@@ -129,6 +129,20 @@ function mockDav(recorded: Recorded[], opts: { quota?: boolean; unlimited?: bool
 
     if (req.method === "GET") {
       if (!node || node.kind === "dir") return new Response("nope", { status: 404 });
+      const range = /^bytes=(\d+)-(\d+)$/.exec(req.headers.get("range") ?? "");
+      if (range) {
+        const from = Number(range[1]);
+        const to = Math.min(Number(range[2]), node.bytes.byteLength - 1);
+        const slice = node.bytes.subarray(from, to + 1);
+        return new Response(slice as unknown as BodyInit, {
+          status: 206,
+          headers: {
+            "content-type": "text/plain",
+            "content-range": `bytes ${from}-${to}/${node.bytes.byteLength}`,
+            etag: `${node.etag}-gzip`,
+          },
+        });
+      }
       return new Response(node.bytes as unknown as BodyInit, {
         status: 200,
         headers: {
@@ -350,10 +364,28 @@ Deno.test("dav: get inlines text, caps it honestly, and refuses binary", async (
       text: string;
       truncated: boolean;
       bytes: number;
+      size?: number;
+      nextOffset?: number;
     };
     assertEquals(cut.text, "# In");
     assertEquals(cut.truncated, true);
-    assertEquals(cut.bytes, 5, "bytes reports what arrived, not the cap");
+    assertEquals(cut.bytes, 4, "bytes is the length of the text that came back");
+    assertEquals(cut.size, 14, "size is the file's size, from content-length");
+    assertEquals(cut.nextOffset, 4, "and the caller is told where to resume");
+
+    // a window: Nextcloud answers Range with 206 + content-range, so a big file is walkable
+    const tail = await h.call("get", { path: "docs/intro.md", offset: 8, maxBytes: 100 }) as {
+      text: string;
+      offset: number;
+      totalBytes?: number;
+      size?: number;
+      truncated: boolean;
+    };
+    assertEquals(tail.text, "hello\n");
+    assertEquals(tail.offset, 8);
+    assertEquals(tail.totalBytes, 14, "the real size comes from content-range");
+    assertEquals(tail.size, 14);
+    assertEquals(tail.truncated, false, "the window covers the rest of the file");
 
     const dirErr = await assertRejects(() => h.call("get", { path: "docs" })) as Error;
     assertStringIncludes(dirErr.message, "that is a directory");
@@ -361,8 +393,8 @@ Deno.test("dav: get inlines text, caps it honestly, and refuses binary", async (
     assertStringIncludes(stageErr.message, "that is a directory");
     assertEquals(
       h.recorded.filter((r) => r.method === "GET").length,
-      2,
-      "a directory is refused before any GET is made",
+      3,
+      "a directory is refused before any GET is made (only the 3 real reads went out)",
     );
 
     const err = await assertRejects(() => h.call("get", { path: "logo.png" })) as Error;
@@ -681,6 +713,7 @@ Deno.test("dav: the op surface is the documented one", async () => {
       "dav.edit",
       "dav.find",
       "dav.get",
+      "dav.grep",
       "dav.list",
       "dav.mkdir",
       "dav.move",
@@ -889,6 +922,186 @@ Deno.test("dav: a server error body is reduced to the sentence that matters", as
     const err = await assertRejects(() => h.call("stat", { path: "docs/nope.md" })) as Error;
     assert(!err.message.includes("<d:"), "no raw XML in the message");
     assertStringIncludes(err.message, "no such path");
+  } finally {
+    await h.close();
+  }
+});
+
+Deno.test("dav: grep finds which files mention a string, and counts what it skipped", async () => {
+  const h = await harness();
+  try {
+    const out = await h.call("grep", { pattern: "deep" }) as {
+      filesScanned: number;
+      filesMatched: number;
+      matchCount: number;
+      truncated: boolean;
+      skipped: { binary: number };
+      hits: Array<{ path: string; line: number; text: string }>;
+    };
+    assertEquals(out.filesMatched, 1, "only deep.md says 'deep'");
+    assertEquals(out.hits[0].path, "docs/sub/deep.md");
+    assertEquals(out.hits[0].line, 1);
+    assertEquals(out.hits[0].text, "deep", "the matching line comes back, trimmed");
+    assertEquals(out.skipped.binary, 1, "logo.png is counted, not silently dropped");
+
+    // namePattern narrows what gets read at all
+    const narrowed = await h.call("grep", { pattern: "INTRO", namePattern: "*.csv" }) as {
+      matchCount: number;
+      filesScanned: number;
+    };
+    assertEquals(narrowed.filesScanned, 1);
+    assertEquals(narrowed.matchCount, 0, "case-insensitive, but csv has no 'intro'");
+
+    // maxMatches stops early and says so
+    await h.call("put", { path: "docs/two.md", text: "hit\nhit\nhit\n" });
+    const capped = await h.call("grep", { pattern: "hit", maxMatches: 2 }) as {
+      matchCount: number;
+      truncated: boolean;
+      stoppedBy?: string;
+    };
+    assertEquals(capped.matchCount, 2);
+    assertEquals(capped.truncated, true);
+    assertEquals(capped.stoppedBy, "matches");
+
+    // a one-character needle is refused: it matches everything and costs everything
+    assertStringIncludes(String(h.schema("grep", { pattern: "a" })), "2..200");
+  } finally {
+    await h.close();
+  }
+});
+
+Deno.test("dav: a big file is readable in windows, and size is never a bogus zero", async () => {
+  const h = await harness();
+  try {
+    const long = `${"x".repeat(999)}\nEND\n`;
+    await h.call("put", { path: "docs/long.txt", text: long });
+    const head = await h.call("get", { path: "docs/long.txt", maxBytes: 100 }) as {
+      truncated: boolean;
+      nextOffset?: number;
+      totalBytes?: number;
+    };
+    assertEquals(head.truncated, true);
+    assertEquals(head.nextOffset, 100);
+
+    const tail = await h.call("get", {
+      path: "docs/long.txt",
+      offset: head.nextOffset,
+      maxBytes: 2000,
+    }) as { text: string; offset: number; truncated: boolean; totalBytes?: number };
+    assertEquals(tail.text, `${"x".repeat(899)}\nEND\n`, "the window is byte-exact");
+    assertEquals(tail.offset, 100);
+    assertEquals(tail.truncated, false);
+    assertEquals(tail.totalBytes, 1004);
+
+    // a response with no content-length must not report size: 0
+    const noLength = await h.call("stat", { path: "docs/long.txt" }) as { size?: number };
+    assertEquals(noLength.size, 1004);
+  } finally {
+    await h.close();
+  }
+});
+
+Deno.test("dav: non-UTF-8 text is flagged, and edit refuses to corrupt it", async () => {
+  const h = await harness();
+  try {
+    // Latin-1 bytes (0xE9 = é in Windows-1252) are not valid UTF-8
+    h.nodes.set(`${SHARE}/docs/latin.csv`, {
+      kind: "file",
+      bytes: new Uint8Array([0x61, 0x2c, 0x62, 0x0a, 0xe9, 0x0a]),
+      mtime: "Mon, 02 Nov 2026 10:00:00 GMT",
+      etag: '"latin-1"',
+    });
+    const got = await h.call("get", { path: "docs/latin.csv" }) as {
+      encodingIssue?: boolean;
+      note?: string;
+      text: string;
+    };
+    assertEquals(got.encodingIssue, true);
+    assertStringIncludes(String(got.note), "not valid UTF-8");
+
+    const err = await assertRejects(() =>
+      h.call("edit", { path: "docs/latin.csv", append: "x" })
+    ) as Error;
+    assertStringIncludes(err.message, "would corrupt it");
+  } finally {
+    await h.close();
+  }
+});
+
+Deno.test("dav: exclude keeps junk out of listings without hiding anything by default", async () => {
+  const h = await harness();
+  try {
+    h.nodes.set(`${SHARE}/docs/._intro.md`, {
+      kind: "file",
+      bytes: new Uint8Array(4),
+      mtime: "Mon, 02 Nov 2026 10:00:00 GMT",
+      etag: '"junk"',
+    });
+    const all = await h.call("list", { path: "docs" }) as { entries: Array<{ name: string }> };
+    assert(all.entries.some((e) => e.name === "._intro.md"), "visible unless asked otherwise");
+
+    const filtered = await h.call("list", {
+      path: "docs",
+      exclude: ["._*", ".DS_Store"],
+    }) as { entries: Array<{ name: string }>; total: number };
+    assertEquals(filtered.entries.some((e) => e.name.startsWith("._")), false);
+    assertEquals(filtered.total, 3, "the filtered set is what total counts");
+
+    const found = await h.call("find", { pattern: "*.md", exclude: ["._*"] }) as {
+      entries: Array<{ name: string }>;
+    };
+    assertEquals(found.entries.every((e) => !e.name.startsWith("._")), true);
+  } finally {
+    await h.close();
+  }
+});
+
+Deno.test("dav: stage refuses to clobber a different file at the same name", async () => {
+  const h = await harness();
+  try {
+    const first = await h.call("stage", { path: "docs/intro.md" }) as { staged: string };
+    const again = await h.call("stage", { path: "docs/intro.md" }) as {
+      reused?: boolean;
+      sha256: string;
+    };
+    assertEquals(again.reused, true, "identical bytes are reused, not rewritten");
+
+    // same name, different content: refuse and name the way out
+    const conflict = await assertRejects(async () => {
+      await h.call("stage", { path: "docs/data.csv", destName: "intro.md" });
+    }) as Error;
+    assertStringIncludes(conflict.message, "Pass destName");
+    assertEquals(first.staged, "alice/intro.md");
+  } finally {
+    await h.close();
+  }
+});
+
+Deno.test("dav: delete and move honour an etag when one is given", async () => {
+  const h = await harness();
+  try {
+    const stat = await h.call("stat", { path: "docs/intro.md" }) as { etag: string };
+    // stale etag: refused before anything is sent
+    const stale = await assertRejects(() =>
+      h.call("delete", { path: "docs/intro.md", ifMatch: '"etag-stale"' })
+    ) as Error;
+    assertStringIncludes(stale.message, "412");
+    assertEquals(h.recorded.filter((r) => r.method === "DELETE").length, 0);
+
+    await h.call("delete", { path: "docs/intro.md", ifMatch: stat.etag });
+    const del = h.recorded.filter((r) => r.method === "DELETE").at(-1)!;
+    assertEquals(del.headers.get("if-match"), stat.etag, "the precondition went on the wire");
+
+    const mv = await h.call("move", {
+      from: "docs/data.csv",
+      to: "docs/data2.csv",
+      ifMatch: '"etag-2"',
+    }) as { moved: { to: string } };
+    assertEquals(mv.moved.to, "docs/data2.csv");
+    assertEquals(
+      h.recorded.filter((r) => r.method === "MOVE").at(-1)!.headers.get("if-match"),
+      '"etag-2"',
+    );
   } finally {
     await h.close();
   }

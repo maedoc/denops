@@ -8,6 +8,45 @@ actually talking to instead of probing behaviour.
 Format: `## <version> — <YYYY-MM-DD>`, newest first, then a short bullet list. Keep bullets about
 the API surface; implementation notes belong in the commit message.
 
+## 0.12.0 — 2026-11-03
+
+Everything here is either a defect found by measuring against the live servers or documentation that
+had silently rotted.
+
+- **`dav.grep` (new, open): which files *mention* this text.** `{ account, path?, pattern,
+  namePattern?, maxDepth?, maxFiles?, maxBytesPerFile?, maxMatches?, maxMs?, exclude? }` walks the
+  same bounded, parallel tree as `dav.find` and reads candidates with a per-file cap. `pattern` is a
+  literal case-insensitive substring on purpose — a caller-supplied regex is an invitation to
+  catastrophic backtracking, and "the file that says docathon" is the actual question. Binary,
+  oversized and unreadable files are **counted** in `skipped`, never silently dropped, and `stoppedBy`
+  says whether the walk, the match cap or the clock ended it.
+- **`dav.get` reads windows, and `size` is no longer a lie.** `offset` becomes a `Range` request
+  (Nextcloud answers 206 + `content-range`), and `nextOffset` tells the caller where to continue, so a
+  1.2 MB log is walkable instead of "first 64 KiB or nothing". Two bugs fell out of measuring that:
+  an absent `content-length` was reported as `size: 0` because `Number(null)` is `0`, and a compressed
+  body's `content-length` was reported as the file size. `size` now comes from `content-range` when
+  present, from `content-length` only when the body is neither ranged nor encoded, and is omitted
+  otherwise.
+- **Non-UTF-8 text is flagged instead of silently mangled.** `get` sets `encodingIssue` (with a note
+  pointing at `dav.stage`) and `dav.edit` **refuses** such a file outright: a lossy read followed by a
+  write would corrupt it, which is worse than failing.
+- **`exclude` globs on `list`/`find`/`grep`** keep macOS resource-fork junk (`._*`, `.DS_Store`) out
+  of the payload. Opt-in: nothing is hidden that the caller did not ask to hide.
+- **`dav.delete` and `dav.move` take an `ifMatch`**, closing the last ungated writes — `delete` now
+  refuses (412) to remove a file that changed since it was read, instead of removing the wrong bytes.
+- **`dav.stage` no longer clobbers.** A same-named download with identical bytes is reused
+  (`reused: true`) instead of rewritten; different bytes at a taken name are refused with the escape
+  hatch named, so one run cannot silently replace a file another is reading.
+- **README.md is caught up and now mechanically watched.** It still documented a `gitlab (27 ops)`
+  section a release after that family became `forge`, said `dev (4 ops)` when it was 5, called the
+  mail family `imap`, undercounted `denops`, and had never gained `calendar` or `dav` sections at all.
+  It now has all ten, and `tests/readme_test.ts` checks every family heading and its op count, sharing
+  one connector fixture with the SKILL.md test (`tests/connector_set.ts`) — the duplication is how the
+  drift happened. The SKILL.md check got stricter for the same reason: the count has to sit next to
+  the family name, not merely appear somewhere in the file (which is how `denops` drifted from 5 to 6).
+- `calendar` was missing from the shared fixture entirely, so the "every family is documented" gate
+  had never actually looked at it; it does now.
+
 ## 0.11.0 — 2026-11-03
 
 Brought the `dav` surface up to what a real reviewer's use of it asked for. Everything here came from

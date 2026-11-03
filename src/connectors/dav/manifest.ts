@@ -61,6 +61,22 @@ function pathArg(field: string): (args: unknown) => string | null {
   };
 }
 
+/** Exclude globs are matched against entry *names*; bounded so a call stays reviewable. */
+const excludeArg = (field: string) => (args: unknown): string | null => {
+  const v = (args as Record<string, unknown>)[field];
+  if (v === undefined) return null;
+  if (!Array.isArray(v)) return `${field}: expected an array of globs`;
+  if (v.length === 0) return `${field}: must not be empty`;
+  if (v.length > 10) return `${field}: too many entries (${v.length} > 10)`;
+  for (let i = 0; i < v.length; i++) {
+    const g = v[i];
+    if (typeof g !== "string" || g === "" || g.length > 100) {
+      return `${field}[${i}]: expected a glob string of 1..100 chars`;
+    }
+  }
+  return null;
+};
+
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
@@ -132,12 +148,14 @@ export function davConnector(deps: DavConnectorDeps): Connector {
         offset?: number;
         sort?: "name" | "modified" | "size";
         kind?: "file" | "dir" | "all";
+        exclude?: string[];
       }) =>
         await host.get(a.account).list(normalizePath(a.path), {
           limit: Math.min(a.limit ?? 100, 500),
           offset: Math.max(a.offset ?? 0, 0),
           sort: a.sort ?? "name",
           kind: a.kind ?? "all",
+          ...(a.exclude === undefined ? {} : { exclude: a.exclude }),
         })),
 
       "stat": wrap(
@@ -148,10 +166,11 @@ export function davConnector(deps: DavConnectorDeps): Connector {
 
       "get": wrap(
         "get",
-        async (a: { account: string; path: string; maxBytes?: number }) =>
+        async (a: { account: string; path: string; maxBytes?: number; offset?: number }) =>
           await host.get(a.account).get(
             normalizePath(a.path),
             Math.min(a.maxBytes ?? DEFAULT_INLINE_BYTES, DEFAULT_INLINE_BYTES),
+            Math.max(a.offset ?? 0, 0),
           ),
       ),
 
@@ -163,6 +182,7 @@ export function davConnector(deps: DavConnectorDeps): Connector {
         maxEntries?: number;
         maxMs?: number;
         kind?: "file" | "dir" | "all";
+        exclude?: string[];
       }) =>
         await host.get(a.account).find(normalizePath(a.path), {
           pattern: a.pattern,
@@ -170,6 +190,30 @@ export function davConnector(deps: DavConnectorDeps): Connector {
           maxEntries: Math.min(a.maxEntries ?? 100, 500),
           maxMs: Math.min(a.maxMs ?? 8_000, 20_000),
           kind: a.kind ?? "file",
+          ...(a.exclude === undefined ? {} : { exclude: a.exclude }),
+        })),
+
+      "grep": wrap("grep", async (a: {
+        account: string;
+        path?: string;
+        pattern: string;
+        namePattern?: string;
+        maxDepth?: number;
+        maxFiles?: number;
+        maxBytesPerFile?: number;
+        maxMatches?: number;
+        maxMs?: number;
+        exclude?: string[];
+      }) =>
+        await host.get(a.account).grep(normalizePath(a.path), {
+          pattern: a.pattern,
+          ...(a.namePattern === undefined ? {} : { namePattern: a.namePattern }),
+          maxDepth: Math.min(a.maxDepth ?? 2, 5),
+          maxFiles: Math.min(a.maxFiles ?? 20, 100),
+          maxBytesPerFile: Math.min(a.maxBytesPerFile ?? 64 * 1024, 256 * 1024),
+          maxMatches: Math.min(a.maxMatches ?? 50, 200),
+          maxMs: Math.min(a.maxMs ?? 8_000, 20_000),
+          ...(a.exclude === undefined ? {} : { exclude: a.exclude }),
         })),
 
       "quota": wrap("quota", async (a: { account: string }) => await host.get(a.account).quota()),
@@ -243,11 +287,13 @@ export function davConnector(deps: DavConnectorDeps): Connector {
         from: string;
         to: string;
         overwrite?: boolean;
+        ifMatch?: string;
       }) =>
         await host.get(a.account).move(
           normalizePath(a.from, "from"),
           normalizePath(a.to, "to"),
           a.overwrite === true,
+          a.ifMatch,
         )),
 
       "copy": wrap("copy", async (a: {
@@ -266,7 +312,9 @@ export function davConnector(deps: DavConnectorDeps): Connector {
         account: string;
         path: string;
         recursive?: boolean;
-      }) => await host.get(a.account).remove(normalizePath(a.path), a.recursive === true)),
+        ifMatch?: string;
+      }) =>
+        await host.get(a.account).remove(normalizePath(a.path), a.recursive === true, a.ifMatch)),
     };
   };
 
@@ -283,7 +331,9 @@ export function davConnector(deps: DavConnectorDeps): Connector {
       name: "dav.list",
       tier: "open",
       doc:
-        "One directory, depth 1. args: { account, path?, limit?, offset?, sort?, kind? } — path " +
+        "One directory, depth 1. args: { account, path?, limit?, offset?, sort?, kind?, exclude? } — " +
+        '`exclude` is globs matched against entry names (e.g. ["._*", ".DS_Store"]) so macOS ' +
+        "resource-fork junk stays out of the payload; path " +
         "defaults to the share root; sort is name|modified|size (default name; modified/size " +
         "newest/largest first); kind is file|dir|all. Returns { account, path, count, total, " +
         "offset, more, nextOffset, entries: [{ name, path, kind, size?, modified?, etag?, " +
@@ -298,6 +348,7 @@ export function davConnector(deps: DavConnectorDeps): Connector {
         optNum("limit"),
         optOneOf("sort", ["name", "modified", "size"]),
         optOneOf("kind", ["file", "dir", "all"]),
+        excludeArg("exclude"),
         (a) => {
           const r = a as { limit?: number };
           if (r.limit !== undefined && (r.limit < 1 || r.limit > 500)) {
@@ -320,22 +371,31 @@ export function davConnector(deps: DavConnectorDeps): Connector {
       name: "dav.get",
       tier: "open",
       doc:
-        "Read a text file inline. args: { account, path, maxBytes? } (default 64 KiB, cap 1 MiB). " +
-        "Returns { path, text, bytes, size?, truncated, contentType, etag? }. Binary content is " +
-        "refused with a pointer to dav.stage — do not try to read a PDF inline.",
+        "Read a text file inline, or a window of one. args: { account, path, maxBytes?, offset? } " +
+        "(maxBytes default 64 KiB, cap 1 MiB; offset is a byte position — Nextcloud honours it as " +
+        "a Range request, so a 1 MB log is walkable in slices instead of unreadable). Returns " +
+        "{ path, text, bytes, offset, size?, totalBytes?, nextOffset?, truncated, contentType, " +
+        "etag?, encodingIssue?, note? }: pass `nextOffset` back as `offset` to continue; `size` is " +
+        "the file's size when the server states it (never a bogus 0); `encodingIssue` means the " +
+        "bytes are not valid UTF-8 and `text` is lossy. Binary content is refused with a pointer to " +
+        "dav.stage.",
       argSchema: compose(
         rejectUnknown(),
         acc,
         str("path"),
         optNum("maxBytes"),
+        optNum("offset"),
         pathArg("path"),
         (a) => {
-          const r = a as { path?: string; maxBytes?: number };
+          const r = a as { path?: string; maxBytes?: number; offset?: number };
           if (r.path !== undefined && normalizePath(r.path).segments.length === 0) {
             return "path: the share root is a directory, not a file";
           }
           if (r.maxBytes !== undefined && (r.maxBytes < 1 || r.maxBytes > 1024 * 1024)) {
             return "maxBytes: expected 1..1048576";
+          }
+          if (r.offset !== undefined && (r.offset < 0 || r.offset > 1_073_741_824)) {
+            return "offset: expected 0..1073741824";
           }
           return null;
         },
@@ -351,7 +411,8 @@ export function davConnector(deps: DavConnectorDeps): Connector {
         "500), maxMs 8000 (cap 20000). Directories are walked in parallel, four at a time. Returns " +
         "{ scanned, matched, truncated, stoppedBy?, unscanned?, resumeFrom?, entries }. truncated is " +
         "honest: stoppedBy says whether depth, entries or time cut the walk, and `resumeFrom` lists " +
-        "the directories it never reached — find inside those instead of starting over." + HINT,
+        "the directories it never reached — find inside those instead of starting over. `exclude` " +
+        "globs filter entry names." + HINT,
       argSchema: compose(
         rejectUnknown(),
         acc,
@@ -362,6 +423,7 @@ export function davConnector(deps: DavConnectorDeps): Connector {
         optNum("maxEntries"),
         optNum("maxMs"),
         optOneOf("kind", ["file", "dir", "all"]),
+        excludeArg("exclude"),
         (a) => {
           const r = a as {
             pattern?: string;
@@ -375,6 +437,67 @@ export function davConnector(deps: DavConnectorDeps): Connector {
           }
           if (r.maxEntries !== undefined && (r.maxEntries < 1 || r.maxEntries > 500)) {
             return "maxEntries: expected 1..500";
+          }
+          if (r.maxMs !== undefined && (r.maxMs < 100 || r.maxMs > 20_000)) {
+            return "maxMs: expected 100..20000";
+          }
+          return null;
+        },
+      ),
+    },
+    {
+      name: "dav.grep",
+      tier: "open",
+      doc:
+        "Which files MENTION this text — content search over a bounded walk. args: { account, path?, " +
+        "pattern, namePattern?, maxDepth?, maxFiles?, maxBytesPerFile?, maxMatches?, maxMs?, exclude? }. " +
+        "`pattern` is a literal, case-insensitive substring (not a regex: a caller-supplied pattern " +
+        "is an invitation to catastrophic backtracking, and 'the file that says docathon' is the " +
+        'actual question); `namePattern` narrows which files are read, e.g. "*.md". Defaults: ' +
+        "maxDepth 2 (cap 5), maxFiles 20 (cap 100), maxBytesPerFile 64 KiB (cap 256 KiB), " +
+        "maxMatches 50, maxMs 8000. Returns { filesScanned, filesMatched, matchCount, truncated, " +
+        "stoppedBy?, skipped: { binary, tooLarge, unreadable, encoding }, hits: [{ path, line, " +
+        "text }] } — `skipped` is counted, never silently dropped. Prefer this over find+get for " +
+        "'where is X mentioned'; use dav.find when you know the name." + HINT,
+      argSchema: compose(
+        rejectUnknown(),
+        acc,
+        path,
+        pathArg("path"),
+        str("pattern"),
+        optStr("namePattern", 200),
+        optNum("maxDepth"),
+        optNum("maxFiles"),
+        optNum("maxBytesPerFile"),
+        optNum("maxMatches"),
+        optNum("maxMs"),
+        excludeArg("exclude"),
+        (a) => {
+          const r = a as {
+            pattern?: string;
+            maxDepth?: number;
+            maxFiles?: number;
+            maxBytesPerFile?: number;
+            maxMatches?: number;
+            maxMs?: number;
+          };
+          if (r.pattern !== undefined && (r.pattern.length < 2 || r.pattern.length > 200)) {
+            return "pattern: expected 2..200 chars (a shorter needle matches everything)";
+          }
+          if (r.maxDepth !== undefined && (r.maxDepth < 0 || r.maxDepth > 5)) {
+            return "maxDepth: expected 0..5";
+          }
+          if (r.maxFiles !== undefined && (r.maxFiles < 1 || r.maxFiles > 100)) {
+            return "maxFiles: expected 1..100";
+          }
+          if (
+            r.maxBytesPerFile !== undefined &&
+            (r.maxBytesPerFile < 1 || r.maxBytesPerFile > 256 * 1024)
+          ) {
+            return "maxBytesPerFile: expected 1..262144";
+          }
+          if (r.maxMatches !== undefined && (r.maxMatches < 1 || r.maxMatches > 200)) {
+            return "maxMatches: expected 1..200";
           }
           if (r.maxMs !== undefined && (r.maxMs < 100 || r.maxMs > 20_000)) {
             return "maxMs: expected 100..20000";
@@ -399,7 +522,9 @@ export function davConnector(deps: DavConnectorDeps): Connector {
         "fs.glob can work on it. args: { account, path, destName? }. Returns { remotePath, absPath, " +
         "path, fsRoot?, bytes, contentType, sha256 }. When the staging root sits inside a configured " +
         "fs root, `fsRoot` + `path` go straight into fs.read; keep the sha256 to prove what was " +
-        "staged. Staged copies are not pruned automatically — dav.staging.clear does that.",
+        "staged. A same-named download with identical bytes is reused (`reused: true`) instead of " +
+        "rewritten; different bytes at the same name are refused rather than clobbering — pass " +
+        "`destName` to keep both. Staged copies are not pruned automatically — dav.staging.clear.",
       argSchema: compose(
         rejectUnknown(),
         acc,
@@ -616,7 +741,9 @@ export function davConnector(deps: DavConnectorDeps): Connector {
       },
       doc:
         "Move or rename a file or directory within one account (server-side MOVE — no bytes travel). " +
-        "args: { account, from, to, overwrite? }. Without overwrite the server is told Overwrite: F, " +
+        "args: { account, from, to, overwrite?, ifMatch? }. Without overwrite the server is told " +
+        "Overwrite: F; `ifMatch` (the etag from dav.stat) makes a changed source a 412 instead of " +
+        "moving the wrong bytes. " +
         "so an existing target is a 412 rather than a silent replacement. Returns { moved: { from, " +
         "to }, overwritten }. Cross-account moves are not supported: copy is not either, both stay " +
         "inside the account's share root.",
@@ -626,6 +753,7 @@ export function davConnector(deps: DavConnectorDeps): Connector {
         from,
         to,
         optBool("overwrite"),
+        optStr("ifMatch", 200),
         pathArg("from"),
         pathArg("to"),
         writable("dav.move"),
@@ -690,7 +818,9 @@ export function davConnector(deps: DavConnectorDeps): Connector {
           `this server; prefer dav.move into a _trash/ folder if the content must survive.`;
       },
       doc:
-        "Delete a file, or a directory with recursive: true. args: { account, path, recursive? }. " +
+        "Delete a file, or a directory with recursive: true. args: { account, path, recursive?, " +
+        "ifMatch? } — `ifMatch` (the etag from dav.stat) refuses to delete a file that changed " +
+        "since you read it. " +
         "A non-empty directory is refused without recursive: true, so removing a tree is always two " +
         "explicit decisions. No grant or remembered approval ever covers this op. Returns { deleted, " +
         "kind }.",
@@ -699,6 +829,7 @@ export function davConnector(deps: DavConnectorDeps): Connector {
         acc,
         str("path"),
         optBool("recursive"),
+        optStr("ifMatch", 200),
         pathArg("path"),
         writable("dav.delete"),
         (a) => {

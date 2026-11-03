@@ -1,15 +1,6 @@
 import { assert, assertEquals, assertStringIncludes } from "jsr:@std/assert@1";
-import { deployConfigFrom, deployConnector } from "../src/connectors/deploy/manifest.ts";
 import { denopsConnector } from "../src/connectors/denops/manifest.ts";
-import { devConnector, devRootsFromConfig } from "../src/connectors/dev/manifest.ts";
-import { davConnector } from "../src/connectors/dav/manifest.ts";
-import { fsConnector } from "../src/connectors/fs/manifest.ts";
-import { forgeConnector } from "../src/connectors/forge/manifest.ts";
-import { stubPort } from "./forge_stub.ts";
-import { imapConnector } from "../src/connectors/imap/manifest.ts";
-import { mistralConnector } from "../src/connectors/mistral/manifest.ts";
-import { webConnector } from "../src/connectors/web/manifest.ts";
-import type { Connector } from "../src/harness/types.ts";
+import { allConnectors } from "./connector_set.ts";
 
 // SKILL.md is the prompt-facing contract; it is served by the denops.skill op. This
 // test is the anti-drift gate: it fails when the doc and the code disagree, so a
@@ -17,68 +8,6 @@ import type { Connector } from "../src/harness/types.ts";
 
 const skillPath = new URL("../SKILL.md", import.meta.url).pathname;
 const skill = await Deno.readTextFile(skillPath);
-
-async function allConnectors(): Promise<Connector[]> {
-  const tmp = await Deno.makeTempDir();
-  const devRoots = devRootsFromConfig([{
-    name: "devroot",
-    path: tmp,
-    tasks: { test: ["/usr/bin/true"] },
-  }]);
-  const deploy = deployConfigFrom(
-    { enabled: true, liveDir: tmp, devBranch: "main" },
-    devRoots,
-    tmp,
-  );
-  return [
-    forgeConnector({
-      accounts: [{
-        id: "ebrains",
-        flavor: "gitlab",
-        origin: "https://gitlab.example",
-        apiPath: "/api/v4",
-        token: "t",
-        maxLimit: 100,
-      }],
-      buildPort: () => stubPort(),
-    }),
-    mistralConnector({ apiKey: "k", origin: "https://api.mistral.ai", apiPath: "/v1" }),
-    imapConnector({
-      accounts: [{
-        id: "a",
-        host: "imap.example.org",
-        port: 993,
-        tls: true,
-        user: "u",
-        password: "p",
-        draftsMailbox: "Drafts",
-      }],
-    }),
-    fsConnector({
-      roots: [{ name: "r", path: tmp, write: true, exec: false }],
-      maxFileSize: 1024,
-      maxOutput: 1024,
-      execTimeoutSec: 5,
-      maxConcurrentExec: 1,
-    }),
-    devConnector({ roots: devRoots }),
-    webConnector({ allowedHosts: ["example.org"] }),
-    davConnector({
-      accounts: [{
-        id: "nc",
-        origin: "https://nc.example.org",
-        shareRoot: "/remote.php/dav/files/u",
-        user: "u",
-        auth: "basic",
-        password: "p",
-        writable: true,
-      }],
-      stagingRoot: tmp,
-    }),
-    ...(deploy ? [deployConnector(deploy)] : []),
-    denopsConnector({ skillPath, version: "0.3.0", connectors: () => [] }),
-  ];
-}
 
 Deno.test("SKILL.md names only ops that exist", async () => {
   const connectors = await allConnectors();
@@ -112,10 +41,11 @@ Deno.test("SKILL.md covers every connector family and its op count", async () =>
   for (const c of connectors) {
     assertStringIncludes(skill, `**${c.id}**`, `missing crib-sheet section for ${c.id}`);
     const count = c.ops.filter((o) => o.tier !== "absent").length;
-    // "(1 op)" and "(4 ops)" are both fine: only the number has to match
+    // The count has to sit next to the family name, not just exist somewhere in the
+    // file: the old "anywhere" check let `denops` drift from 5 to 6 ops unnoticed.
     assert(
-      new RegExp(`\\(${count} op(s)?\\)`).test(skill),
-      `missing "(${count} ops)" for ${c.id}`,
+      new RegExp(`\\*\\*${c.id}\\*\\*[^*\\n]{0,40}\\(${count} op(s)?\\)`).test(skill),
+      `missing "(${count} ops)" right after **${c.id}**`,
     );
   }
 });
@@ -139,7 +69,11 @@ Deno.test("SKILL.md states the invariants the server enforces", () => {
   ) {
     assertStringIncludes(skill, needle);
   }
-  assert(skill.length < 12_000, `SKILL.md should stay compact, got ${skill.length} chars`);
+  // Budget: one crib entry per connector family, ~1.2k each, ten families. It was 12k
+  // when there were seven, which is how it ended up being trimmed to fit by single
+  // digits — the wrong way to keep a contract sheet honest. Raise this deliberately
+  // when a family is added; compress only when an entry restates an op's own docs.
+  assert(skill.length < 12_800, `SKILL.md should stay compact, got ${skill.length} chars`);
   assertStringIncludes(skill, "MAINTENANCE");
 });
 

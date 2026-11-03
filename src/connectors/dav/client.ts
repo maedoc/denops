@@ -130,6 +130,46 @@ const QUOTA_PROPS: PropRef[] = [
   { ns: OC, name: "quota-used-bytes" },
 ];
 
+/**
+ * `size`/`totalBytes` from the response headers, without lying: `Number(null)` is 0, so
+ * a missing content-length must not become "0 bytes", and a compressed body's
+ * content-length is the compressed length, not the file's.
+ */
+function sizeFields(
+  headers: Headers,
+  _ranged: boolean,
+): { size?: number; totalBytes?: number } {
+  const out: { size?: number; totalBytes?: number } = {};
+  // A ranged response states the file's real size; a whole-body content-length only
+  // does so when the body was not compressed.
+  const rangedTotal = /\/(\d+)\s*$/.exec(headers.get("content-range") ?? "")?.[1];
+  if (rangedTotal !== undefined) {
+    out.totalBytes = Number(rangedTotal);
+    out.size = Number(rangedTotal);
+    return out;
+  }
+  const declared = headers.get("content-length");
+  if (declared !== null && headers.get("content-encoding") === null) {
+    const n = Number(declared);
+    if (Number.isFinite(n)) out.size = n;
+  }
+  return out;
+}
+
+function isValidUtf8(bytes: Uint8Array): boolean {
+  try {
+    new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** UTF-8, lossy on purpose: the caller is told via `encodingIssue` rather than guessing. */
+function decodeText(bytes: Uint8Array): string {
+  return new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+}
+
 function basicAuth(user: string, password: string): string {
   return `Basic ${btoa(`${user}:${password}`)}`;
 }
@@ -264,6 +304,13 @@ async function readCapped(
     off += c.byteLength;
   }
   return out;
+}
+
+/** Compile caller-supplied exclude globs (matched against the entry *name*). */
+export function excludeMatchers(
+  globs: readonly string[] | undefined,
+): Array<(name: string) => boolean> {
+  return (globs ?? []).map((g) => globToRegExp(g));
 }
 
 class DavAccount {
@@ -509,6 +556,7 @@ class DavAccount {
       offset: number;
       sort: "name" | "modified" | "size";
       kind: DavEntryKind;
+      exclude?: readonly string[];
     },
   ): Promise<JsonValue> {
     const responses = await this.propfind(path, "1");
@@ -525,7 +573,11 @@ class DavAccount {
       const entry = this.entryOf(r.href, r, ENTRY_PROPS, this.origin);
       if (entry) entries.push(entry);
     }
-    const filtered = opts.kind === "all" ? entries : entries.filter((e) => e.kind === opts.kind);
+    const excluded = excludeMatchers(opts.exclude);
+    const keep = (e: DavEntry) =>
+      (opts.kind === "all" || e.kind === opts.kind) &&
+      !excluded.some((m) => m(e.name));
+    const filtered = entries.filter(keep);
     const sorted = [...filtered].sort((a, b) => {
       if (opts.sort === "name") return a.name.localeCompare(b.name);
       if (opts.sort === "size") return (b.size ?? -1) - (a.size ?? -1);
@@ -595,19 +647,27 @@ class DavAccount {
     op: string,
     path: DavPath,
     cap: number,
+    offset = 0,
   ): Promise<{
     text: string;
     bytes: number;
+    offset: number;
     size?: number;
+    totalBytes?: number;
+    nextOffset?: number;
     truncated: boolean;
     contentType: string;
     etag?: string;
+    encodingIssue?: true;
   }> {
     const meta = await this.requireFile(op, path);
+    // Nextcloud answers `Range` (206 + content-range), which is what makes a window of a
+    // large log/CSV readable without paying for the whole file.
     const reply = await this.expect("GET", this.urlOf(path), {
-      ok: [200],
+      ok: [200, 206],
       maxBytes: cap + 1,
       partial: true,
+      ...(offset > 0 ? { headers: { range: `bytes=${offset}-${offset + cap - 1}` } } : {}),
       path: path.rel,
     });
     const contentType = bareType(reply.headers.get("content-type")) ?? contentTypeFor(path.rel);
@@ -620,23 +680,37 @@ class DavAccount {
     }
     const truncated = reply.bytes.byteLength > cap;
     const slice = truncated ? reply.bytes.subarray(0, cap) : reply.bytes;
-    const declared = Number(reply.headers.get("content-length") ?? "");
     return {
-      text: this.decode(slice),
-      bytes: reply.bytes.byteLength,
-      ...(Number.isFinite(declared) ? { size: declared } : {}),
+      text: decodeText(slice),
+      bytes: slice.byteLength,
+      offset,
+      ...sizeFields(reply.headers, truncated || offset > 0),
       truncated,
+      ...(truncated ? { nextOffset: offset + slice.byteLength } : {}),
       contentType,
       ...(meta.etag === undefined ? {} : { etag: meta.etag }),
+      ...(isValidUtf8(slice) ? {} : { encodingIssue: true as const }),
     };
   }
 
-  async get(path: DavPath, maxBytes: number): Promise<JsonValue> {
-    const read = await this.readInline("dav.get", path, Math.min(maxBytes, MAX_INLINE_BYTES));
+  async get(path: DavPath, maxBytes: number, offset = 0): Promise<JsonValue> {
+    const read = await this.readInline(
+      "dav.get",
+      path,
+      Math.min(maxBytes, MAX_INLINE_BYTES),
+      offset,
+    );
     return {
       account: this.id,
       path: path.rel,
       ...read,
+      ...(read.encodingIssue
+        ? {
+          note:
+            "not valid UTF-8 — the text above is lossy. dav.stage the file if the exact bytes " +
+            "matter (a Latin-1/Windows-1252 export is the usual cause)",
+        }
+        : {}),
     } as JsonValue;
   }
 
@@ -696,6 +770,13 @@ class DavAccount {
           `dav.edit ${JSON.stringify(path.rel)}: the file is larger than maxBytes ` +
             `(${read.bytes} bytes read). An edit needs the whole file — raise maxBytes, or ` +
             `stage it and write the result with dav.putStaged`,
+        );
+      }
+      if (read.encodingIssue) {
+        throw new Error(
+          `dav.edit ${JSON.stringify(path.rel)}: the file is not valid UTF-8, so a read-modify-` +
+            `write would corrupt it. Convert it, or stage it and write the result with ` +
+            `dav.putStaged`,
         );
       }
       before = read.text;
@@ -800,9 +881,12 @@ class DavAccount {
       maxEntries: number;
       maxMs: number;
       kind: DavEntryKind;
+      exclude?: readonly string[];
     },
   ): Promise<JsonValue> {
     const glob = globToRegExp(opts.pattern);
+    const excluded = excludeMatchers(opts.exclude);
+    const skip = (e: DavEntry) => excluded.some((m) => m(e.name));
     const matches: DavEntry[] = [];
     let scanned = 0;
     let stoppedBy: "depth" | "entries" | "time" | null = null;
@@ -829,6 +913,7 @@ class DavAccount {
         }
         scanned += 1;
         for (const e of entries) {
+          if (skip(e)) continue;
           if (e.kind === "dir") {
             if (e.name !== ".snapshot" && e.name !== "versions") {
               if (depth + 1 > opts.maxDepth) {
@@ -872,6 +957,95 @@ class DavAccount {
         resumeFrom: pending.slice(0, 10).map((p) => p.rel),
       }),
       entries: matches,
+    } as unknown as JsonValue;
+  }
+
+  /**
+   * Content search: which files *mention* this text. Built on the same bounded walk as
+   * find, then one text-only GET per candidate under a per-file cap — deliberately
+   * literal and case-insensitive, not a regex: a caller-supplied pattern is an
+   * invitation to catastrophic backtracking, and "find the file that says docathon" is
+   * the actual question. Binary and oversized files are skipped and counted, never
+   * silently dropped.
+   */
+  async grep(
+    path: DavPath,
+    opts: {
+      pattern: string;
+      namePattern?: string;
+      maxDepth: number;
+      maxFiles: number;
+      maxBytesPerFile: number;
+      maxMatches: number;
+      maxMs: number;
+      exclude?: readonly string[];
+    },
+  ): Promise<JsonValue> {
+    const deadline = Date.now() + opts.maxMs;
+    const found = await this.find(path, {
+      pattern: opts.namePattern ?? "*",
+      maxDepth: opts.maxDepth,
+      maxEntries: opts.maxFiles * 4,
+      maxMs: Math.max(Math.floor(opts.maxMs / 2), 200),
+      kind: "file",
+      ...(opts.exclude === undefined ? {} : { exclude: opts.exclude }),
+    }) as unknown as { entries: DavEntry[]; truncated: boolean; stoppedBy?: string };
+    const needle = opts.pattern.toLowerCase();
+    const hits: Array<{ path: string; line: number; text: string }> = [];
+    const skipped = { binary: 0, tooLarge: 0, unreadable: 0, encoding: 0 };
+    let filesScanned = 0;
+    let stoppedBy: string | null = found.truncated ? "walk" : null;
+    for (const entry of found.entries) {
+      if (hits.length >= opts.maxMatches) {
+        stoppedBy = stoppedBy ?? "matches";
+        break;
+      }
+      if (Date.now() > deadline) {
+        stoppedBy = stoppedBy ?? "time";
+        break;
+      }
+      const entryPath = normalizePath(entry.path);
+      let read: Awaited<ReturnType<DavAccount["readInline"]>>;
+      try {
+        read = await this.readInline("dav.grep", entryPath, opts.maxBytesPerFile);
+      } catch (err) {
+        const msg = (err as Error).message;
+        if (msg.includes("not text")) skipped.binary += 1;
+        else if (msg.includes("byte cap")) skipped.tooLarge += 1;
+        else skipped.unreadable += 1;
+        continue;
+      }
+      filesScanned += 1;
+      if (read.encodingIssue) {
+        // Lossy text can still match and is worth reporting, but say so once per file.
+        skipped.encoding += 1;
+      }
+      const lines = read.text.split("\n");
+      for (let i = 0; i < lines.length; i++) {
+        if (lines[i].toLowerCase().includes(needle)) {
+          hits.push({
+            path: entry.path,
+            line: i + 1,
+            text: lines[i].trim().slice(0, 300),
+          });
+          if (hits.length >= opts.maxMatches) {
+            stoppedBy = stoppedBy ?? "matches";
+            break;
+          }
+        }
+      }
+    }
+    return {
+      account: this.id,
+      path: path.rel,
+      pattern: opts.pattern,
+      filesScanned,
+      filesMatched: new Set(hits.map((h) => h.path)).size,
+      matchCount: hits.length,
+      truncated: stoppedBy !== null,
+      ...(stoppedBy === null ? {} : { stoppedBy }),
+      skipped,
+      hits,
     } as unknown as JsonValue;
   }
 
@@ -941,12 +1115,35 @@ class DavAccount {
     await Deno.mkdir(dir, { recursive: true });
     const base = destName ?? (path.rel.split("/").pop() ?? "download");
     const target = `${dir}/${sanitizeName(base)}`;
-    await Deno.writeFile(target, reply.bytes);
     const digest = await crypto.subtle.digest(
       "SHA-256",
       reply.bytes.slice() as unknown as ArrayBuffer,
     );
     const sha256 = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+    // Same name, different bytes would silently replace a file another run is reading:
+    // reuse the identical copy, refuse the different one and name the escape hatch.
+    let reused = false;
+    try {
+      const existing = await Deno.readFile(target);
+      const existingDigest = await crypto.subtle.digest(
+        "SHA-256",
+        existing.slice() as unknown as ArrayBuffer,
+      );
+      const existingSha = [...new Uint8Array(existingDigest)]
+        .map((b) => b.toString(16).padStart(2, "0")).join("");
+      if (existingSha === sha256) {
+        reused = true;
+      } else {
+        throw new Error(
+          `dav.stage: a different file is already staged as ${JSON.stringify(base)} ` +
+            `(sha256 ${existingSha.slice(0, 12)}… vs ${sha256.slice(0, 12)}…). Pass destName to ` +
+            `keep both, or dav.staging.clear first`,
+        );
+      }
+    } catch (err) {
+      if (!(err instanceof Deno.errors.NotFound)) throw err;
+    }
+    if (!reused) await Deno.writeFile(target, reply.bytes);
     return {
       account: this.id,
       remotePath: path.rel,
@@ -955,6 +1152,7 @@ class DavAccount {
       bytes: reply.bytes.byteLength,
       contentType,
       sha256,
+      ...(reused ? { reused: true } : {}),
     } as unknown as JsonValue;
   }
 
@@ -1134,6 +1332,7 @@ class DavAccount {
     from: DavPath,
     to: DavPath,
     overwrite: boolean,
+    ifMatch?: string,
   ): Promise<JsonValue> {
     this.requireWritable(`dav.${op}`);
     if (from.rel === "") throw new Error(`dav.${op}: the share root cannot be moved`);
@@ -1143,6 +1342,7 @@ class DavAccount {
       headers: {
         destination: destination.href,
         overwrite: overwrite ? "T" : "F",
+        ...(ifMatch === undefined ? {} : { "if-match": ifMatch }),
       },
     });
     if (![201, 204].includes(reply.status)) {
@@ -1155,25 +1355,42 @@ class DavAccount {
     } as unknown as JsonValue;
   }
 
-  move(from: DavPath, to: DavPath, overwrite: boolean): Promise<JsonValue> {
-    return this.transfer("move", from, to, overwrite);
+  move(
+    from: DavPath,
+    to: DavPath,
+    overwrite: boolean,
+    ifMatch?: string,
+  ): Promise<JsonValue> {
+    return this.transfer("move", from, to, overwrite, ifMatch);
   }
 
   copy(from: DavPath, to: DavPath, overwrite: boolean): Promise<JsonValue> {
     return this.transfer("copy", from, to, overwrite);
   }
 
-  async remove(path: DavPath, recursive: boolean): Promise<JsonValue> {
+  async remove(
+    path: DavPath,
+    recursive: boolean,
+    ifMatch?: string,
+  ): Promise<JsonValue> {
     this.requireWritable("dav.delete");
     if (path.rel === "") throw new Error("dav.delete: refusing to delete the share root");
-    const stat = await this.stat(path) as { kind: string; size?: number };
+    const stat = await this.stat(path) as { kind: string; size?: number; etag?: string };
     if (stat.kind === "dir" && !recursive) {
       throw new Error(
         `dav.delete ${JSON.stringify(path.rel)}: it is a directory. Passing recursive: true ` +
           `deletes it and everything inside it — that has to be explicit`,
       );
     }
-    const reply = await this.send("DELETE", this.urlOf(path), {});
+    if (ifMatch !== undefined && stat.etag !== undefined && ifMatch !== stat.etag) {
+      throw new Error(
+        `dav.delete ${JSON.stringify(path.rel)}: 412 — the file changed since you read it. ` +
+          `Re-read with dav.stat and delete with the current etag`,
+      );
+    }
+    const reply = await this.send("DELETE", this.urlOf(path), {
+      ...(ifMatch === undefined ? {} : { headers: { "if-match": ifMatch } }),
+    });
     if (![200, 204].includes(reply.status)) {
       throw failure("dav.delete", path.rel, reply.status, this.decode(reply.bytes));
     }

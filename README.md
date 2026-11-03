@@ -5,10 +5,11 @@ Mode** pattern: instead of enumerating every API operation as an MCP tool, the s
 `search`, `execute`, `approve` (plus `grants` when a filesystem root is configured) and the model
 writes JavaScript that runs in a sandboxed worker against pre-authenticated, host-side API clients.
 
-It ships with connectors for GitLab, IMAP mail (threaded reply drafts included), Mistral libraries,
-the local filesystem, a guarded `web.fetch`, and — for this deployment — a narrow "dev/deploy"
-surface that lets an agent improve the server's own code without a shell, with an approval-gated,
-auto-reverting deployment pipeline. `CHANGELOG.md` records what each running version can do;
+It ships with connectors for code hosts (GitLab, Forgejo, GitHub — one `forge` family, same op
+names), IMAP mail (threaded reply drafts included), WebDAV/Nextcloud files (`dav`), CalDAV calendars,
+Mistral libraries, the local filesystem, a guarded `web.fetch`, and — for this deployment — a narrow
+"dev/deploy" surface that lets an agent improve the server's own code without a shell, with an
+approval-gated, auto-reverting deployment pipeline. `CHANGELOG.md` records what each running version can do;
 `denops.version` serves it from inside a run.
 
 ---
@@ -213,7 +214,7 @@ MB), `maxOpArgsBytes`, `maxLogBytes`.
 
 Enable in `config.yaml`; every connector's ops appear in `search` and are tiered individually.
 
-### denops (5 ops) — the skill sheet and the server's self-report
+### denops (6 ops) — the skill sheet and the server's self-report
 
 `denops.skill({section?})` returns `SKILL.md` (the prompt-facing contract, cached by mtime);
 `denops.about()` returns version, `SKILL.md` freshness/length and the connector families this
@@ -236,23 +237,28 @@ testing does not belong in the permanent registry of a production server, and `d
 the same code paths against real code. Enable it in a dev config when you want the plumbing probes
 (and remember to update `SKILL.md` — the drift test only knows what a config registers).
 
-### gitlab (27 ops) — read + write, curated and generic
+### forge (27 ops) — read + write, one family over three flavors
 
-| group         | ops                                                                                                                                                                         |
-| ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| projects      | `projects.list`, `projects.get`, `projects.search`, `projects.create` _(approval)_, `projects.update` _(approval)_                                                          |
-| issues        | `issues.list` (defaults `state: opened`), `issues.get`, `issues.notes.list`, `issues.create` _(approval)_, `issues.update` _(approval)_, `issues.notes.create` _(approval)_ |
-| MRs           | `mergeRequests.list`, `mergeRequests.get`, `mergeRequests.changes.get`, `mergeRequests.create` _(approval)_, `mergeRequests.comment` _(approval)_                           |
-| repo          | `repository.files.get`, `repository.files.create` _(approval)_, `repository.tree.list`, `repository.commits.list`, `repository.branches.list`                               |
-| people/groups | `users.current`, `users.get` (exact username), `users.search` (fuzzy — prefer `users.get` for `assignee_ids`), `groups.list`                                                |
-| generic       | `gitlab.get({path, query?})` (open, any GET under `/api/v4`), `gitlab.mutate({method, path, query?, body?})` _(approval)_                                                   |
+`forge.accounts` lists the configured accounts (id, flavor, origin — never a token); every other op
+takes `account`, so the same call works against GitLab, Forgejo and GitHub. Normalized vocabulary:
+`pulls` are merge requests on GitLab, `orgs` are groups.
 
-Generic ops resolve against the pinned origin and API root (no scheme/host/`..`/`//`/whitespace),
-validate `query`/`body`, and refuse credential-bearing reads (`variables`, `*_tokens`,
-`secure_files`, `identities`, …). Issue write ops accept `assignee_ids`, `due_date` (`YYYY-MM-DD`),
-`labels` and `milestone_id`.
+| group         | ops                                                                                                                                                                            |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| projects      | `projects.list`, `projects.get`, `projects.search`                                                                                                                             |
+| issues        | `issues.list`, `issues.get`, `issues.notes.list`, `issues.create` _(approval)_, `issues.update` _(approval)_, `issues.notes.create` _(approval)_                               |
+| PRs           | `pulls.list`, `pulls.get`, `pulls.changes.get`, `pulls.create` _(approval)_, `pulls.comment` _(approval)_, `pulls.merge` _(approval)_                                          |
+| repo          | `repository.files.get`, `repository.files.create` _(approval)_, `repository.tree.list`, `repository.commits.list`, `repository.branches.list`                                  |
+| people/orgs   | `users.current`, `users.get` (exact username), `users.search` (fuzzy), `orgs.list`                                                                                             |
+| generic       | `api.get({account, path, query?})` (open, any GET under that account's pinned root), `mutate({account, method, path, query?, body?})` _(approval)_                             |
 
-### imap (10 ops) — mail, read-only plus drafts
+Generic ops resolve against the account's pinned origin and API root (no scheme/host/`..`/`//`/
+whitespace), validate `query`/`body`, and refuse credential-bearing reads (`variables`, `*_tokens`,
+`secure_files`, `identities`, …). Flavor differences that matter are normalized in the adapters
+rather than exposed: `tree.list` at the repository root asks GitHub for `/contents` (its edge 503s on
+`/contents/`), and a missing `ref` resolves to the default branch on all three.
+
+### mail (10 ops) — IMAP, read-only plus drafts
 
 `mail.accounts`, `mail.mailboxes.list`, `mail.messages.list` (newest-first,
 `{mailbox,total,page,limit,messages[]}`), `mail.messages.search` (server-side IMAP SEARCH, returns
@@ -330,6 +336,65 @@ run** (tracked in run state), so a chat can build and clean up its own library f
 human to touch `hdr`, `E4HB`, … Set `connectors.mistral.allowOpenUploads: true` for the old, ungated
 behaviour.
 
+### calendar (8 ops) — CalDAV, read and write under ETag discipline
+
+`calendar.accounts`, `calendar.calendars.list` (which collections hold VEVENT vs VTODO — the event
+ops are VEVENT-only and refuse a VTODO calendar rather than report it empty),
+`calendar.events.list({account, calendar, from, to, limit?})` (window **required**, ≤ 366 days: one
+calendar can serialise to over 1 MB and the server expands recurrence), `calendar.events.get` (by
+uid), `calendar.events.search` (substring, client-side — CalDAV text-match support varies too much).
+
+Writes are approval-tier: `calendar.events.create` (sends `If-None-Match: *`, so an existing UID is a
+conflict), and `calendar.events.update` / `calendar.events.delete`, both of which need the current
+`etag` (a stale one is a 412, never a lost change). Updates are read-modify-write, so `VALARM`,
+`VTIMEZONE` and vendor properties survive. `reminders: [{ minutesBefore, description? }]` becomes a
+DISPLAY `VALARM`.
+
+**`ATTENDEE`/`ORGANIZER` and `EMAIL` alarms are refused** in `argSchema`: iCloud advertises
+calendar-auto-schedule, so a write carrying attendees can email real people. Discovery PROPFINDs the
+account origin and follows `current-user-principal` → `calendar-home-set`; iCloud's per-partition
+`pNN-caldav.icloud.com` host is granted automatically. A Nextcloud account needs its `/remote.php/
+dav/` root, because Nextcloud answers PROPFIND on `/` with 405.
+
+### dav (16 ops) — WebDAV / Nextcloud files, shaped for a model with a byte budget
+
+One address form: `dav.accounts` gives each account's `shareRoot`, and every other op takes `path`
+relative to it (`""` is the root, no leading `/`, no `..`) and returns that same form, so paths
+round-trip. Root and credentials live in config, never in an argument — that is what makes traversal
+structural rather than filtered (`src/connectors/dav/paths.ts` splits the path, refuses `..`,
+absolute, backslash and control characters, and percent-encodes each segment on its own).
+
+| group    | ops                                                                                                                                                    |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| read     | `list` (depth 1; `offset`/`nextOffset` page it, `sort`, `kind`, `exclude` globs), `stat` (the etag writes need), `find` (bounded parallel name walk)     |
+| read     | `get` (`maxBytes` + `offset` → Range windows), `grep` (literal content search over a bounded walk), `quota`                                             |
+| staging  | `stage` (any file → host staging root, sha256 + the `fsRoot`/`path` `fs.read` wants), `staging.clear`                                                  |
+| write \* | `edit` (read-modify-write in one call), `put`, `putStaged` (binary up), `mkdir`, `move`, `copy`, `delete`                                               |
+
+`*` approval-tier. **Create-only by default**: `put`/`putStaged` send `If-None-Match: *` unless given
+`overwrite: true` or the `ifMatch` etag from `stat`/`get`; `move`/`copy` send `Overwrite: F`; `delete`
+needs `recursive: true` for a directory and is never covered by a grant. `dav.edit` writes with the
+etag of the read it just made, so a concurrent change is a 412 rather than a lost update.
+
+```yaml
+connectors:
+  dav:
+    enabled: true
+    stagingRoot: /home/freebox/denops-stage/dav   # inside a configured fs root
+    accounts:
+      - id: work
+        origin: https://cloud.example.org
+        shareRoot: /remote.php/dav/files/alice
+        user: alice
+        auth: basic            # basic = app password; bearer = token
+        writable: false        # false ⇒ every mutating op is refused before approval
+        # password lives in secrets.json as dav.work.password
+```
+
+`writable: false` is always a config decision, not a credential limit — the note in `dav.accounts`
+says so, because "read-only and no reason given" is the kind of mystery that wastes a run. Non-UTF-8
+text is flagged (`encodingIssue`) instead of being silently mangled, and `edit` refuses it outright.
+
 ### fs (10 ops) — local filesystem, root-allowlisted
 
 Read/write/glob/exec against **named, allowlisted root directories**. The model addresses roots by
@@ -380,7 +445,7 @@ The guard is the point, in three fail-closed layers:
 3. **Redirects** are followed manually (max 3) and re-validated at every hop; bodies are capped and
    only textual content-types are returned (a PDF is refused, not silently truncated into mojibake).
 
-### dev (4 ops) — work on code without a shell
+### dev (5 ops) — work on code without a shell
 
 ```yaml
 connectors:

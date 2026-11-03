@@ -97,11 +97,10 @@ named roots only (`fs.roots` lists them): `glob`, `list`, `read` (line windows w
   `fs:<root>:write` (implies read); `fs.rm`/`fs.exec` are never grant-covered.
   `grants({action, key})`. **denops** (6 ops) — `denops.skill` (this document; `{ section }`
   filters), `denops.about` (version, skill freshness, connector families, `degraded` + why),
-  `denops.version` (version, commit, CHANGELOG head — check this instead of probing whether a fix
-  deployed), `denops.budget` (remaining wall clock and op count for THIS run — call it before long
-  loops or multi-step writes), `denops.oplog` (read-only, redacted run log: recent runs, their ops,
-  statuses, approval/error counts; no args, no result bodies). A non-empty `about().degraded` means
-  that family failed its startup reachability probe: only its own ops fail, the server is up.
+  `denops.version` (version, commit, CHANGELOG head — check this, do not probe whether a fix
+  deployed), `denops.budget` (wall clock and ops left in THIS run — call it before a long loop),
+  `denops.oplog` (redacted run log: statuses and counts, no args or bodies). A non-empty
+  `about().degraded` means that family failed its startup probe: only its ops fail, the server is up.
 
 **calendar** (8 ops) — CalDAV (iCloud, Nextcloud). `calendar.accounts`, `calendar.calendars.list`
 (says which collections hold VEVENT vs VTODO — event ops are VEVENT-only and refuse a VTODO one
@@ -115,12 +114,13 @@ overwritten; update is read-modify-write so `VALARM`/vendor props survive).
 before the start; `events.get` returns them; an update replaces DISPLAY alarms only).
 **ATTENDEE/ORGANIZER and EMAIL alarms are refused**: iCloud auto-schedules and would send real mail.
 
-**dav** (15 ops) — WebDAV/Nextcloud files. `dav.accounts` gives each `shareRoot` and why it is read-only if
+**dav** (16 ops) — WebDAV/Nextcloud files. `dav.accounts` gives each `shareRoot` and why it is read-only if
 it is; every op takes `path` relative to it ("" = root, no "/" or ".." prefix) and returns that form. Reads: `dav.list` (depth 1; `offset`/`nextOffset` page it), `dav.stat` (fresh
 `etag`), `dav.get` (text only, 64 KiB default — **binary refused → `dav.stage`**),
 `dav.find({pattern})` (parallel bounded walk; `stoppedBy`/`resumeFrom` say what it never reached),
-`dav.quota`, `dav.stage`/`dav.staging.clear` (bytes onto the host: `staged` for `putStaged`,
-`fsRoot`+`path` for `fs.read`). Writes are approval: `dav.edit({path, append?, prepend?, replace?})`
+`dav.grep({pattern, namePattern?})` (which files *mention* it — literal, bounded, counts what it
+skipped), `dav.get` windows (`offset` → `nextOffset`), `dav.quota`, `dav.stage`/`dav.staging.clear`
+(bytes onto the host: `staged` for `putStaged`, `fsRoot`+`path` for `fs.read`). Writes are approval: `dav.edit({path, append?, prepend?, replace?})`
 is read-modify-write in **one** call, and its write carries the etag of the read it just made
 (literal `replace`; no match is an error unless that entry is `optional`); then `dav.put({path, text,
 overwrite?, ifMatch?})`, `dav.putStaged`, `dav.mkdir`, `dav.move`, `dav.copy`, `dav.delete` (a
