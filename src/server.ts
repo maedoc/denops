@@ -184,8 +184,11 @@ export async function buildApp(configPath: string, secretsPath: string): Promise
       const origin = String(a.origin ?? "");
       if (origin === "") throw new Error(`forge account ${id}: origin is required`);
       const apiPath = String(a.apiPath ?? defaultApiPath(flavor));
-      if (!apiPath.startsWith("/")) {
-        throw new Error(`forge account ${id}: apiPath must start with '/' (got '${apiPath}')`);
+      // GitHub's REST root is the origin itself, so "" is the correct value there.
+      if (apiPath !== "" && !apiPath.startsWith("/")) {
+        throw new Error(
+          `forge account ${id}: apiPath must be empty or start with '/' (got '${apiPath}')`,
+        );
       }
       const fromSecrets = (forgeSecrets[id] ?? {}) as Record<string, unknown>;
       const token = String(fromSecrets.token ?? (flavor === "gitlab" ? legacyGitlab : ""));
@@ -296,7 +299,7 @@ export async function buildApp(configPath: string, secretsPath: string): Promise
       skillPath: "SKILL.md",
       // Keep in step with deno.json and the CHANGELOG head; tests/version_test.ts fails
       // when they drift, because denops.version is how a run learns what it is talking to.
-      version: "0.8.0",
+      version: "0.9.0",
       // the supervisor exports the commit it checked out
       // The env-reading child (dev_try) runs with no --allow-env; the commit is
       // informational, so an inaccessible DENOPS_COMMIT is just "unknown" there.

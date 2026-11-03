@@ -63,6 +63,34 @@ export class ForgeHttp {
     return await this.request("GET", path, { query });
   }
 
+  /** GET with the response headers, for flavors that paginate by cursor (GitHub `Link`). */
+  async getMeta(path: string, query?: QueryObject): Promise<{ body: JsonValue; headers: Headers }> {
+    const url = this.resolve(path, query);
+    const res = await fetch(url, {
+      headers: { Accept: "application/json", ...authHeaders(this.acct) },
+    });
+    const text = await res.text();
+    if (!res.ok) throw this.toError("GET", path, res, text);
+    return {
+      body: text.trim() === "" ? {} : (JSON.parse(text) as JsonValue),
+      headers: res.headers,
+    };
+  }
+
+  /** GET as text with an arbitrary Accept header (GitHub serves raw file bytes that way). */
+  async getText(
+    path: string,
+    query?: QueryObject,
+    accept = "*/*",
+  ): Promise<{ text: string; bytes: number }> {
+    const url = this.resolve(path, query);
+    // authHeaders carries a default Accept (GitHub's), so the caller's media type wins.
+    const res = await fetch(url, { headers: { ...authHeaders(this.acct), Accept: accept } });
+    if (!res.ok) throw this.toError("GET", path, res, await res.text());
+    const buf = new Uint8Array(await res.arrayBuffer());
+    return { text: new TextDecoder().decode(buf), bytes: buf.byteLength };
+  }
+
   async post(path: string, body?: JsonValue): Promise<JsonValue> {
     return await this.request("POST", path, { body });
   }
@@ -156,6 +184,9 @@ function scopeHint(status: number): string {
 }
 
 function hintFor(status: number, headers: Headers): string {
+  if (status === 403 && headers.get("x-ratelimit-remaining") === "0") {
+    return "rate limited (quota exhausted for this hour)";
+  }
   if (status === 404) return "not found, or not visible to this token";
   if (status === 405) return "the upstream does not support that (Forgejo: already merged)";
   if (status === 429) {

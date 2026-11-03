@@ -1,0 +1,19 @@
+[
+  {
+    "commit": {
+      "sha": "7502c24ed1e1c9ae6808ba6702d34176d36b2afd",
+      "url": "https://api.github.com/repos/maedoc/forge-test/commits/7502c24ed1e1c9ae6808ba6702d34176d36b2afd"
+    },
+    "name": "main",
+    "protected": false,
+    "protection": {
+      "enabled": false,
+      "required_status_checks": {
+        "checks": [],
+        "contexts": [],
+        "enforcement_level": "off"
+      }
+    },
+    "protection_url": "https://api.github.com/repos/maedoc/forge-test/branches/main/protection"
+  }
+]

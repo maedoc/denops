@@ -277,3 +277,80 @@ Deno.test("conformance/forgejo: users and orgs normalize", async () => {
   const orgs = fj<Array<Record<string, unknown>>>("orgs_page.json");
   for (const o of orgs) assert(typeof o.username === "string");
 });
+
+// --- github: third flavor, same assumptions the other two are held to ---
+// Recorded from api.github.com after populating a scratch repo, so the issue list here
+// genuinely contains a pull request (number 2) — the shape that breaks naive code.
+
+const GH_DIR = new URL("./fixtures/forge/github/", import.meta.url);
+
+function gh<T>(name: string): T {
+  return JSON.parse(Deno.readTextFileSync(new URL(name, GH_DIR))) as T;
+}
+
+Deno.test("conformance/github: projects normalize, with owner/name split from full_name", async () => {
+  const { normalizeProject } = await import("../src/connectors/forge/flavors/github.ts");
+  for (const row of gh<Array<Record<string, unknown>>>("projects_page.json")) {
+    const p = normalizeProject(row);
+    assertEquals(Object.keys(p).sort(), KEYS.project);
+    assertEquals(`${p.owner}/${p.name}`, p.fullName);
+  }
+  const one = normalizeProject(gh<Record<string, unknown>>("project.json"));
+  assertEquals(one.fullName, "maedoc/forge-test");
+  assertEquals(one.visibility, "private");
+});
+
+Deno.test("conformance/github: the issue payloads include a PR, both normalize", async () => {
+  const { normalizeIssue, normalizePull } = await import(
+    "../src/connectors/forge/flavors/github.ts"
+  );
+  const rows = gh<Array<Record<string, unknown>>>("issues_page.json");
+  const prs = rows.filter((r) => r.pull_request !== null && r.pull_request !== undefined);
+  const issues = rows.filter((r) => r.pull_request === null || r.pull_request === undefined);
+  assert(prs.length >= 1, "the fixture must contain the PR, or the filter is untested");
+  assert(issues.length >= 1, "the fixture must contain a plain issue");
+  for (const row of issues) {
+    const i = normalizeIssue(row);
+    assertEquals(Object.keys(i).sort(), KEYS.issue);
+    assert(Number.isInteger(i.number) && i.number > 0);
+  }
+  const p = normalizePull(gh<Record<string, unknown>>("pull.json"));
+  assertEquals(Object.keys(p).sort(), KEYS.pull);
+  assertEquals(p.merged, true);
+  assertEquals(p.state, "merged");
+  assert(p.sourceBranch !== null && !p.sourceBranch.startsWith("refs/"));
+});
+
+Deno.test("conformance/github: comments, commits and branches normalize", async () => {
+  const { normalizeCommit } = await import("../src/connectors/forge/flavors/github.ts");
+  for (const row of gh<Array<Record<string, unknown>>>("commits_page.json")) {
+    const c = normalizeCommit(row);
+    assertEquals(Object.keys(c).sort(), KEYS.commit);
+    assert(c.id.length >= 7);
+    assertEquals(c.title.includes("\n"), false);
+  }
+  for (const row of gh<Array<Record<string, unknown>>>("branches_page.json")) {
+    assert(typeof row.name === "string" && row.name.length > 0);
+    assert(typeof (row.commit as Record<string, unknown>)?.sha === "string");
+  }
+});
+
+Deno.test("conformance/github: tree entries, raw file text and users", async () => {
+  const rows = gh<Array<Record<string, unknown>>>("tree_page.json");
+  assert(rows.length > 0);
+  for (const row of rows) {
+    assert(["file", "dir", "symlink", "submodule"].includes(String(row.type)));
+    assert(typeof row.path === "string" && row.path.length > 0);
+  }
+  const text = Deno.readTextFileSync(new URL("raw_readme.txt", GH_DIR));
+  assert(text.startsWith("# forge-test"));
+  const env = gh<{ total_count: number; items: Array<Record<string, unknown>> }>(
+    "search_repos.json",
+  );
+  assert(env.total_count >= env.items.length);
+  const users = gh<{ items: Array<Record<string, unknown>> }>("users_search.json");
+  for (const u of users.items) assert(typeof u.login === "string");
+  // private-repo payloads can carry a short-lived clone token: never commit one
+  const project = Deno.readTextFileSync(new URL("project.json", GH_DIR));
+  assertEquals(project.includes("temp_clone_token"), false);
+});

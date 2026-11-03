@@ -12,6 +12,7 @@ import { checkShapeArgs, wrapClient } from "../shape.ts";
 import { ForgeHttp } from "./client.ts";
 import { gitlabPort } from "./flavors/gitlab.ts";
 import { forgejoPort } from "./flavors/forgejo.ts";
+import { githubPort } from "./flavors/github.ts";
 import { type ForgeAccount, type ForgePort, parseRepoRef, repoRefString } from "./port.ts";
 
 // The `forge` family: one flavor-neutral op surface over several code-hosting APIs.
@@ -36,19 +37,26 @@ export interface ForgeConnectorOptions {
 export function forgeConnector(opts: ForgeConnectorOptions): Connector {
   const build = opts.buildPort ?? buildPort;
   const ports = new Map<string, ForgePort>();
+  const broken = new Map<string, string>();
   const byId = new Map<string, ForgeAccount>();
   for (const account of opts.accounts) {
     byId.set(account.id, account);
-    ports.set(account.id, build(account));
+    // One unusable account (no adapter, bad origin) must not take the family down: the
+    // server still has to bind, and the other accounts still work.
+    try {
+      ports.set(account.id, build(account));
+    } catch (err) {
+      broken.set(account.id, (err as Error).message);
+    }
   }
 
   const resolve = (accountId: string): ForgePort => {
     const port = ports.get(accountId);
-    if (!port) {
-      const known = [...ports.keys()].sort().join(", ") || "(none configured)";
-      throw new Error(`unknown forge account '${accountId}'; configured: ${known}`);
-    }
-    return port;
+    if (port) return port;
+    const reason = broken.get(accountId);
+    if (reason) throw new Error(`forge account '${accountId}' is unusable: ${reason}`);
+    const known = [...ports.keys()].sort().join(", ") || "(none configured)";
+    throw new Error(`unknown forge account '${accountId}'; configured: ${known}`);
   };
 
   const target = (a: Record<string, unknown>): string => {
@@ -677,15 +685,29 @@ export function forgeConnector(opts: ForgeConnectorOptions): Connector {
     id: "forge",
     ops: ops.map((op) => ({ ...op, argSchema: compose(op.argSchema, checkShapeArgs) })),
     client: (_ctx: HostContext) => wrapClient(handlers, {}),
-    validateStartup: async () => {
-      // One cheap authenticated call per account: a bad token or a revoked scope is
-      // reported as a degraded connector instead of surfacing on the first real op.
+    validateStartup: async (ctx: HostContext) => {
+      // One cheap authenticated call per account. A failure is logged per account rather
+      // than thrown: throwing marks the whole connector degraded, which would disable the
+      // accounts that are fine. Throwing is reserved for "no account could be built".
+      for (const [id, reason] of broken) {
+        ctx.log({ level: "warn", msg: `forge account ${id} unusable: ${reason}` });
+      }
       for (const account of opts.accounts) {
         const port = ports.get(account.id);
         if (!port) continue;
-        await port.currentUser();
-        await port.validate?.();
+        try {
+          await port.currentUser();
+          await port.validate?.();
+        } catch (err) {
+          ctx.log({
+            level: "warn",
+            msg: `forge account ${account.id} (${account.flavor}) failed its startup probe: ${
+              (err as Error).message
+            }`,
+          });
+        }
       }
+      if (ports.size === 0) throw new Error("forge: no usable account (see the warnings above)");
     },
   };
 }
@@ -696,9 +718,11 @@ function buildPort(account: ForgeAccount): ForgePort {
       return gitlabPort(new ForgeHttp(account));
     case "forgejo":
       return forgejoPort(new ForgeHttp(account));
+    case "github":
+      return githubPort(new ForgeHttp(account));
     default:
       throw new Error(
-        `forge account '${account.id}': flavor '${account.flavor}' has no adapter yet (gitlab, forgejo)`,
+        `forge account '${account.id}': unknown flavor '${account.flavor}' (gitlab, forgejo, github)`,
       );
   }
 }

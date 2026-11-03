@@ -62,7 +62,8 @@ GitLab). Results are normalized, not upstream JSON (`number` not iid; `state: op
 `merged`/`draft` booleans), so one call shape works on every account; writes are approval-tier. Long
 tail: `forge.api.get({account, path, query?})` (open, raw upstream JSON, pinned to that account's
 API root). Forgejo's `q` matches repo names only — use `projects.get({repo:"o/r"})` for exact
-lookups. Adapters: **gitlab**, **forgejo** (a `github` flavor is refused at startup). The old
+lookups. Adapters: **gitlab**, **forgejo**, **github** (paging is a `Link` cursor there, file reads
+use the raw media type, and search has its own smaller rate limit). The old
 `gitlab.*` family is **gone** as of 0.8.0 — `forge.*` with `account: "ebrains"` is its replacement,
 and results are now normalized, so `p.fullName` replaces `p.path_with_namespace`. Long tail:
 `forge.api.get` (open, raw) and `forge.mutate` (approval; POST/PUT/**PATCH**/DELETE) reach any

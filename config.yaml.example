@@ -118,7 +118,7 @@ connectors:
 #          gitlab flavor falls back to secrets.gitlab.token, so an existing deployment
 #          needs no new secret). Reads are open, writes need approval, and the long tail is
 #          reached with forge.api.get({account, path}) against that account's pinned root.
-#          Only flavors with an adapter are accepted at startup (gitlab, forgejo today).
+#          Flavors: gitlab, forgejo, github — an unusable account is reported, the rest keep working.
 #          This replaced the old `gitlab:` connector in 0.8.0.
 #
 #   forge:
@@ -135,6 +135,11 @@ connectors:
 #         apiPath: /api/v1
 #         maxLimit: 50          # instance cap (GET /api/v1/settings/api -> max_response_items)
 #         # token: secrets.forge.amu.token
+#       - id: github
+#         flavor: github
+#         origin: https://api.github.com
+#         apiPath: ""           # GitHub's REST root is the origin itself
+#         # token: secrets.forge.github.token
 #
 startup:
   # full: probe reachability of every enabled connector at startup (a chatty, credential-

@@ -1,0 +1,50 @@
+{
+  "incomplete_results": false,
+  "items": [
+    {
+      "avatar_url": "https://avatars.githubusercontent.com/u/5189886?v=4",
+      "events_url": "https://api.github.com/users/maedoc/events{/privacy}",
+      "followers_url": "https://api.github.com/users/maedoc/followers",
+      "following_url": "https://api.github.com/users/maedoc/following{/other_user}",
+      "gists_url": "https://api.github.com/users/maedoc/gists{/gist_id}",
+      "gravatar_id": "",
+      "html_url": "https://github.com/maedoc",
+      "id": 5189886,
+      "login": "maedoc",
+      "node_id": "MDQ6VXNlcjUxODk4ODY=",
+      "organizations_url": "https://api.github.com/users/maedoc/orgs",
+      "received_events_url": "https://api.github.com/users/maedoc/received_events",
+      "repos_url": "https://api.github.com/users/maedoc/repos",
+      "score": 1.0,
+      "site_admin": false,
+      "starred_url": "https://api.github.com/users/maedoc/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/maedoc/subscriptions",
+      "type": "User",
+      "url": "https://api.github.com/users/maedoc",
+      "user_view_type": "public"
+    },
+    {
+      "avatar_url": "https://avatars.githubusercontent.com/u/208534761?v=4",
+      "events_url": "https://api.github.com/users/MAEDOCHEMYM/events{/privacy}",
+      "followers_url": "https://api.github.com/users/MAEDOCHEMYM/followers",
+      "following_url": "https://api.github.com/users/MAEDOCHEMYM/following{/other_user}",
+      "gists_url": "https://api.github.com/users/MAEDOCHEMYM/gists{/gist_id}",
+      "gravatar_id": "",
+      "html_url": "https://github.com/MAEDOCHEMYM",
+      "id": 208534761,
+      "login": "MAEDOCHEMYM",
+      "node_id": "U_kgDODG386Q",
+      "organizations_url": "https://api.github.com/users/MAEDOCHEMYM/orgs",
+      "received_events_url": "https://api.github.com/users/MAEDOCHEMYM/received_events",
+      "repos_url": "https://api.github.com/users/MAEDOCHEMYM/repos",
+      "score": 1.0,
+      "site_admin": false,
+      "starred_url": "https://api.github.com/users/MAEDOCHEMYM/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/MAEDOCHEMYM/subscriptions",
+      "type": "User",
+      "url": "https://api.github.com/users/MAEDOCHEMYM",
+      "user_view_type": "public"
+    }
+  ],
+  "total_count": 8
+}

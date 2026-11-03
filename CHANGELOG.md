@@ -8,6 +8,27 @@ actually talking to instead of probing behaviour.
 Format: `## <version> — <YYYY-MM-DD>`, newest first, then a short bullet list. Keep bullets about
 the API surface; implementation notes belong in the commit message.
 
+## 0.9.0 — 2026-11-03
+
+- **`forge` gains a GitHub adapter** — the third flavor, so one account set spans git.ins-amu.fr,
+  gitlab.ebrains.eu and api.github.com with the same 27 ops and the same normalized results. What
+  differs is handled in `flavors/github.ts`: `Link: rel="next"` cursors (a full page is *not* the
+  last page there), file bytes via `Accept: application/vnd.github.raw` (no `/raw` endpoint), a
+  separate search endpoint per resource with its own envelope and its own rate limit, PRs in the
+  issue list (filtered out) and PRs in the issue number space (`issues.get` refuses them), `merged`
+  inferred from `merged_at` since `state=merged` does not exist, per-file patches that arrive inline,
+  and 403 disambiguated between "insufficient scope" and "rate limited" by the headers.
+- **One unusable account no longer takes the family down.** Ports are built per account; a flavor
+  without an adapter or a bad origin fails that account's ops with a named error and a startup
+  warning instead of aborting the server, and a failed startup probe is logged per account rather
+  than degrading every `forge.*` op. `validateStartup` throws only when *no* account could be built.
+- `apiPath: ""` is now legal, because GitHub's REST root is the origin itself.
+- `forge.getText` sends the caller's media type: the GitHub auth headers set a default `Accept`, which
+  was overriding the raw request (caught by the mock-server test for file reads).
+- Conformance fixtures now cover all three flavors (`tests/fixtures/forge/{gitlab,forgejo,github}/`)
+  under identical assertions; the GitHub ones were recorded after populating a scratch repo, and
+  `temp_clone_token` is scrubbed from them on capture.
+
 ## 0.8.0 — 2026-11-03
 
 **Breaking: the `gitlab.*` family is removed.** Use `forge.*` with `account: "ebrains"` (a `forge`
