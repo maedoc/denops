@@ -63,6 +63,8 @@ const MAX_INLINE_BYTES = 1024 * 1024;
 export const DEFAULT_INLINE_BYTES = 64 * 1024;
 const DEFAULT_MAX_STAGE_BYTES = 64 * 1024 * 1024;
 const MAX_REDIRECTS = 3;
+/** One restore relays at most this much: it is held in memory, then written back. */
+const MAX_VERSION_BYTES = 8 * 1024 * 1024;
 /** PROPFIND-per-directory walks are latency-bound; a few in flight beats a chain. */
 const FIND_CONCURRENCY = 4;
 
@@ -358,6 +360,11 @@ class DavAccount {
   private readonly stagingFsRoot?: { name: string; path: string };
 
   private readonly nextcloud: boolean;
+
+  /** True when this account is marked Nextcloud *and* its share root locates the trees. */
+  get hasTrash(): boolean {
+    return this.nextcloud && this.ncRoot !== undefined;
+  }
   private readonly ncRoot?: { davRoot: string; user: string };
 
   constructor(
@@ -1251,27 +1258,29 @@ class DavAccount {
   }
 
   /** The numeric file id Nextcloud uses to key a file's version history. */
-  private async fileIdOf(path: DavPath): Promise<string> {
+  private async fileMeta(path: DavPath): Promise<{ id: string; etag?: string }> {
     const reply = await this.expect("PROPFIND", this.urlOf(path), {
-      body: propfindBody([{ ns: OC, name: "fileid" }]),
+      body: propfindBody([{ ns: OC, name: "fileid" }, { ns: DAV, name: "getetag" }]),
       headers: { depth: "0", "content-type": "application/xml; charset=utf-8" },
       ok: [207],
       path: path.rel,
     });
     const parsed = parseMultiStatus(this.decode(reply.bytes));
-    const id = parsed.responses[0] ? okProp(parsed.responses[0], "fileid")?.text.trim() : undefined;
+    const first = parsed.responses[0];
+    const id = first ? okProp(first, "fileid")?.text.trim() : undefined;
     if (!id) {
       throw new Error(
         `dav.versions: the server did not report oc:fileid for ${JSON.stringify(path.rel)} — ` +
           `version history is a Nextcloud extension`,
       );
     }
-    return id;
+    const etag = first ? okProp(first, "getetag")?.text.trim() : undefined;
+    return { id, ...(etag === undefined || etag === "" ? {} : { etag }) };
   }
 
   async versionsList(path: DavPath, limit: number): Promise<JsonValue> {
     this.ncTrees();
-    const fileid = await this.fileIdOf(path);
+    const { id: fileid } = await this.fileMeta(path);
     const reply = await this.expect("PROPFIND", this.ncUrl("versions", [fileid]), {
       body: propfindBody(VERSION_PROPS),
       headers: { depth: "1", "content-type": "application/xml; charset=utf-8" },
@@ -1320,6 +1329,16 @@ class DavAccount {
     } as unknown as JsonValue;
   }
 
+  /**
+   * Roll a file back by *reading* the version and writing it as a normal PUT.
+   *
+   * Not a MOVE of the version node, which is what the protocol suggests and what this
+   * op did in 0.13.1: measured against Nextcloud 33/34, that MOVE deletes the
+   * destination and *then* fails with 404 NotFound on the source — i.e. it destroys the
+   * file it was asked to restore. A GET + conditional PUT cannot lose anything: the
+   * current content becomes a new version (so the rollback is itself reversible), and
+   * the If-Match means a concurrent edit is a 412 rather than a clobber.
+   */
   async versionsRestore(path: DavPath, version: string): Promise<JsonValue> {
     this.requireWritable("dav.versions.restore");
     if (!/^\d+$/.test(version)) {
@@ -1328,25 +1347,40 @@ class DavAccount {
           `\`version\` from dav.versions.list verbatim`,
       );
     }
-    const fileid = await this.fileIdOf(path);
-    const reply = await this.send("MOVE", this.ncUrl("versions", [fileid, version]), {
-      headers: {
-        destination: this.urlOf(path).href,
-        // Always T: the destination is the file being rolled back, so it always exists.
-        // Nextcloud answers 412 ("The destination node already exists") otherwise —
-        // measured, not assumed.
-        overwrite: "T",
-      },
+    const meta = await this.fileMeta(path);
+    // The version body is relayed byte-for-byte (never decoded), so a binary rollback
+    // works too; the cap only bounds what one op is allowed to hold in memory.
+    const reply = await this.expect("GET", this.ncUrl("versions", [meta.id, version]), {
+      ok: [200],
+      maxBytes: MAX_VERSION_BYTES,
+      path: path.rel,
     });
-    if (![201, 204].includes(reply.status)) {
-      throw failure("dav.versions.restore", path.rel, reply.status, this.decode(reply.bytes));
+    if (reply.bytes.byteLength > MAX_VERSION_BYTES) {
+      throw new Error(
+        `dav.versions.restore: version ${version} of ${JSON.stringify(path.rel)} is over the ` +
+          `${MAX_VERSION_BYTES}-byte relay cap; download it from the Nextcloud UI instead`,
+      );
     }
-    const restored = await this.freshEtag(path);
+    const headers: Record<string, string> = { "content-type": contentTypeFor(path.rel) };
+    if (meta.etag !== undefined) headers["if-match"] = meta.etag;
+    const put = await this.expect("PUT", this.urlOf(path), {
+      body: reply.bytes,
+      headers,
+      ok: [200, 201, 204],
+      path: path.rel,
+    });
+    const restoredEtag = put.headers.get("etag") ?? put.headers.get("oc-etag") ??
+      await this.freshEtag(path);
     return {
       account: this.id,
       path: path.rel,
       restored: version,
-      ...(restored === undefined ? {} : { etag: restored }),
+      bytes: reply.bytes.byteLength,
+      ...(restoredEtag === undefined ? {} : { etag: restoredEtag }),
+      previousKeptAsVersion: true,
+      ...(meta.etag === undefined
+        ? { note: "no etag was available, so the write was unconditional" }
+        : {}),
     } as unknown as JsonValue;
   }
 
@@ -1789,6 +1823,12 @@ export class DavHost {
         unusable: [...this.broken].map(([id, error]) => ({ id, error })),
       }),
     };
+  }
+
+  /** Does this account have the Nextcloud trash? (used by summaries, never to gate ops) */
+  hasTrashFor(id: string): boolean {
+    const account = this.accounts.get(id);
+    return account !== undefined && account.hasTrash;
   }
 
   /** Precheck helper: refuse a mutating op on a read-only account before approval. */

@@ -8,6 +8,23 @@ actually talking to instead of probing behaviour.
 Format: `## <version> — <YYYY-MM-DD>`, newest first, then a short bullet list. Keep bullets about
 the API surface; implementation notes belong in the commit message.
 
+## 0.13.2 — 2026-11-03
+
+- **`dav.versions.restore` no longer destroys the file it restores.** 0.13.1 moved the version node
+  with a conditional `MOVE`, which is what the protocol suggests; on Nextcloud 33/34 that MOVE
+  **deletes the destination and then fails** with `Sabre\DAV\Exception\NotFound` — the live smoke
+  test destroyed its own test file and a second probe destroyed another one before this was clear.
+  The op now reads the version (a version node answers `GET`) and writes it back as an ordinary
+  **conditional PUT** with `If-Match` on the current etag: nothing can be lost, the concurrency
+  guarantee is the same as every other write, binary versions relay byte-for-byte (up to an 8 MiB
+  relay cap), and the content that was current becomes a new version, so the rollback is itself
+  reversible. Measured end to end on `insbox`: PUT v1 → PUT v2 → GET the v1 version node → PUT it
+  back → file reads `v1`.
+- **`dav.delete`'s approval summary stopped recommending a `_trash/` folder.** It now says what is
+  true for that account: on a Nextcloud account the entry goes to the trashbin and
+  `dav.trash.restore` brings it back; otherwise it says the deletion is permanent. The old wording
+  survived 0.13.0 shipping the trash ops, which is exactly the drift an approval prompt must not have.
+
 ## 0.13.1 — 2026-11-03
 
 Found by running the first live smoke test on `insbox` (mkdir → put → edit → copy → overwrite → version

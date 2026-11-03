@@ -167,17 +167,13 @@ function mockDav(
           { status: 207 },
         );
       }
-      if (req.method === "MOVE") {
+      if (req.method === "GET") {
         const v = (versionHistory.get(fileid) ?? []).find((x) => x.version === version);
         if (!v) return new Response("no such version", { status: 404 });
-        // restoring keeps the current content as a new version
-        const current = file[1];
-        versionHistory.set(fileid, [
-          ...(versionHistory.get(fileid) ?? []),
-          { version: String(nextVersion++), bytes: current.bytes, mtime: new Date().toUTCString() },
-        ]);
-        nodes.set(file[0], { ...current, bytes: v.bytes, etag: `"restored-${version}"` });
-        return new Response(null, { status: 201 });
+        return new Response(v.bytes as unknown as BodyInit, {
+          status: 200,
+          headers: { "content-type": "text/plain", "content-length": String(v.bytes.byteLength) },
+        });
       }
     }
 
@@ -1347,10 +1343,12 @@ Deno.test("dav: versions lists history and restoring is reversible", async () =>
       path: "docs/draft.md",
       version,
     }) as { restored: string; etag: string };
+    const put = h.recorded.filter((r) => r.method === "PUT").at(-1)!;
+    assert(put.headers.get("if-match") !== null, "the rollback is conditional on the current etag");
     assertEquals(
-      h.recorded.filter((r) => r.method === "MOVE").at(-1)!.headers.get("overwrite"),
-      "T",
-      "a rollback always overwrites the file it rolls back",
+      h.recorded.filter((r) => r.method === "MOVE").length,
+      0,
+      "a rollback must never MOVE a version node: that deletes the destination",
     );
     assertEquals(restored.restored, version);
     assertEquals(

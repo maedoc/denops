@@ -915,8 +915,11 @@ export function davConnector(deps: DavConnectorDeps): Connector {
       },
       doc:
         "Roll one file back to a version from dav.versions.list. args: { account, path, version }. " +
-        "It writes over the file by design (that is what a rollback is), and keeps the current " +
-        "content as a new version, so it is reversible. Returns { path, restored, etag }.",
+        "Implemented as read-version + conditional PUT (If-Match on the current etag), **not** a " +
+        "MOVE of the version node: against Nextcloud 33/34 that MOVE deletes the file and then " +
+        "fails, which is what 0.13.1 did. Byte-for-byte relay, so binary files work; the current " +
+        "content is kept as a new version, so the rollback is itself reversible. Returns " +
+        "{ path, restored, bytes, etag, previousKeptAsVersion }.",
       argSchema: compose(
         rejectUnknown(),
         acc,
@@ -937,8 +940,11 @@ export function davConnector(deps: DavConnectorDeps): Connector {
         const r = a as { account?: string; path?: string; recursive?: boolean };
         const target = await describeTarget(String(r.account), String(r.path ?? ""));
         const scope = r.recursive === true ? " (and everything inside it)" : "";
-        return `Delete ${r.account}:${r.path} — ${target}${scope}. Deletion is permanent through ` +
-          `this server; prefer dav.move into a _trash/ folder if the content must survive.`;
+        const recoverable = host.hasTrashFor(String(r.account ?? ""));
+        return `Delete ${r.account}:${r.path} — ${target}${scope}. ` +
+          (recoverable
+            ? "It goes to the Nextcloud trashbin, so dav.trash.restore can bring it back."
+            : "This server has no trash for this account: the deletion is permanent.");
       },
       doc:
         "Delete a file, or a directory with recursive: true. args: { account, path, recursive?, " +
