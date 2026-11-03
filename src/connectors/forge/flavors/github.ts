@@ -398,7 +398,9 @@ export function githubPort(http: ForgeHttp): ForgePort {
         ...(q.ref ? { ref: q.ref } : {}),
       });
       const rows = Array.isArray(body) ? body.map((e) => obj(e)) : [];
-      const items: TreeEntry[] = rows.slice(0, limit).map((row) => {
+      // GitHub's contents API is unpaginated too; slice by page or page 2 repeats page 1.
+      const start = ((q.page ?? 1) - 1) * limit;
+      const items: TreeEntry[] = rows.slice(start, start + limit).map((row) => {
         const kind = str(row.type);
         return {
           path: str(row.path) ?? str(row.name) ?? "",
@@ -413,7 +415,7 @@ export function githubPort(http: ForgeHttp): ForgePort {
           size: num(row.size),
         };
       });
-      return pageOf(items, q.page ?? 1, rows.length > limit ? (q.page ?? 1) + 1 : null);
+      return pageOf(items, q.page ?? 1, start + limit < rows.length ? (q.page ?? 1) + 1 : null);
     },
 
     async getFile(ref: RepoRef, q: { path: string; ref?: string }): Promise<FileContent> {

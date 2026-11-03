@@ -430,12 +430,17 @@ export function forgejoPort(http: ForgeHttp): ForgePort {
     async listTree(ref: RepoRef, q: ListQuery & { ref?: string; path?: string }) {
       const limit = http.clampLimit(q.limit);
       const path = (q.path ?? "").replace(/^\/+/, "");
-      const raw = await http.get(`${repoPath(ref)}/contents/${path}`, {
+      // At the root ask for `/contents`, not `/contents/`: the slash form is a different
+      // URL to the server and to any cache in front of it.
+      const suffix = path === "" ? "" : `/${path}`;
+      const raw = await http.get(`${repoPath(ref)}/contents${suffix}`, {
         ...(q.ref ? { ref: q.ref } : {}),
       });
       const rows = unwrapData(raw).map((e) => obj(e));
-      // /contents has no pagination (verified); a directory listing is capped here.
-      const items: TreeEntry[] = rows.slice(0, limit).map((row) => {
+      // /contents has no pagination (verified), so the adapter pages by slicing. Slicing on
+      // `limit` alone would make page 2 repeat page 1 forever.
+      const start = ((q.page ?? 1) - 1) * limit;
+      const items: TreeEntry[] = rows.slice(start, start + limit).map((row) => {
         const kind = str(row.type);
         return {
           path: str(row.path) ?? str(row.name) ?? "",
@@ -450,7 +455,7 @@ export function forgejoPort(http: ForgeHttp): ForgePort {
           size: num(row.size),
         };
       });
-      const nextPage = rows.length > limit ? (q.page ?? 1) + 1 : null;
+      const nextPage = start + limit < rows.length ? (q.page ?? 1) + 1 : null;
       return { items, page: q.page ?? 1, nextPage };
     },
 

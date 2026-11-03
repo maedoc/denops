@@ -376,3 +376,27 @@ Deno.test("forgejo: branchOf prefers a real ref over the synthetic refs/pull/N/h
   assertEquals(branchOf({ ref: "refs/pull/2/head", label: "probe/x" }), "probe/x");
   assertEquals(branchOf({}), null);
 });
+
+Deno.test("forgejo: tree.list pages by slicing, because /contents has no paging", async () => {
+  const rows = Array.from({ length: 5 }, (_, i) => ({
+    name: `f${i}.txt`,
+    path: `f${i}.txt`,
+    type: "file",
+    size: 10,
+  }));
+  const m = mockForgejo((key, rec) => key === "GET /api/v1/repos/o/r/contents" ? json(rows) : null);
+  try {
+    const port = forgejoPort(new ForgeHttp(ACCOUNT(m.base)));
+    const p1 = await port.listTree({ owner: "o", name: "r" }, { limit: 2, page: 1 });
+    const p2 = await port.listTree({ owner: "o", name: "r" }, { limit: 2, page: 2 });
+    const p3 = await port.listTree({ owner: "o", name: "r" }, { limit: 2, page: 3 });
+    assertEquals(p1.items.map((e) => e.name), ["f0.txt", "f1.txt"]);
+    assertEquals(p1.nextPage, 2);
+    assertEquals(p2.items.map((e) => e.name), ["f2.txt", "f3.txt"]);
+    assertEquals(p2.nextPage, 3);
+    assertEquals(p3.items.map((e) => e.name), ["f4.txt"]);
+    assertEquals(p3.nextPage, null);
+  } finally {
+    m.stop();
+  }
+});

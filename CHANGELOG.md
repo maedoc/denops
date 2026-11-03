@@ -17,7 +17,11 @@ the API surface; implementation notes belong in the commit message.
   comparing results, which is the check the family exists for.
 - **`forge.repository.tree.list` at the repository root asks GitHub for `/contents`, not
   `/contents/`** — the slash form reached GitHub's edge as a distinct URL and failed with a 503. The
-  same check surfaced it, and it left the op unusable (not merely inconsistent) on that account.
+  same check surfaced it, and it left the op unusable (not merely inconsistent) on that account. The
+  forgejo flavor now uses the same root form.
+- **`forge.repository.tree.list` honours `page` on the flavors whose contents API has no paging**
+  (forgejo, github). It sliced on `limit` only, so `page: 2` returned page 1 again and the caller
+  could loop forever believing it was walking a large directory.
 ## 0.9.0 — 2026-11-03
 
 - **`forge` gains a GitHub adapter** — the third flavor, so one account set spans git.ins-amu.fr,
