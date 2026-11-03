@@ -308,7 +308,9 @@ export async function buildApp(configPath: string, secretsPath: string): Promise
   registry.register(
     denopsConnector({
       skillPath: "SKILL.md",
-      version: "0.5.1",
+      // Keep in step with deno.json and the CHANGELOG head; tests/version_test.ts fails
+      // when they drift, because denops.version is how a run learns what it is talking to.
+      version: "0.6.0",
       // the supervisor exports the commit it checked out
       // The env-reading child (dev_try) runs with no --allow-env; the commit is
       // informational, so an inaccessible DENOPS_COMMIT is just "unknown" there.
