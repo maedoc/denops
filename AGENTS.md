@@ -40,6 +40,27 @@ Then `dev.git commit` → `deploy.promote` (a human approves; the supervisor soa
 auto-revert). `deploy.status` tells you what is live, what is last-good, and whether a promotion is
 pending.
 
+## Where this runs (the homelab)
+
+`ssh homelab` → 192.168.1.196, user `freebox`. Two checkouts of this repository:
+
+- **live** `/home/freebox/denops` — detached, owned by the supervisor (`scripts/live-supervisor.sh`,
+  unit `deploy/denops.service`). Never edit tracked files here. The supervisor checks out the
+  promoted commit, restarts the **child** (the unit stays up, so its uptime says nothing about what
+  is running — use `denops.version`), probes `/health`, soaks 60 s and only then advances `main`;
+  a failure reverts to the last good commit.
+- **dev** `/home/freebox/denops-dev` — worktree of the same repo on branch `agent/dev`; what `dev.*`
+  operates on and what a promote ships.
+
+`config.yaml` and `secrets.json` are host-side and gitignored (`secrets.json` is mode 600). Editor
+swap files are ignored too: a `.secrets.json.swp` holds fragments of that file and must never be
+committed. Logs are `data/server.log` (child) plus journald (supervisor); there is no tmux there.
+
+Without `fs`/`dev` MCP access the loop is: edit, `scp` into `denops-dev`, gate on the host
+(`deno fmt --check src/ tests/ && deno lint && deno task check && deno task test`), commit **there**
+with an explicit identity (`git -c user.name="…" -c user.email="…" commit -F` — none is configured),
+promote, then `git push origin main` and fast-forward the laptop.
+
 ## Where the work is tracked
 
 Runbook and feature issues live in the GitLab project **`woodman/mymcp`** (gitlab.ebrains.eu), not
