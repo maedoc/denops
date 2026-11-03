@@ -48,6 +48,15 @@ const MAX_REDIRECTS = 3;
 /** PROPFIND-per-directory walks are latency-bound; a few in flight beats a chain. */
 const FIND_CONCURRENCY = 4;
 
+/**
+ * Names that are never worth downloading to look for text: known-binary extensions,
+ * macOS resource forks and OS droppings. `grep` would otherwise spend its whole budget
+ * fetching PDFs and `._*` AppleDouble files and report nothing — the failure mode this
+ * list exists to avoid. Everything skipped this way is counted, not hidden.
+ */
+const NON_TEXT_NAME =
+  /(?:^|\/)(?:\._|\.DS_Store$|Thumbs\.db$|desktop\.ini$)|\.(?:pdf|jpg|jpeg|png|gif|bmp|tiff?|webp|heic|zip|gz|bz2|xz|7z|rar|tar|docx?|xlsx?|pptx?|odt|ods|odp|mp3|mp4|m4a|mov|avi|mkv|wav|flac|so|dylib|dll|exe|bin|iso|dmg|woff2?|ttf|otf|class|jar|pyc|sqlite|db)$/i;
+
 /** Run `fn` over `items` with at most `limit` in flight, preserving order of results. */
 async function mapLimit<T, R>(
   items: readonly T[],
@@ -992,9 +1001,15 @@ class DavAccount {
     }) as unknown as { entries: DavEntry[]; truncated: boolean; stoppedBy?: string };
     const needle = opts.pattern.toLowerCase();
     const hits: Array<{ path: string; line: number; text: string }> = [];
-    const skipped = { binary: 0, tooLarge: 0, unreadable: 0, encoding: 0 };
+    const skipped = {
+      byName: 0,
+      binary: 0,
+      tooLarge: 0,
+      unreadable: 0,
+      encoding: 0,
+    };
     let filesScanned = 0;
-    let stoppedBy: string | null = found.truncated ? "walk" : null;
+    let stoppedBy: string | null = found.truncated ? `walk:${found.stoppedBy ?? "capped"}` : null;
     for (const entry of found.entries) {
       if (hits.length >= opts.maxMatches) {
         stoppedBy = stoppedBy ?? "matches";
@@ -1003,6 +1018,11 @@ class DavAccount {
       if (Date.now() > deadline) {
         stoppedBy = stoppedBy ?? "time";
         break;
+      }
+      if (NON_TEXT_NAME.test(`/${entry.path}`)) {
+        // cheap and decisive: no GET, no budget spent, still counted
+        skipped.byName += 1;
+        continue;
       }
       const entryPath = normalizePath(entry.path);
       let read: Awaited<ReturnType<DavAccount["readInline"]>>;

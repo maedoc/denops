@@ -935,14 +935,15 @@ Deno.test("dav: grep finds which files mention a string, and counts what it skip
       filesMatched: number;
       matchCount: number;
       truncated: boolean;
-      skipped: { binary: number };
+      skipped: { byName: number; binary: number };
       hits: Array<{ path: string; line: number; text: string }>;
     };
     assertEquals(out.filesMatched, 1, "only deep.md says 'deep'");
     assertEquals(out.hits[0].path, "docs/sub/deep.md");
     assertEquals(out.hits[0].line, 1);
     assertEquals(out.hits[0].text, "deep", "the matching line comes back, trimmed");
-    assertEquals(out.skipped.binary, 1, "logo.png is counted, not silently dropped");
+    assertEquals(out.skipped.byName, 1, "logo.png is skipped by name — no GET spent on it");
+    assertEquals(out.skipped.binary, 0, "nothing had to be downloaded to discover it is binary");
 
     // namePattern narrows what gets read at all
     const narrowed = await h.call("grep", { pattern: "INTRO", namePattern: "*.csv" }) as {
@@ -951,6 +952,14 @@ Deno.test("dav: grep finds which files mention a string, and counts what it skip
     };
     assertEquals(narrowed.filesScanned, 1);
     assertEquals(narrowed.matchCount, 0, "case-insensitive, but csv has no 'intro'");
+
+    // a capped name-walk is reported with the reason it stopped
+    const cappedWalk = await h.call("grep", {
+      pattern: "hello",
+      maxFiles: 1,
+      maxMs: 300,
+    }) as { stoppedBy?: string };
+    assert(String(cappedWalk.stoppedBy).startsWith("walk:"), String(cappedWalk.stoppedBy));
 
     // maxMatches stops early and says so
     await h.call("put", { path: "docs/two.md", text: "hit\nhit\nhit\n" });

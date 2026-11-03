@@ -8,6 +8,16 @@ actually talking to instead of probing behaviour.
 Format: `## <version> — <YYYY-MM-DD>`, newest first, then a short bullet list. Keep bullets about
 the API surface; implementation notes belong in the commit message.
 
+## 0.12.1 — 2026-11-03
+
+- **`dav.grep` no longer spends its budget on files that cannot contain text.** Measured against the
+  AMU share minutes after 0.12.0: a depth-3 walk fetched 19 files, every one of them binary (macOS
+  `._*` AppleDouble forks, PDFs, images) and returned `filesScanned: 0` — the caller paid for a search
+  and got nothing, which is the worst shape of failure. Known-binary extensions and OS droppings are
+  now skipped **by name** before any GET is issued and counted separately (`skipped.byName`), so
+  `skipped.binary` means "we had to download it to find out". `stoppedBy` also says *why* the walk
+  ended (`walk:time`, `walk:entries`, `walk:depth`) instead of a bare `walk`.
+
 ## 0.12.0 — 2026-11-03
 
 Everything here is either a defect found by measuring against the live servers or documentation that
