@@ -384,7 +384,7 @@ Deno.test("forgejo: tree.list pages by slicing, because /contents has no paging"
     type: "file",
     size: 10,
   }));
-  const m = mockForgejo((key, rec) => key === "GET /api/v1/repos/o/r/contents" ? json(rows) : null);
+  const m = mockForgejo((key) => key === "GET /api/v1/repos/o/r/contents" ? json(rows) : null);
   try {
     const port = forgejoPort(new ForgeHttp(ACCOUNT(m.base)));
     const p1 = await port.listTree({ owner: "o", name: "r" }, { limit: 2, page: 1 });
