@@ -40,8 +40,10 @@ either a live probe of both Nextcloud servers or Mistral's shakedown of the live
   412), i.e. `writable: false` is always a config choice here, never a credential limitation — so the
   note says which knob to turn.
 - **Error messages carry the server's sentence, not its XML.** Sabre puts the useful text in
-  `<s:message>`; a 404 now reads "no such path … File with name … could not be located" instead of a
-  wall of markup.
+  `<s:message>`, and that sentence now replaces the raw markup on the statuses that fall through
+  (`403`, `405`, `409`, `412`, `5xx`). `404` keeps the hand-written, actionable text instead —
+  "paths are relative to the share root; run dav.list" beats "File with name … could not be
+  located", and the server's phrasing is only appended where it adds something.
 
 ## 0.10.1 — 2026-11-03
 
