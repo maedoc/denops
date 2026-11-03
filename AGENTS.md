@@ -40,6 +40,23 @@ Then `dev.git commit` → `deploy.promote` (a human approves; the supervisor soa
 auto-revert). `deploy.status` tells you what is live, what is last-good, and whether a promotion is
 pending.
 
+## Where the work is tracked
+
+Runbook and feature issues live in the GitLab project **`woodman/mymcp`** (gitlab.ebrains.eu), not
+in this repo — read the open issues before re-deriving environment facts:
+
+- `ops:` — how this deployment is laid out (live vs dev worktree, systemd, no tmux), how to promote
+  when `deploy.promote` cannot be used, and what a fresh session needs to know. That last one
+  matters: MCP tool registration is fixed when a session opens, so if denops is unreachable then,
+  the `mcp__denops` tools are absent for the entire session even after the server comes back.
+- `mail:` / `caldav:` / `forgejo:` — remaining work and the reasoning behind decisions already
+  made (so they are not re-litigated).
+
+`deploy.promote` is approval-tier on purpose: a human clicks. If their client is not in the loop,
+the operator path is `ops:` issue !10 — gate on the host, commit on `agent/dev`, then write
+`desired-commit` + `restart-request` **and the `promote-test`/`promote` audit lines**. Do not
+improvise it, and do not self-approve the op.
+
 ## Conventions
 
 - Ops are declared in `src/connectors/<name>/manifest.ts`; credentials live host-side in
