@@ -5,3 +5,7 @@ data/
 data-dev/
 *.log
 .DS_Store
+
+# editor swap files: a .secrets.json.swp contains fragments of a secrets file
+*.swp
+*.swo
