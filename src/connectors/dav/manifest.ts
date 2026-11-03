@@ -865,7 +865,7 @@ export function davConnector(deps: DavConnectorDeps): Connector {
     {
       name: "dav.trash.restore",
       tier: "approval",
-      summarize: async (a) => {
+      summarize: (a) => {
         const r = a as { account?: string; id?: string; to?: string };
         return `Restore ${r.id} from the ${r.account} trash` +
           `${r.to === undefined ? " to the location Nextcloud recorded" : ` to ${r.to}`}. ` +
