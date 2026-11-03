@@ -88,6 +88,38 @@ connectors:
     #   socketTimeoutMs: 300000  # drop + reconnect after this much socket inactivity (default 5 min)
     #   # password lives in secrets.json as mail.work.password
 
+# --- files (optional, WebDAV / Nextcloud) --------------------------------------
+#  dav: one family over WebDAV shares (Nextcloud/ownCloud today; the client speaks
+#       plain RFC 4918, so any WebDAV server with Basic auth works). Every op takes
+#       `path` RELATIVE to the account's shareRoot, so the root is config, never an
+#       argument: that is what makes traversal structurally impossible rather than
+#       filtered. Reads are open; put/putStaged/mkdir/move/copy are approval and
+#       create-only by default (If-None-Match: *), delete is always approval and
+#       needs `recursive: true` for a directory. CSRF-free by construction (no shell,
+#       no URL from the caller) and host-pinned: credentials only ever go to `origin`.
+#
+#       stagingRoot is where dav.stage puts downloaded bytes for fs.read/fs.grep. Put
+#       it INSIDE an existing fs root (denops-stage) so the returned fsRoot+path are
+#       directly usable; it is granted read+write in the sandbox either way.
+#
+#       writable: false (the default) refuses every mutating op in precheck, before a
+#       human is asked to approve anything.
+#
+#   dav:
+#     enabled: true
+#     timeoutMs: 20000
+#     maxResponseBytes: 8388608   # a depth-1 listing has no server-side paging
+#     stagingRoot: /home/freebox/denops-stage/dav
+#     maxStageBytes: 67108864
+#     accounts:
+#       - id: work
+#         origin: https://cloud.example.org        # https required (http only for loopback)
+#         shareRoot: /remote.php/dav/files/alice   # "" on the account = this directory
+#         user: alice
+#         auth: basic                              # basic = app password; bearer = token
+#         writable: false
+#         # password lives in secrets.json as dav.work.password (bearer: dav.<id>.token)
+
 # --- calendars (optional, CalDAV) ---------------------------------------------
 #  caldav: read events, and write them under ETag discipline (update/delete need the
 #          etag from calendar.events.get; create is If-None-Match: * so it never

@@ -8,6 +8,43 @@ actually talking to instead of probing behaviour.
 Format: `## <version> — <YYYY-MM-DD>`, newest first, then a short bullet list. Keep bullets about
 the API surface; implementation notes belong in the commit message.
 
+## 0.10.0 — 2026-11-03
+
+- **New `dav` family (14 ops): WebDAV / Nextcloud files, shaped for a caller with a byte budget.**
+  `dav.accounts` (id, origin, `shareRoot`, writable — never credentials), then one address form
+  everywhere: `path` relative to the account's share root, returned in the same form, so paths
+  round-trip. `dav.list` (depth 1, `limit`/`sort`/`kind`, honest `more`), `dav.stat` (the etag the
+  writes need), `dav.get` (text only, 64 KiB default, capped at 1 MiB), `dav.find` (bounded
+  recursive name search that reports `stoppedBy`), `dav.quota`, `dav.stage` + `dav.putStaged`
+  (bytes to/from the host staging root — no base64, no binary through the context window) and
+  `dav.staging.clear`.
+- **Writes are create-only by default.** `dav.put`/`dav.putStaged` send `If-None-Match: *` unless
+  the caller passes `overwrite: true` or the `ifMatch` etag from `stat`/`get`; `dav.move`/`dav.copy`
+  send `Overwrite: F`. A 412 is reported as "re-read and retry", never retried blind. `dav.delete`
+  is approval-only with no grant shortcut and needs `recursive: true` for a directory. Mutating ops
+  on a `writable: false` account are refused in `precheck`, before a human sees a prompt.
+- **Confinement is structural, not filtered.** `dav` splits the caller's path into segments, refuses
+  `..`/absolute/backslash/control characters, and percent-encodes each segment, so no caller text
+  can become a URL path component it did not name; hrefs coming back from the server are adopted
+  only when they sit under the share root. Credentials are pinned to the account `origin`
+  (redirects re-pinned per hop, downgrade refused). `path` is validated in `argSchema`, so a
+  traversal attempt never reaches an approval prompt.
+- **`permissions.ts` derives the envelope for `dav`**: each account origin becomes a `--allow-net`
+  entry (same branch as caldav, minus the iCloud wildcard) and `stagingRoot` is granted read+write,
+  because `dav.stage` writes what `fs.read`/`fs.grep` then read. The returned `fsRoot`+`path` are
+  resolved from the live `fs.roots`, so staging inside `denops-stage` needs no path surgery.
+- **Two things only the real servers could teach, fixed here.** `dav.quota` asks for RFC 4331
+  (`DAV:` namespace) *and* the `oc:` names: Nextcloud 33 answers only the former and 404s the
+  latter, and it reports `-1` available bytes for "no limit", which is now surfaced as
+  `unlimited: true` instead of a nonsense total. And `dav.get`/`dav.stage` refuse a directory
+  before fetching anything — a `GET` on a collection returns the Nextcloud web UI, which was
+  landing in the staging root as if it were the file.
+- **`dav` is startup-validated** with one authenticated PROPFIND per share root; a bad app password
+  shows up as `degraded` on `denops.about` and does not stop the server binding.
+- Advisory, not fixed here: `calendar` discovery PROPFINDs the origin root, and Nextcloud answers
+  **405** to that (`/remote.php/dav/` is the real root) — so a Nextcloud calendar account still
+  needs a path-aware discovery patch before it can be configured.
+
 ## 0.9.1 — 2026-11-03
 
 - **`forge.repository.files.get` and `repository.tree.list` behave the same on all three flavors when

@@ -2,6 +2,7 @@ import { assert, assertEquals, assertStringIncludes } from "jsr:@std/assert@1";
 import { deployConfigFrom, deployConnector } from "../src/connectors/deploy/manifest.ts";
 import { denopsConnector } from "../src/connectors/denops/manifest.ts";
 import { devConnector, devRootsFromConfig } from "../src/connectors/dev/manifest.ts";
+import { davConnector } from "../src/connectors/dav/manifest.ts";
 import { fsConnector } from "../src/connectors/fs/manifest.ts";
 import { forgeConnector } from "../src/connectors/forge/manifest.ts";
 import { stubPort } from "./forge_stub.ts";
@@ -62,6 +63,18 @@ async function allConnectors(): Promise<Connector[]> {
     }),
     devConnector({ roots: devRoots }),
     webConnector({ allowedHosts: ["example.org"] }),
+    davConnector({
+      accounts: [{
+        id: "nc",
+        origin: "https://nc.example.org",
+        shareRoot: "/remote.php/dav/files/u",
+        user: "u",
+        auth: "basic",
+        password: "p",
+        writable: true,
+      }],
+      stagingRoot: tmp,
+    }),
     ...(deploy ? [deployConnector(deploy)] : []),
     denopsConnector({ skillPath, version: "0.3.0", connectors: () => [] }),
   ];

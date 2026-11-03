@@ -13,7 +13,7 @@ import {
   syncCollectionBody,
   syncTokenOf,
   xmlEscape,
-} from "../src/connectors/caldav/dav.ts";
+} from "../src/connectors/webdav.ts";
 
 // The multistatus reader is the part of CalDAV that fails most expensively when it
 // is wrong: a property read from the wrong propstat (or an href taken from the wrong

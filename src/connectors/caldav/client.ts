@@ -27,7 +27,7 @@ import {
   propfindBody,
   type PropRef,
   xmlEscape,
-} from "./dav.ts";
+} from "../webdav.ts";
 import {
   alarmsOf,
   componentsNamed,

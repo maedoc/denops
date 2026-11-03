@@ -11,6 +11,7 @@ import { Harness, summarizeOp } from "./harness/worker.ts";
 import { type Config, loadConfig, loadSecrets } from "./config.ts";
 import { createHandler, DEFAULT_MAX_BODY_BYTES, serveWithTimeouts } from "./security/http.ts";
 import { agentGuide } from "./guide.ts";
+import { davConnector } from "./connectors/dav/manifest.ts";
 import { deployConfigFrom, deployConnector } from "./connectors/deploy/manifest.ts";
 import { devConnector, devRootsFromConfig } from "./connectors/dev/manifest.ts";
 import { webConnector, webOptionsFromConfig } from "./connectors/web/manifest.ts";
@@ -299,7 +300,7 @@ export async function buildApp(configPath: string, secretsPath: string): Promise
       skillPath: "SKILL.md",
       // Keep in step with deno.json and the CHANGELOG head; tests/version_test.ts fails
       // when they drift, because denops.version is how a run learns what it is talking to.
-      version: "0.9.1",
+      version: "0.10.0",
       // the supervisor exports the commit it checked out
       // The env-reading child (dev_try) runs with no --allow-env; the commit is
       // informational, so an inaccessible DENOPS_COMMIT is just "unknown" there.
@@ -394,6 +395,68 @@ export async function buildApp(configPath: string, secretsPath: string): Promise
         accounts,
         ...(c.timeoutMs === undefined ? {} : { timeoutMs: Number(c.timeoutMs) }),
         ...(c.maxBytes === undefined ? {} : { maxBytes: Number(c.maxBytes) }),
+      }),
+    );
+  }
+
+  // WebDAV / Nextcloud. Same account-keyed credential rule as mail and calendar
+  // (secrets.dav.<id>.password), plus the one thing those two do not need: a staging
+  // root, because the agent cannot hold bytes in its context. `stagingFsRoot` is
+  // resolved here, from the live fs config, so `dav.stage` can hand back an fs root +
+  // relative path that fs.read accepts without any path surgery by the caller.
+  if (enabled("dav")) {
+    const c = config.connectors.dav;
+    const configured = Array.isArray(c.accounts)
+      ? (c.accounts as Array<Record<string, unknown>>)
+      : [];
+    if (configured.length === 0) throw new Error("dav enabled but no accounts configured");
+    const davSecrets = (secrets.dav ?? {}) as Record<string, Record<string, unknown> | undefined>;
+    const accounts = configured.map((a) => {
+      const id = String(a.id ?? "");
+      if (!/^[a-z0-9][a-z0-9_-]{0,31}$/.test(id)) {
+        throw new Error(`dav account id '${id}': expected lowercase letters, digits, - or _`);
+      }
+      const origin = String(a.origin ?? "");
+      if (origin === "") throw new Error(`dav account ${id}: origin is required`);
+      const shareRoot = String(a.shareRoot ?? "");
+      if (shareRoot === "") throw new Error(`dav account ${id}: shareRoot is required`);
+      const auth = a.auth === "bearer" ? "bearer" as const : "basic" as const;
+      const secret = davSecrets[id] ?? {};
+      const password = String((auth === "bearer" ? secret.token : secret.password) ?? "");
+      if (password === "") {
+        throw new Error(
+          `dav account ${id}: missing secrets.dav.${id}.${
+            auth === "bearer" ? "token" : "password"
+          }`,
+        );
+      }
+      return {
+        id,
+        origin,
+        shareRoot,
+        user: String(a.user ?? ""),
+        auth,
+        password,
+        writable: a.writable === true,
+      };
+    });
+    const ids = new Set(accounts.map((a) => a.id));
+    if (ids.size !== accounts.length) throw new Error("dav: duplicate account ids");
+    const stagingRoot = String(c.stagingRoot ?? `${config.dataDir}/staging-dav`);
+    const fsRoots = ((config.connectors.fs?.roots ?? []) as Array<Record<string, unknown>>)
+      .map((r) => ({ name: String(r.name), path: String(r.path) }))
+      .filter((r) => stagingRoot === r.path || stagingRoot.startsWith(`${r.path}/`))
+      .sort((x, y) => y.path.length - x.path.length);
+    registry.register(
+      davConnector({
+        accounts,
+        stagingRoot,
+        ...(fsRoots[0] === undefined ? {} : { stagingFsRoot: fsRoots[0] }),
+        ...(c.timeoutMs === undefined ? {} : { timeoutMs: Number(c.timeoutMs) }),
+        ...(c.maxResponseBytes === undefined
+          ? {}
+          : { maxResponseBytes: Number(c.maxResponseBytes) }),
+        ...(c.maxStageBytes === undefined ? {} : { maxStageBytes: Number(c.maxStageBytes) }),
       }),
     );
   }

@@ -115,6 +115,18 @@ overwritten; update is read-modify-write so `VALARM`/vendor props survive).
 before the start; `events.get` returns them; an update replaces DISPLAY alarms only).
 **ATTENDEE/ORGANIZER and EMAIL alarms are refused**: iCloud auto-schedules and would send real mail.
 
+**dav** (14 ops) — WebDAV/Nextcloud files. `dav.accounts` gives each `shareRoot`; every op takes
+`path` relative to it ("" = root, no leading "/", no "..") and returns that same form. Reads:
+`dav.list` (depth 1, not recursive), `dav.stat` (fresh `etag` for writes), `dav.get` (text only,
+64 KiB default — **binary refused → `dav.stage`**), `dav.find({pattern})` (bounded walk;
+`stoppedBy` says which cap), `dav.quota`,
+`dav.stage` (bytes onto the host: returns `staged` for `putStaged`, and `fsRoot`+`path` for
+`fs.read`/`fs.grep`; `dav.staging.clear` prunes). Writes are approval: `dav.put({path, text,
+overwrite?, ifMatch?})`, `dav.putStaged`, `dav.mkdir` (parents included), `dav.move`, `dav.copy`,
+`dav.delete` (a directory also needs `recursive: true`; no grant covers it).
+**Create-only by default** (`If-None-Match: *`): a 412 means it changed — re-read, or pass
+`overwrite: true`. Read-only accounts are refused before approval.
+
 **web** (1 op) — `web.fetch({url, format?:"text"|"html", maxBytes?})`: one http(s) document as text
 (HTML converted best-effort, no JS) or raw markup. Only hosts in the live config's `allowedHosts`
 are reachable; private/loopback/link-local addresses are refused (SSRF guard) and redirects are

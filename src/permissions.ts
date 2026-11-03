@@ -54,7 +54,7 @@ export function derivePermissions(
         net.add(`${acc.host}:${acc.port ?? 993}`);
       }
     }
-    if (name === "caldav") {
+    if (name === "dav" || name === "caldav") {
       for (const a of (c.accounts ?? []) as Array<Record<string, unknown>>) {
         let origin: URL;
         try {
@@ -72,6 +72,14 @@ export function derivePermissions(
         if (origin.hostname === "icloud.com" || origin.hostname.endsWith(".icloud.com")) {
           net.add("*.icloud.com:443");
         }
+      }
+      if (name === "dav" && c.stagingRoot) {
+        // dav.stage writes here and the agent reads what it wrote with fs.*: the
+        // staging root is the only bridge between "bytes on the host" and "a path the
+        // model can grep", so it needs both halves of the grant.
+        const staging = String(c.stagingRoot);
+        read.add(staging);
+        write.add(staging);
       }
     }
     if (name === "forge") {
