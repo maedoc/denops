@@ -21,6 +21,11 @@ const EVENT_ICS = [
   "ACTION:DISPLAY",
   "TRIGGER:-PT15M",
   "END:VALARM",
+  "BEGIN:VALARM",
+  "ACTION:EMAIL",
+  "DESCRIPTION:user-set mail alarm",
+  "TRIGGER:-PT1H",
+  "END:VALARM",
   "END:VEVENT",
   "END:VCALENDAR",
   "",
@@ -214,6 +219,7 @@ Deno.test("caldav: create is If-None-Match: * with text/calendar", async () => {
       start: "2026-03-03T09:00:00+01:00",
       end: "2026-03-03T10:00:00+01:00",
       location: "Bureau",
+      reminders: [{ minutesBefore: 45 }],
     }, "fixed-uid-1");
     assertEquals(created.uid, "fixed-uid-1");
     assertEquals(created.etag, '"etag-2"');
@@ -228,6 +234,11 @@ Deno.test("caldav: create is If-None-Match: * with text/calendar", async () => {
     assertStringIncludes(put.body, "SUMMARY:Réunion\\, budget\\; Q1");
     assertStringIncludes(put.body, "LOCATION:Bureau");
     assertStringIncludes(put.body, "BEGIN:VCALENDAR");
+    // a DISPLAY reminder is a nested VALARM, defaulting to the summary text
+    assertStringIncludes(put.body, "BEGIN:VALARM");
+    assertStringIncludes(put.body, "ACTION:DISPLAY");
+    assertStringIncludes(put.body, "TRIGGER:-PT45M");
+    assertStringIncludes(put.body, "DESCRIPTION:Réunion\\, budget\\; Q1");
   } finally {
     await server.shutdown();
   }
@@ -477,4 +488,75 @@ Deno.test("caldav args: update/delete require an etag, and update needs somethin
   );
   const del = schemaOf("calendar.events.delete");
   assertStringIncludes(String(del({ account: "a", calendar: "Perso", uid: "u1" })), "etag");
+});
+
+Deno.test("caldav: update replaces DISPLAY reminders and keeps a user's email alarm", async () => {
+  const rec: Recorded[] = [];
+  const { server, base } = mockDav(rec);
+  try {
+    const account = hostFor(base).get("icloud");
+    await account.updateEvent("Perso", "evt-1", "etag-1", {
+      reminders: [{ minutesBefore: 10, description: "leave now" }],
+    });
+    const body = rec.find((r) => r.method === "PUT")!.body;
+    const count = (needle: string) => body.split(needle).length - 1;
+    assertEquals(count("BEGIN:VALARM"), 2, body); // the new DISPLAY one + the EMAIL one
+    assertEquals(count("ACTION:DISPLAY"), 1);
+    assertEquals(count("ACTION:EMAIL"), 1, "an EMAIL alarm the user set must survive");
+    assertStringIncludes(body, "TRIGGER:-PT10M");
+    assertStringIncludes(body, "DESCRIPTION:leave now");
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("caldav: events.get surfaces existing reminders", async () => {
+  const rec: Recorded[] = [];
+  const { server, base } = mockDav(rec);
+  try {
+    const account = hostFor(base).get("icloud");
+    const got = await account.getEvent("Perso", "evt-1");
+    assertEquals(got.reminders, [
+      { minutesBefore: 15, action: "DISPLAY" },
+      { minutesBefore: 60, action: "EMAIL", description: "user-set mail alarm" },
+    ]);
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("caldav args: reminders are validated before approval", () => {
+  const create = schemaOf("calendar.events.create");
+  const base = {
+    account: "a",
+    calendar: "Perso",
+    event: { summary: "s", start: "2026-03-03T09:00:00Z" },
+  };
+  const withReminders = (reminders: unknown) =>
+    create({ ...base, event: { ...base.event, reminders } });
+
+  assertEquals(withReminders([{ minutesBefore: 45 }]), null);
+  assertEquals(withReminders([]), null);
+  // an EMAIL alarm sends mail, like changing attendees
+  assertStringIncludes(
+    String(withReminders([{ minutesBefore: 45, action: "EMAIL" }])),
+    "only DISPLAY",
+  );
+  assertStringIncludes(String(withReminders([{ minutesBefore: 99999 }])), "minutesBefore");
+  assertStringIncludes(String(withReminders([{ minutes: 45 }])), "unexpected field");
+  assertStringIncludes(
+    String(withReminders([1, 2, 3, 4, 5, 6].map((m) => ({ minutesBefore: m })))),
+    "too many",
+  );
+  const update = schemaOf("calendar.events.update");
+  assertStringIncludes(
+    String(update({
+      account: "a",
+      calendar: "Perso",
+      uid: "u1",
+      etag: '"e"',
+      patch: { reminders: [{ minutesBefore: 45, action: "EMAIL" }] },
+    })),
+    "only DISPLAY",
+  );
 });

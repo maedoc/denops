@@ -280,6 +280,40 @@ export function objectsOf(doc: IcsDoc, name = "VEVENT"): IcsComponent[] {
 // -----------------------------------------------------------------------------
 // timestamps
 
+/**
+ * A reminder offset as an RFC 5545 DURATION: "45 minutes before" is `-PT45M`,
+ * "at start" is `PT0S`, and a negative `minutesBefore` (after start) is `PT45M`.
+ */
+export function durationOfMinutes(minutesBefore: number): string {
+  const abs = Math.abs(Math.trunc(minutesBefore));
+  if (abs === 0) return "PT0S";
+  const hours = Math.floor(abs / 60);
+  const mins = abs % 60;
+  const duration = `PT${hours > 0 ? `${hours}H` : ""}${mins > 0 ? `${mins}M` : ""}`;
+  return minutesBefore > 0 ? `-${duration}` : duration;
+}
+
+/**
+ * Minutes from an RFC 5545 DURATION ("-PT45M", "PT1H30M", "-P1D"), signed the way the
+ * wire writes it: a negative value is *before* the start. Returns undefined for an
+ * absolute TRIGGER (VALUE=DATE-TIME), which the connector does not model.
+ */
+export function parseDurationMinutes(value: string): number | undefined {
+  const m = /^([+-]?)P(?:(\d+)W)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$/
+    .exec(value.trim().toUpperCase());
+  if (!m) return undefined;
+  const [, sign, weeks, days, hours, minutes, seconds] = m;
+  if (!weeks && !days && !hours && !minutes && !seconds) return undefined;
+  const total = Number(weeks ?? 0) * 10080 + Number(days ?? 0) * 1440 +
+    Number(hours ?? 0) * 60 + Number(minutes ?? 0) + Number(seconds ?? 0) / 60;
+  return Math.round(sign === "-" ? -total : total);
+}
+
+/** Nested VALARM components of an object. */
+export function alarmsOf(component: IcsComponent): IcsComponent[] {
+  return component.children.filter((c) => c.name === "VALARM");
+}
+
 /** iCalendar UTC timestamp: YYYYMMDDTHHMMSSZ (CalDAV time-range uses this format). */
 export function utcStamp(date: Date): string {
   const p = (n: number, width = 2) => String(n).padStart(width, "0");

@@ -103,8 +103,11 @@ window **required**, ≤ 366 days, because one calendar can exceed 1 MB and the 
 recurrence — `calendar.events.get` (by uid; keep the returned `etag`), `calendar.events.search`.
 Writes are approval-tier: `calendar.events.create` (`If-None-Match: *`), `calendar.events.update`
 and `calendar.events.delete` (both need the current `etag`; a stale one is refused, never
-overwritten; update is read-modify-write so VALARM/vendor props survive). **ATTENDEE/ORGANIZER are
-refused** in payloads: iCloud auto-schedules, so a PUT carrying attendees would email people.
+overwritten; update is read-modify-write so `VALARM`/vendor props survive).
+`reminders: [{ minutesBefore,
+  description? }]` sets DISPLAY alarms on create/update (positive =
+before the start; `events.get` returns them; an update replaces DISPLAY alarms only).
+**ATTENDEE/ORGANIZER and EMAIL alarms are refused**: iCloud auto-schedules and would send real mail.
 
 **web** (1 op) — `web.fetch({url, format?:"text"|"html", maxBytes?})`: one http(s) document as text
 (HTML converted best-effort, no JS) or raw markup. Only hosts in the live config's `allowedHosts`

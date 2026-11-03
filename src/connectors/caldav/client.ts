@@ -29,7 +29,9 @@ import {
   xmlEscape,
 } from "./dav.ts";
 import {
+  alarmsOf,
   componentsNamed,
+  durationOfMinutes,
   escapeText,
   getProp,
   type IcsComponent,
@@ -37,6 +39,7 @@ import {
   type IcsProperty,
   localPropName,
   objectsOf,
+  parseDurationMinutes,
   parseIcs,
   serializeIcs,
   setProp,
@@ -73,6 +76,15 @@ export interface Calendar {
   color?: string;
 }
 
+/** A VALARM the connector can author: a DISPLAY reminder at an offset from the start. */
+export interface Reminder {
+  /** positive = before the start, negative = after, 0 = at the start */
+  minutesBefore: number;
+  /** read-back only: what the server had (writes always produce DISPLAY) */
+  action?: string;
+  description?: string;
+}
+
 export interface EventInput {
   summary: string;
   /** ISO 8601 with an explicit offset (or YYYY-MM-DD when allDay) */
@@ -84,6 +96,8 @@ export interface EventInput {
   location?: string;
   rrule?: string;
   uid?: string;
+  /** replaces the DISPLAY alarms; other alarm types on an existing event are preserved */
+  reminders?: Reminder[];
 }
 
 export interface EventSummary {
@@ -104,6 +118,7 @@ export interface EventObject extends EventSummary {
   organizer?: string;
   attendees?: string[];
   rrule?: string;
+  reminders?: Reminder[];
   /** the object as the server sent it, capped at maxBytes */
   ics: string;
   truncated: boolean;
@@ -160,6 +175,23 @@ function timeProperty(name: string, iso: string, allDay: boolean, field: string)
   return { name, params: [], value: utcStamp(requireOffset(iso, field)) };
 }
 
+/** One DISPLAY VALARM. Only DISPLAY is ever written: EMAIL alarms send mail. */
+function alarmComponent(reminder: Reminder, fallbackDescription: string): IcsComponent {
+  return {
+    name: "VALARM",
+    properties: [
+      { name: "ACTION", params: [], value: "DISPLAY" },
+      {
+        name: "DESCRIPTION",
+        params: [],
+        value: escapeText(reminder.description ?? fallbackDescription),
+      },
+      { name: "TRIGGER", params: [], value: durationOfMinutes(reminder.minutesBefore) },
+    ],
+    children: [],
+  };
+}
+
 /** A fresh VCALENDAR around one VEVENT, for create. */
 function buildEvent(input: EventInput, uid: string, allDay: boolean, now: Date): IcsDoc {
   const event: IcsComponent = {
@@ -187,6 +219,9 @@ function buildEvent(input: EventInput, uid: string, allDay: boolean, now: Date):
   }
   if (input.rrule !== undefined) {
     event.properties.push({ name: "RRULE", params: [], value: input.rrule.trim().toUpperCase() });
+  }
+  for (const reminder of input.reminders ?? []) {
+    event.children.push(alarmComponent(reminder, input.summary));
   }
   return {
     components: [{
@@ -589,6 +624,19 @@ class CalDavAccount {
       .map((p) => p.value.replace(/^mailto:/i, ""));
     const rrule = getProp(event, "RRULE");
     const description = getProp(event, "DESCRIPTION");
+    const reminders: Reminder[] = [];
+    for (const alarm of alarmsOf(event)) {
+      const trigger = getProp(alarm, "TRIGGER");
+      const offset = trigger ? parseDurationMinutes(trigger.value) : undefined;
+      if (offset === undefined) continue; // absolute triggers are not modelled
+      const text = getProp(alarm, "DESCRIPTION")?.value;
+      const action = (getProp(alarm, "ACTION")?.value ?? "").trim().toUpperCase();
+      reminders.push({
+        minutesBefore: -offset,
+        ...(action === "" ? {} : { action }),
+        ...(text === undefined ? {} : { description: unescape(text) }),
+      });
+    }
     const truncated = found.ics.length > cap;
     return {
       ...summarize(event),
@@ -598,6 +646,7 @@ class CalDavAccount {
       ...(organizer === undefined ? {} : { organizer: organizer.value.replace(/^mailto:/i, "") }),
       ...(attendees.length > 0 ? { attendees } : {}),
       ...(rrule === undefined ? {} : { rrule: rrule.value }),
+      ...(reminders.length > 0 ? { reminders } : {}),
       ics: truncated ? found.ics.slice(0, cap) : found.ics,
       truncated,
     };
@@ -705,6 +754,20 @@ class CalDavAccount {
     if (patch.end !== undefined) {
       const prop = timeProperty("DTEND", patch.end, allDay, "end");
       setProp(event, prop.name, prop.value, prop.params);
+    }
+    if (patch.reminders !== undefined) {
+      // Replace the DISPLAY alarms only: an EMAIL/AUDIO alarm the user set in a
+      // calendar client is not ours to delete.
+      event.children = event.children.filter((c) =>
+        !(c.name === "VALARM" &&
+          (getProp(c, "ACTION")?.value ?? "").trim().toUpperCase() === "DISPLAY")
+      );
+      const summary = getProp(event, "SUMMARY")?.value ?? "";
+      for (const reminder of patch.reminders) {
+        event.children.push(
+          alarmComponent(reminder, summary === "" ? "Reminder" : unescape(summary)),
+        );
+      }
     }
     setProp(event, "DTSTAMP", utcStamp(new Date()));
 

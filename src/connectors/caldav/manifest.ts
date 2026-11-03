@@ -65,6 +65,40 @@ function attendeeError(field: string, value: unknown): string | null {
   return null;
 }
 
+/**
+ * Reminders are DISPLAY alarms at an offset from the start. EMAIL is refused for the
+ * same reason attendees are: it makes the server send mail to real people.
+ */
+function remindersError(field: string, value: unknown): string | null {
+  if (!Array.isArray(value)) return `${field}: expected an array of { minutesBefore }`;
+  if (value.length > 5) return `${field}: too many (${value.length} > 5)`;
+  for (let i = 0; i < value.length; i++) {
+    const r = value[i];
+    if (!isRecord(r)) return `${field}[${i}]: expected an object`;
+    for (const key of Object.keys(r)) {
+      if (!["minutesBefore", "action", "description"].includes(key)) {
+        return `${field}[${i}]: unexpected field "${key}" (allowed: minutesBefore, action, description)`;
+      }
+    }
+    const m = r.minutesBefore;
+    if (typeof m !== "number" || !Number.isInteger(m) || m < -40320 || m > 40320) {
+      return `${field}[${i}].minutesBefore: expected an integer (positive = before the start, ` +
+        `negative = after, 0 = at the start; max four weeks)`;
+    }
+    if (r.action !== undefined && String(r.action).toUpperCase() !== "DISPLAY") {
+      return `${field}[${i}].action: only DISPLAY reminders can be set — an EMAIL alarm ` +
+        `would make the server send mail, like changing attendees`;
+    }
+    if (
+      r.description !== undefined &&
+      (typeof r.description !== "string" || r.description.length > 512)
+    ) {
+      return `${field}[${i}].description: expected a string of at most 512 chars`;
+    }
+  }
+  return null;
+}
+
 function windowError(field: string, from: unknown, to: unknown): string | null {
   for (const [name, value] of [["from", from], ["to", to]] as const) {
     if (typeof value !== "string" || Number.isNaN(new Date(value).getTime())) {
@@ -100,6 +134,7 @@ export function caldavConnector(deps: CalDavConnectorDeps): Connector {
       "location",
       "rrule",
       "uid",
+      "reminders",
     ];
     for (const key of Object.keys(a)) {
       if (!allowed.includes(key)) {
@@ -146,6 +181,10 @@ export function caldavConnector(deps: CalDavConnectorDeps): Connector {
     if (a.allDay !== undefined && typeof a.allDay !== "boolean") {
       return `${field}.allDay: expected boolean`;
     }
+    if (a.reminders !== undefined) {
+      const err = remindersError(`${field}.reminders`, a.reminders);
+      if (err) return err;
+    }
     return null;
   };
 
@@ -153,7 +192,16 @@ export function caldavConnector(deps: CalDavConnectorDeps): Connector {
     if (!isRecord(a)) return `${field}: expected an object`;
     const attendee = attendeeError(field, a);
     if (attendee) return attendee;
-    const allowed = ["summary", "start", "end", "allDay", "description", "location", "rrule"];
+    const allowed = [
+      "summary",
+      "start",
+      "end",
+      "allDay",
+      "description",
+      "location",
+      "rrule",
+      "reminders",
+    ];
     const keys = Object.keys(a);
     for (const key of keys) {
       if (!allowed.includes(key)) {
@@ -186,6 +234,10 @@ export function caldavConnector(deps: CalDavConnectorDeps): Connector {
     }
     if (a.rrule !== undefined && (typeof a.rrule !== "string" || !/^FREQ=/i.test(a.rrule.trim()))) {
       return `${field}.rrule: expected an RRULE value starting with FREQ=`;
+    }
+    if (a.reminders !== undefined) {
+      const err = remindersError(`${field}.reminders`, a.reminders);
+      if (err) return err;
     }
     return null;
   };
@@ -405,16 +457,25 @@ export function caldavConnector(deps: CalDavConnectorDeps): Connector {
           const when = e.allDay
             ? `${e.start} (all day)`
             : `${e.start}${e.end ? ` → ${e.end}` : ""}`;
+          const reminders = Array.isArray(e.reminders) ? e.reminders.length : 0;
+          const offsets = Array.isArray(e.reminders)
+            ? e.reminders
+              .map((x) => (isRecord(x) ? `${x.minutesBefore} min` : "?"))
+              .join(", ")
+            : "";
           return `Create "${e.summary}" in ${r.calendar} (${r.account}): ${when}` +
-            `${e.rrule ? `, repeating (${e.rrule})` : ""}. ` +
+            `${e.rrule ? `, repeating (${e.rrule})` : ""}` +
+            `${reminders > 0 ? `, ${reminders} reminder(s): ${offsets}` : ""}. ` +
             `Attendees are never set and no invitations are sent.`;
         },
         doc:
           "Create one event in a calendar. args: { account, calendar, event: { summary, start, end?, " +
-          "allDay?, description?, location?, rrule?, uid? } }. Times need an explicit UTC offset; " +
-          "all-day events take YYYY-MM-DD (end is exclusive). Writes with If-None-Match: *, so an " +
-          "existing UID is a conflict, not an overwrite. ATTENDEE/ORGANIZER fields are refused: iCloud " +
-          "auto-schedules invitations. Returns { uid, href, etag }.",
+          "allDay?, description?, location?, rrule?, uid?, reminders? } }. Times need an explicit UTC " +
+          "offset; all-day events take YYYY-MM-DD (end is exclusive). reminders: [{ minutesBefore " +
+          "(positive = before the start, 0 = at the start), description? }] becomes a DISPLAY VALARM. " +
+          "Writes with If-None-Match: *, so an existing UID is a conflict, not an overwrite. " +
+          "ATTENDEE/ORGANIZER and EMAIL alarms are refused: iCloud auto-schedules invitations and " +
+          "would send mail. Returns { uid, href, etag }.",
         argSchema: compose(
           rejectUnknown(),
           acc,
@@ -429,13 +490,26 @@ export function caldavConnector(deps: CalDavConnectorDeps): Connector {
         summarize: (a) => {
           const r = a as { account?: string; calendar?: string; uid?: string; patch?: unknown };
           const fields = isRecord(r.patch) ? Object.keys(r.patch).join(", ") : "?";
-          return `Update event ${r.uid} in ${r.calendar} (${r.account}): change ${fields}. ` +
+          const patch = isRecord(r.patch) ? r.patch : {};
+          const reminderNote = Array.isArray(patch.reminders)
+            ? ` Reminders become ${
+              patch.reminders.length === 0
+                ? "none (all display reminders removed)"
+                : patch.reminders.map((x) => (isRecord(x) ? `${x.minutesBefore} min` : "?")).join(
+                  ", ",
+                )
+            }.`
+            : "";
+          return `Update event ${r.uid} in ${r.calendar} (${r.account}): change ${fields}.` +
+            `${reminderNote} ` +
             `Requires the current etag (stale ⇒ refused, not overwritten). Existing attendees are ` +
             `preserved untouched and no invitations are sent.`;
         },
         doc:
           "Update an event by UID, with the etag from events.get. args: { account, calendar, uid, etag, " +
-          "patch: { summary?, start?, end?, allDay?, description?, location?, rrule? } }. Read-modify-write: " +
+          "patch: { summary?, start?, end?, allDay?, description?, location?, rrule?, reminders? } }. " +
+          "reminders replaces the DISPLAY reminders ([] clears them); EMAIL/AUDIO alarms the user set " +
+          "elsewhere are left alone. Read-modify-write: " +
           "only the named properties change, so VALARM/ATTENDEE/VTIMEZONE/vendor properties survive. " +
           "Sends If-Match; a 412 means the event changed since you read it. Returns { uid, href, etag } " +
           "(the new etag).",
@@ -515,6 +589,7 @@ const CALENDAR_SHAPE: Partial<Record<string, string[]>> = {
     "rrule",
     "organizer",
     "attendees",
+    "reminders",
     "etag",
     "truncated",
   ],

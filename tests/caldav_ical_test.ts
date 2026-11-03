@@ -1,12 +1,14 @@
 import { assert, assertEquals, assertThrows } from "jsr:@std/assert@1";
 import {
   componentsNamed,
+  durationOfMinutes,
   escapeText,
   foldLine,
   formatContentLine,
   getProp,
   objectsOf,
   parseContentLine,
+  parseDurationMinutes,
   parseIcs,
   parseTime,
   removeProp,
@@ -205,4 +207,23 @@ Deno.test("ical: utcStamp is the CalDAV/iCalendar form", () => {
   assertEquals(utcStamp(new Date("2026-03-03T09:04:05Z")), "20260303T090405Z");
   // foldLine leaves a short line alone
   assertEquals(foldLine("UID:abc"), ["UID:abc"]);
+});
+
+Deno.test("ical: reminder durations round-trip in both directions", () => {
+  assertEquals(durationOfMinutes(45), "-PT45M");
+  assertEquals(durationOfMinutes(90), "-PT1H30M");
+  assertEquals(durationOfMinutes(0), "PT0S");
+  assertEquals(durationOfMinutes(-10), "PT10M"); // after the start
+  assertEquals(durationOfMinutes(1440), "-PT24H");
+
+  assertEquals(parseDurationMinutes("-PT45M"), -45);
+  assertEquals(parseDurationMinutes("PT1H30M"), 90);
+  assertEquals(parseDurationMinutes("-P1D"), -1440);
+  assertEquals(parseDurationMinutes("PT0S"), 0);
+  // an absolute TRIGGER (VALUE=DATE-TIME) is not a duration and must not be guessed
+  assertEquals(parseDurationMinutes("20260101T000000Z"), undefined);
+
+  for (const minutes of [0, 5, 45, 60, 90, 1440, -15]) {
+    assertEquals(-parseDurationMinutes(durationOfMinutes(minutes))!, minutes);
+  }
 });

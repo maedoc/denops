@@ -8,6 +8,19 @@ actually talking to instead of probing behaviour.
 Format: `## <version> — <YYYY-MM-DD>`, newest first, then a short bullet list. Keep bullets about
 the API surface; implementation notes belong in the commit message.
 
+## 0.5.1 — 2026-11-03
+
+- **Reminders on `calendar.events.create` / `calendar.events.update`.** Both take
+  `reminders: [{ minutesBefore, description? }]` — positive minutes before the start, `0` at the
+  start, negative after — which become `DISPLAY` VALARMs, and `calendar.events.get` returns the
+  reminders an event already has (with `action`, so a caller can see an `EMAIL`/`AUDIO` alarm it did
+  not set). Values are validated in `argSchema` before approval: an integer within ±4 weeks and at
+  most 5 reminders.
+- **`EMAIL` alarms are refused** for the same reason attendees are: the server sends real mail to
+  real people. `AUDIO`/`EMAIL` alarms already on an event are left alone when reminders are replaced
+  — only `DISPLAY` alarms are considered ours to rewrite.
+- An update that sets `reminders: []` clears the display reminders and nothing else.
+
 ## 0.5.0 — 2026-11-03
 
 - **`calendar.*` (8 ops): CalDAV, read and write.** Per-account Basic/bearer auth from
