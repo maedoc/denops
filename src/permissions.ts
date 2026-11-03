@@ -215,6 +215,18 @@ export interface permissionFlagsOpts {
    * credentials the server itself never needed in-process.
    */
   noEnv?: boolean;
+  /**
+   * Names to re-grant under `noEnv`, as `--allow-env=<names>`. Only for modules that
+   * probe a specific variable at *import* time: the child's graph pulls imapflow → pino
+   * → thread-stream, which reads `NODE_V8_COVERAGE` while it loads, so without this the
+   * process dies before the op it was asked to run. Names allowed here carry no secrets.
+   */
+  envAllow?: string[];
+  /**
+   * Names to re-grant under `noEnv`, as `--allow-sys=<names>`. Same reason: pino stamps
+   * `os.hostname()` on every log record it builds.
+   */
+  sysAllow?: string[];
 }
 
 /** Turn a plan into `deno run` flags. Never emits a bare --allow-all/read/write/net. */
@@ -222,7 +234,17 @@ export function permissionFlags(plan: PermissionPlan, opts: permissionFlagsOpts 
   const flags = [`--allow-net=${plan.net.join(",")}`];
   if (plan.read.length > 0) flags.push(`--allow-read=${plan.read.join(",")}`);
   if (plan.write.length > 0) flags.push(`--allow-write=${plan.write.join(",")}`);
-  if (!opts.noEnv) flags.push("--allow-env", "--allow-sys");
+  if (opts.noEnv) {
+    // scoped, never bare: an empty list stays fully denied
+    if (opts.envAllow && opts.envAllow.length > 0) {
+      flags.push(`--allow-env=${opts.envAllow.join(",")}`);
+    }
+    if (opts.sysAllow && opts.sysAllow.length > 0) {
+      flags.push(`--allow-sys=${opts.sysAllow.join(",")}`);
+    }
+  } else {
+    flags.push("--allow-env", "--allow-sys");
+  }
   if (plan.run.length > 0) flags.push(`--allow-run=${plan.run.join(",")}`);
   return flags;
 }

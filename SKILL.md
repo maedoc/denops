@@ -112,7 +112,8 @@ real APIs), `deploy.status`, `deploy.promote` (approval: runs the test task, rec
 `deploy.rollback({commit?})`. `dev.try` runs **committed, checked code only** — a dirty tracked tree
 is refused and the root's `check` must have passed for this tree — inside a pinned child (read =
 checkout + secrets symlink, write = its `dataDir`, net = hosts the **live** config declares, no
-subprocess), so `NotCapable` means the op left that envelope. Returns
+subprocess, and no env/sys beyond `NODE_V8_COVERAGE`/`hostname`, which its own module graph probes
+while loading), so `NotCapable` means the op left that envelope. Returns
 `{code, stdout, stderr, commit, subject, dirty, check}`. Flow: edit → `dev.run("check")`/`("test")`
 → `dev.git commit` → `dev.try` → `deploy.promote` (human approves) → supervisor restarts, probes
 `/health`, soaks 60 s, advances `main`; failure auto-reverts. `deploy.status` shows live/main/dev

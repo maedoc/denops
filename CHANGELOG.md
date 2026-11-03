@@ -8,6 +8,16 @@ actually talking to instead of probing behaviour.
 Format: `## <version> — <YYYY-MM-DD>`, newest first, then a short bullet list. Keep bullets about
 the API surface; implementation notes belong in the commit message.
 
+## 0.4.1 — 2026-11-03
+
+- `dev.try` works again under the 0.4.x child envelope. Dropping `--allow-env`/`--allow-sys`
+  outright killed the child before it ran anything: the app graph pulls imapflow → pino →
+  thread-stream, which reads `NODE_V8_COVERAGE` **at import time** and `os.hostname()` for every log
+  record. It failed closed with `Requires env access to "NODE_V8_COVERAGE"`, reported as a JSON
+  `error` with exit code 0, so `dev.try` looked like an op that returns nothing. The child now gets
+  exactly those two names — `--allow-env=NODE_V8_COVERAGE --allow-sys=hostname`, never unscoped —
+  and the op result's `commit` stays `null`, which is the proof env access is still denied.
+
 ## 0.4.0 — 2026-11-03
 
 - **A degraded connector no longer stops the server from starting.** `startup.validate: full`

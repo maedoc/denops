@@ -320,3 +320,27 @@ Deno.test("dev.try: a red check blocks, and a dataDir escape is refused", async 
     await Deno.remove(escape.base, { recursive: true });
   }
 });
+
+// Regression: the 0.4.x try-child dropped --allow-env/--allow-sys outright and died
+// before running the op, because its module graph (imapflow → pino → thread-stream)
+// reads NODE_V8_COVERAGE while loading and os.hostname() when building a log record.
+// It failed closed with a JSON error and exit 0, so dev.try looked like an op that
+// returns nothing. Exactly those two names are re-granted, nothing unscoped.
+Deno.test("dev.try child: no env/sys reach except the names its module graph probes", () => {
+  const plan = tryPermissions({ devRoot: "/r/dev", net: ["h:1"] });
+  const bare = permissionFlags(plan, { noEnv: true });
+  assert(!bare.some((f) => f === "--allow-env" || f.startsWith("--allow-env=")), "fully denied");
+  assert(!bare.some((f) => f === "--allow-sys" || f.startsWith("--allow-sys=")), "fully denied");
+
+  const flags = permissionFlags(plan, {
+    noEnv: true,
+    envAllow: ["NODE_V8_COVERAGE"],
+    sysAllow: ["hostname"],
+  });
+  assert(flags.includes("--allow-env=NODE_V8_COVERAGE"), flags.join(" "));
+  assert(flags.includes("--allow-sys=hostname"), flags.join(" "));
+  // scoped only: a bare grant would re-open every variable on the host
+  assert(!flags.includes("--allow-env"), "never unscoped env");
+  assert(!flags.includes("--allow-sys"), "never unscoped sys");
+  assert(!flags.some((f) => f.startsWith("--allow-all")), "never --allow-all");
+});

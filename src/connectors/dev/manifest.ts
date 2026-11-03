@@ -361,9 +361,16 @@ export function devConnector(opts: DevConnectorOptions): Connector {
         const argv = [
           Deno.execPath(),
           "run",
-          // the child runs agent-written code: no env/sys reach at all. It reads
-          // its config from argv and file paths it's already allowed to read.
-          ...permissionFlags(plan, { noEnv: true }),
+          // The child runs agent-written code, so it gets no env/sys reach — except the
+          // two non-secret names its own module graph probes while loading: imapflow
+          // pulls in pino → thread-stream, which reads NODE_V8_COVERAGE at import time
+          // and os.hostname() for every log record. Without these the child dies before
+          // the op runs, which is a silent dev.try outage, not a security win.
+          ...permissionFlags(plan, {
+            noEnv: true,
+            envAllow: ["NODE_V8_COVERAGE"],
+            sysAllow: ["hostname"],
+          }),
           `${r.path}/scripts/dev_try.ts`,
           r.path,
           op,
