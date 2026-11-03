@@ -43,7 +43,12 @@ function response(href: string, props: string, status = "HTTP/1.1 200 OK"): stri
  */
 function mockDav(
   recorded: Recorded[],
-  opts: { quota?: boolean; unlimited?: boolean; nextcloud?: boolean } = {},
+  opts: {
+    quota?: boolean;
+    unlimited?: boolean;
+    nextcloud?: boolean;
+    liveRevisionInVersions?: boolean;
+  } = {},
 ) {
   const nodes = new Map<string, Node>();
   let nextFileId = 100;
@@ -72,6 +77,7 @@ function mockDav(
     { name: string; original: string; deleted: number; bytes: Uint8Array }
   >();
   let nextVersion = 1_700_000_000;
+  const liveRev = 1_900_000_000;
   const versionHistory = new Map<
     number,
     Array<{ version: string; bytes: Uint8Array; mtime: string }>
@@ -155,7 +161,16 @@ function mockDav(
           : `<d:response><d:href>/remote.php/dav/versions/alice/versions/${fileid}/${fileid}` +
             `</d:href><d:propstat><d:prop><d:getcontentlength>${cur.bytes.byteLength}` +
             `</d:getcontentlength></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>`;
-        const rows = currentRow +
+        const cur2 = nodes.get(file[0]);
+        const liveRow = opts.liveRevisionInVersions === false || cur2 === undefined
+          ? ""
+          : `<d:response><d:href>/remote.php/dav/versions/alice/versions/${fileid}/${liveRev}` +
+            `</d:href><d:propstat><d:prop><d:getcontentlength>${cur2.bytes.byteLength}` +
+            `</d:getcontentlength><d:getlastmodified>${
+              new Date().toUTCString()
+            }</d:getlastmodified>` +
+            `</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>`;
+        const rows = currentRow + liveRow +
           versions.map((v) =>
             `<d:response><d:href>/remote.php/dav/versions/alice/versions/${fileid}/${v.version}` +
             `</d:href><d:propstat><d:prop><d:getcontentlength>${v.bytes.byteLength}` +
@@ -168,6 +183,10 @@ function mockDav(
         );
       }
       if (req.method === "GET") {
+        if (version === String(liveRev)) {
+          // the live revision is listed but not servable as a node, exactly like Nextcloud
+          return new Response("live revision", { status: 404 });
+        }
         const v = (versionHistory.get(fileid) ?? []).find((x) => x.version === version);
         if (!v) return new Response("no such version", { status: 404 });
         return new Response(v.bytes as unknown as BodyInit, {
@@ -1331,14 +1350,16 @@ Deno.test("dav: versions lists history and restoring is reversible", async () =>
       current?: { version: string; size?: number };
       versions: Array<{ version: string; size?: number; modified?: string }>;
     };
-    assertEquals(out.total, 2, "two overwrites, two versions");
+    // Nextcloud lists two historical revisions plus the live one; the live one is the
+    // newest and is not a rollback target (see the dedicated test below).
+    assertEquals(out.total, 3, "two overwrites, two versions, plus the live revision");
     assertEquals(out.versions[0].size, 3, "newest first");
     assert(out.fileid > 0);
     // the live content is listed by Nextcloud under the file id; it is not a choice
     assertEquals(out.current?.version, String(out.fileid));
     assertEquals(out.versions.some((v) => v.version === String(out.fileid)), false);
 
-    const version = out.versions[0].version;
+    const version = out.versions[1].version; // the one before the last overwrite
     const restored = await h.call("versions.restore", {
       path: "docs/draft.md",
       version,
@@ -1357,7 +1378,7 @@ Deno.test("dav: versions lists history and restoring is reversible", async () =>
     );
     // reversible: the content that was current is now itself a version
     const after = await h.call("versions.list", { path: "docs/draft.md" }) as { total: number };
-    assertEquals(after.total, 3);
+    assertEquals(after.total, 4, "the content that was current became another version");
 
     const bad = await assertRejects(() =>
       h.call("versions.restore", { path: "docs/draft.md", version: "not-a-version" })
@@ -1389,5 +1410,44 @@ Deno.test("dav: the Nextcloud trees are absent, not broken, on a plain WebDAV se
     assertStringIncludes(err.message, "not a Nextcloud files root");
   } finally {
     await odd.close();
+  }
+});
+
+Deno.test("dav: restoring the live revision says so, and names what is retrievable", async () => {
+  const h = await harness();
+  try {
+    await h.call("put", { path: "docs/roll.md", text: "one\n" });
+    await h.call("put", { path: "docs/roll.md", text: "two\n", overwrite: true });
+    const listed = await h.call("versions.list", { path: "docs/roll.md" }) as {
+      versions: Array<{ version: string; size?: number }>;
+    };
+    // the newest entry is the live content (Nextcloud lists it, serves only the file)
+    const live = listed.versions[0];
+    assertEquals(live.size, 4, "the live revision is in the list");
+
+    const err = await assertRejects(() =>
+      h.call("versions.restore", { path: "docs/roll.md", version: live.version })
+    ) as Error;
+    assertStringIncludes(err.message, "not retrievable");
+    assertStringIncludes(err.message, "only as the file");
+    assertStringIncludes(err.message, "Retrievable versions", err.message);
+
+    // and one of those named versions actually works
+    const older = listed.versions[1];
+    const ok = await h.call("versions.restore", {
+      path: "docs/roll.md",
+      version: older.version,
+    }) as {
+      restored: string;
+      previousKeptAsVersion: boolean;
+    };
+    assertEquals(ok.restored, older.version);
+    assertEquals(ok.previousKeptAsVersion, true);
+    assertEquals(
+      new TextDecoder().decode(h.nodes.get(`${SHARE}/docs/roll.md`)!.bytes),
+      "one\n",
+    );
+  } finally {
+    await h.close();
   }
 });

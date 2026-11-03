@@ -8,6 +8,18 @@ actually talking to instead of probing behaviour.
 Format: `## <version> — <YYYY-MM-DD>`, newest first, then a short bullet list. Keep bullets about
 the API surface; implementation notes belong in the commit message.
 
+## 0.13.3 — 2026-11-03
+
+- **The newest entry in `dav.versions.list` is the live revision, and it is not a rollback target.**
+  Nextcloud lists the content that is currently in the file among the versions (with the highest
+  timestamp) but serves that node only as the file itself, so a restore of it answers 404. Confirmed
+  on `insbox`: the pre-overwrite version GETs fine, the live one 404s. `dav.versions.restore` now
+  recognizes that case and says so in words, then names the versions that *are* retrievable (probing
+  up to three with a one-byte ranged GET) — instead of relaying a bare `Sabre\DAV\Exception\NotFound`
+  and leaving the caller to guess. It never substitutes a different version silently.
+- The version GET also stopped labelling itself `dav.get "<file>"` in errors: a failure while reading
+  a version node now names `<file> (version <id>)`, which is what actually failed.
+
 ## 0.13.2 — 2026-11-03
 
 - **`dav.versions.restore` no longer destroys the file it restores.** 0.13.1 moved the version node

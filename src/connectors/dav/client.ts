@@ -1350,11 +1350,26 @@ class DavAccount {
     const meta = await this.fileMeta(path);
     // The version body is relayed byte-for-byte (never decoded), so a binary rollback
     // works too; the cap only bounds what one op is allowed to hold in memory.
-    const reply = await this.expect("GET", this.ncUrl("versions", [meta.id, version]), {
-      ok: [200],
-      maxBytes: MAX_VERSION_BYTES,
-      path: path.rel,
-    });
+    const versionUrl = this.ncUrl("versions", [meta.id, version]);
+    let reply;
+    try {
+      reply = await this.expect("GET", versionUrl, {
+        ok: [200],
+        maxBytes: MAX_VERSION_BYTES,
+        path: `${path.rel} (version ${version})`,
+      });
+    } catch (err) {
+      // Nextcloud lists the live revision among the versions but serves it only as the
+      // file itself, so its node answers 404. Say which versions *are* retrievable
+      // rather than passing on a bare 404 — measured on 33/34.
+      if (!/\(404\)/.test((err as Error).message)) throw err;
+      throw new Error(
+        `dav.versions.restore: version ${version} is not retrievable for ` +
+          `${JSON.stringify(path.rel)} — Nextcloud lists the live revision among the versions ` +
+          `but serves it only as the file, and rolling back to it is a no-op anyway. ` +
+          `${await this.retrievableHint(path, version)}`,
+      );
+    }
     if (reply.bytes.byteLength > MAX_VERSION_BYTES) {
       throw new Error(
         `dav.versions.restore: version ${version} of ${JSON.stringify(path.rel)} is over the ` +
@@ -1382,6 +1397,45 @@ class DavAccount {
         ? { note: "no etag was available, so the write was unconditional" }
         : {}),
     } as unknown as JsonValue;
+  }
+
+  /** One-byte probe: is this version node actually servable? */
+  private async versionServable(fileid: string, version: string): Promise<boolean> {
+    try {
+      const reply = await this.send("GET", this.ncUrl("versions", [fileid, version]), {
+        maxBytes: 1,
+        partial: true,
+        headers: { range: "bytes=0-0" },
+      });
+      return reply.status === 200 || reply.status === 206;
+    } catch {
+      return false;
+    }
+  }
+
+  /** "Try one of these instead": the newest versions that actually answer. */
+  private async retrievableHint(path: DavPath, skip: string): Promise<string> {
+    try {
+      const listed = await this.versionsList(path, 6) as {
+        fileid: number;
+        versions: Array<{ version: string; size?: number; modified?: string }>;
+      };
+      const usable: string[] = [];
+      for (const v of listed.versions) {
+        if (v.version === skip) continue;
+        if (usable.length >= 3) break;
+        if (await this.versionServable(String(listed.fileid), v.version)) {
+          const size = v.size === undefined ? "" : `, ${v.size} B`;
+          const when = v.modified === undefined ? "" : `, ${v.modified}`;
+          usable.push(`${v.version}${size}${when}`);
+        }
+      }
+      return usable.length === 0
+        ? "No other version of this file is retrievable either."
+        : `Retrievable versions (newest first): ${usable.join("; ")}.`;
+    } catch {
+      return "Run dav.versions.list to see which versions exist.";
+    }
   }
 
   /** Depth-1 listing without paging, used by find/quota-class ops. */
