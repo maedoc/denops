@@ -12,7 +12,10 @@ async function main(): Promise<void> {
   if (enabled("forge")) {
     const { ForgeHttp, defaultMaxLimit } = await import("../src/connectors/forge/client.ts");
     const f = config.connectors.forge;
-    const forgeSecrets = (secrets.forge ?? {}) as Record<string, Record<string, unknown> | undefined>;
+    const forgeSecrets = (secrets.forge ?? {}) as Record<
+      string,
+      Record<string, unknown> | undefined
+    >;
     const legacy = String((secrets.gitlab as Record<string, unknown> | undefined)?.token ?? "");
     for (const a of ((f.accounts ?? []) as Array<Record<string, unknown>>)) {
       const id = String(a.id);

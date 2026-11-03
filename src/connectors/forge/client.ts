@@ -149,8 +149,6 @@ export class ForgeHttp {
   }
 }
 
-
-
 function scopeHint(status: number): string {
   if (status === 401) return "the token was rejected (check secrets.forge.<account>.token)";
   if (status === 403) return "the token lacks a required scope for this call";

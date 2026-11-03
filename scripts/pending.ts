@@ -51,7 +51,10 @@ async function resume(
     const { forgeConnector } = await import("../src/connectors/forge/manifest.ts");
     const { defaultMaxLimit } = await import("../src/connectors/forge/client.ts");
     const f = config.connectors.forge;
-    const forgeSecrets = (secrets.forge ?? {}) as Record<string, Record<string, unknown> | undefined>;
+    const forgeSecrets = (secrets.forge ?? {}) as Record<
+      string,
+      Record<string, unknown> | undefined
+    >;
     const legacy = String((secrets.gitlab as Record<string, unknown> | undefined)?.token ?? "");
     const accounts = ((f.accounts ?? []) as Array<Record<string, unknown>>).map((a) => {
       const flavor = String(a.flavor ?? "gitlab") as "gitlab" | "forgejo" | "github";
