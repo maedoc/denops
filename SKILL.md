@@ -89,13 +89,22 @@ them): `glob`, `list`, `read` (line windows with `hasMore`), `grep` (regex, capp
 - **Grants are levelled**: approving the first op on a root records `fs:<root>:read` or
   `fs:<root>:write` (implies read); `fs.rm`/`fs.exec` are never grant-covered.
   `grants({action, key})`. **denops** (6 ops) — `denops.skill` (this document; `{ section }`
-  filters), `denops.about` (version, skill freshness, connector families, `degraded` +
-  why), `denops.version`
-  (version, commit, CHANGELOG head — check this instead of probing whether a fix deployed),
-  `denops.budget` (remaining wall clock and op count for THIS run — call it before long loops or
-  multi-step writes), `denops.oplog` (read-only, redacted run log: recent runs, their ops, statuses,
-  approval/error counts; no args, no result bodies). A non-empty `about().degraded` means that
-  family failed its startup reachability probe: only its own ops fail, the server is up.
+  filters), `denops.about` (version, skill freshness, connector families, `degraded` + why),
+  `denops.version` (version, commit, CHANGELOG head — check this instead of probing whether a fix
+  deployed), `denops.budget` (remaining wall clock and op count for THIS run — call it before long
+  loops or multi-step writes), `denops.oplog` (read-only, redacted run log: recent runs, their ops,
+  statuses, approval/error counts; no args, no result bodies). A non-empty `about().degraded` means
+  that family failed its startup reachability probe: only its own ops fail, the server is up.
+
+**calendar** (8 ops) — CalDAV (iCloud, Nextcloud). `calendar.accounts`, `calendar.calendars.list`
+(says which collections hold VEVENT vs VTODO — event ops are VEVENT-only and refuse a VTODO one
+instead of reporting it empty), `calendar.events.list({account, calendar, from, to, limit?})` —
+window **required**, ≤ 366 days, because one calendar can exceed 1 MB and the server expands
+recurrence — `calendar.events.get` (by uid; keep the returned `etag`), `calendar.events.search`.
+Writes are approval-tier: `calendar.events.create` (`If-None-Match: *`), `calendar.events.update`
+and `calendar.events.delete` (both need the current `etag`; a stale one is refused, never
+overwritten; update is read-modify-write so VALARM/vendor props survive). **ATTENDEE/ORGANIZER are
+refused** in payloads: iCloud auto-schedules, so a PUT carrying attendees would email people.
 
 **web** (1 op) — `web.fetch({url, format?:"text"|"html", maxBytes?})`: one http(s) document as text
 (HTML converted best-effort, no JS) or raw markup. Only hosts in the live config's `allowedHosts`
@@ -107,8 +116,8 @@ re-validated. A refused host is a config question for the operator, not somethin
 `{code, stdout, stderr, sha, dirty}` and records the outcome against the current **tree**, by exit
 code and tree identity, never by output), `dev.git({root, action, message?})`,
 `dev.try({root, op, args})` (one op from the dev checkout's own registry that is **open-tier on the
-live server** — the checkout's own manifest cannot reopen an approval op — against the
-real APIs), `deploy.status`, `deploy.promote` (approval: runs the test task, records intent),
+live server** — the checkout's own manifest cannot reopen an approval op — against the real APIs),
+`deploy.status`, `deploy.promote` (approval: runs the test task, records intent),
 `deploy.rollback({commit?})`. `dev.try` runs **committed, checked code only** — a dirty tracked tree
 is refused and the root's `check` must have passed for this tree — inside a pinned child (read =
 checkout + secrets symlink, write = its `dataDir`, net = hosts the **live** config declares, no

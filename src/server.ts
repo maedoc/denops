@@ -24,6 +24,7 @@ import { fsConnector, fsGrantKey } from "./connectors/fs/manifest.ts";
 import { debugConnector } from "./connectors/debug/manifest.ts";
 import { gitlabConnector } from "./connectors/gitlab/manifest.ts";
 import { mistralConnector } from "./connectors/mistral/manifest.ts";
+import { caldavConnector } from "./connectors/caldav/manifest.ts";
 
 const configPath = Deno.args[0] ?? "config.yaml";
 const secretsPath = Deno.args[1] ?? "secrets.json";
@@ -250,7 +251,7 @@ export async function buildApp(configPath: string, secretsPath: string): Promise
   registry.register(
     denopsConnector({
       skillPath: "SKILL.md",
-      version: "0.4.1",
+      version: "0.5.0",
       // the supervisor exports the commit it checked out
       // The env-reading child (dev_try) runs with no --allow-env; the commit is
       // informational, so an inaccessible DENOPS_COMMIT is just "unknown" there.
@@ -309,6 +310,44 @@ export async function buildApp(configPath: string, secretsPath: string): Promise
     }
     const { imapConnector } = await import("./connectors/imap/manifest.ts");
     registry.register(imapConnector({ accounts }));
+  }
+
+  // Calendar (CalDAV). Same shape as mail: credentials come from secrets.json keyed by
+  // account id, and never from an op argument.
+  if (enabled("caldav")) {
+    const c = config.connectors.caldav;
+    const configured = Array.isArray(c.accounts)
+      ? (c.accounts as Array<Record<string, unknown>>)
+      : [];
+    if (configured.length === 0) throw new Error("caldav enabled but no accounts configured");
+    const calSecrets = (secrets.calendar ?? {}) as Record<
+      string,
+      Record<string, unknown> | undefined
+    >;
+    const accounts = configured.map((a) => {
+      const id = String(a.id ?? "");
+      if (id === "") throw new Error("caldav account without an id");
+      const auth = a.auth === "bearer" ? "bearer" as const : "basic" as const;
+      const secret = calSecrets[id] ?? {};
+      const password = String((auth === "bearer" ? secret.token : secret.password) ?? "");
+      if (password === "") {
+        throw new Error(
+          `caldav account ${id}: missing secrets.calendar.${id}.${
+            auth === "bearer" ? "token" : "password"
+          }`,
+        );
+      }
+      const origin = String(a.origin ?? "");
+      if (origin === "") throw new Error(`caldav account ${id}: origin is required`);
+      return { id, origin, user: String(a.user ?? ""), auth, password };
+    });
+    registry.register(
+      caldavConnector({
+        accounts,
+        ...(c.timeoutMs === undefined ? {} : { timeoutMs: Number(c.timeoutMs) }),
+        ...(c.maxBytes === undefined ? {} : { maxBytes: Number(c.maxBytes) }),
+      }),
+    );
   }
 
   // Validation is a reachability probe, not a config-sanity check (missing secrets and

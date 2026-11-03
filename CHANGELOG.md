@@ -8,6 +8,30 @@ actually talking to instead of probing behaviour.
 Format: `## <version> — <YYYY-MM-DD>`, newest first, then a short bullet list. Keep bullets about
 the API surface; implementation notes belong in the commit message.
 
+## 0.5.0 — 2026-11-03
+
+- **`calendar.*` (8 ops): CalDAV, read and write.** Per-account Basic/bearer auth from
+  `secrets.calendar.<id>`, discovery (`current-user-principal` → `calendar-home-set`, falling back
+  to PROPFIND because iCloud answers `/.well-known/caldav` with 400), `calendars.list`,
+  `events.list`, `events.get`, `events.search`, and approval-tier `events.create` / `events.update`
+  / `events.delete`.
+- Read paths require a bounded window (`from`/`to`, ≤ 366 days) and a limit: one real calendar
+  serialises 332 events to ~1.3 MB, above `maxOpResultBytes`, so an unbounded listing is rejected
+  rather than silently truncated. Recurrence is expanded by the server (time-range filter), so there
+  is still no RRULE engine here, and a calendar is refused when it holds VTODO rather than VEVENT
+  instead of looking empty.
+- Writes are ETag-gated: `If-None-Match: *` on create, `If-Match` on update/delete, and a `412`
+  becomes "it changed, re-read for a fresh etag" — never a blind retry. `events.update` is
+  read-modify-write, so `VALARM`, `ATTENDEE`, `VTIMEZONE` and vendor properties survive a change.
+- **Attendees are never written.** iCloud advertises `calendar-auto-schedule`, so a PUT carrying
+  `ATTENDEE` can make the server email real invitations. Payloads with attendee/organizer fields are
+  refused in `argSchema`, before an approval is requested; existing attendees are preserved
+  untouched. Event times must carry a UTC offset (or be all-day dates) — no floating times.
+- iCloud specifics handled in code: its per-partition `calendar-home-set` host
+  (`pNN-caldav.icloud.com`) is granted as `--allow-net=*.icloud.com:443` and every URL — discovery
+  hrefs, redirect hops, calendar hrefs — is pinned to the account's host or, for iCloud, the same
+  registrable domain. `free-busy-query` is advertised but returns 400, so no op depends on it.
+
 ## 0.4.1 — 2026-11-03
 
 - `dev.try` works again under the 0.4.x child envelope. Dropping `--allow-env`/`--allow-sys`
@@ -22,8 +46,8 @@ the API surface; implementation notes belong in the commit message.
 
 - **A degraded connector no longer stops the server from starting.** `startup.validate: full`
   awaited every connector's reachability probe unguarded, so one unreachable dependency made
-  `buildApp` reject, the server never bound its port, and Caddy answered **502 for every op**
-  while the supervisor restarted the same commit forever. (Live cause: the Proton IMAP bridge on
+  `buildApp` reject, the server never bound its port, and Caddy answered **502 for every op** while
+  the supervisor restarted the same commit forever. (Live cause: the Proton IMAP bridge on
   `127.0.0.1:1143` stopped running; `mail` was the first probe.) A failing probe now records that
   connector as **degraded** — still registered, its own ops fail when called, everything else keeps
   serving.
@@ -32,7 +56,7 @@ the API surface; implementation notes belong in the commit message.
   Startup logs one `[startup] DEGRADED <connector>: …` line plus a summary.
 - New `startup.failFast` (default **false**). `true` restores the previous all-or-nothing startup.
   Missing secrets, an impossible connector config and a non-loopback bind without a token remain
-  fatal either way — only *reachability* degrades.
+  fatal either way — only _reachability_ degrades.
 
 ## 0.3.1 — 2026-11-02
 

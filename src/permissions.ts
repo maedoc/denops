@@ -54,6 +54,26 @@ export function derivePermissions(
         net.add(`${acc.host}:${acc.port ?? 993}`);
       }
     }
+    if (name === "caldav") {
+      for (const a of (c.accounts ?? []) as Array<Record<string, unknown>>) {
+        let origin: URL;
+        try {
+          origin = new URL(String(a.origin));
+        } catch {
+          continue; // a bad origin is reported by the connector's own build-time check
+        }
+        net.add(
+          `${origin.hostname}:${origin.port || (origin.protocol === "http:" ? "80" : "443")}`,
+        );
+        // iCloud answers calendar-home-set on a per-partition host
+        // (pNN-caldav.icloud.com) whose name is only known after discovery, so the
+        // wildcard has to be in the sandbox envelope up front. The fetch layer pins
+        // requests to the same registrable domain on top of this.
+        if (origin.hostname === "icloud.com" || origin.hostname.endsWith(".icloud.com")) {
+          net.add("*.icloud.com:443");
+        }
+      }
+    }
     if (name === "web") {
       // A list that the YAML reader handed back as a scalar must not be iterated
       // character by character into --allow-net (it once produced "[:53", "1:53"…).

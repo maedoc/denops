@@ -92,11 +92,34 @@ connectors:
     #   socketTimeoutMs: 300000  # drop + reconnect after this much socket inactivity (default 5 min)
     #   # password lives in secrets.json as mail.work.password
 
+# --- calendars (optional, CalDAV) ---------------------------------------------
+#  caldav: read events, and write them under ETag discipline (update/delete need the
+#          etag from calendar.events.get; create is If-None-Match: * so it never
+#          overwrites). Two being-an-iCloud-client details are handled in code, not
+#          config: discovery falls back to PROPFIND when /.well-known/caldav is not
+#          implemented (iCloud answers 400 with an app password), and iCloud's
+#          per-partition home host (pNN-caldav.icloud.com) is granted automatically as
+#          --allow-net=*.icloud.com:443.
+#
+#          Writes NEVER set ATTENDEE/ORGANIZER: iCloud advertises calendar-auto-schedule,
+#          so a PUT carrying attendees can email real invitations. Payloads with those
+#          fields are refused before an approval is ever requested.
+#
+#   caldav:
+#     enabled: true
+#     accounts:
+#       - id: icloud
+#         origin: https://caldav.icloud.com   # scheme+host (https required), no path guessing
+#         user: me@example.org                # Apple ID, or the Nextcloud login
+#         auth: basic                         # basic = app password; bearer = token
+#         # Nextcloud: origin: https://cloud.example.org (path discovery is automatic)
+#         # password lives in secrets.json as calendar.icloud.password
+#         # (bearer tokens: calendar.<id>.token)
+
 startup:
   # full: probe reachability of every enabled connector at startup (a chatty, credential-
   # checking connector logs what it found). none: skip probing (dev only).
-  validate: full
-  # false (default): an unreachable connector is logged as DEGRADED, stays registered, is
+  validate: full  # false (default): an unreachable connector is logged as DEGRADED, stays registered, is
   # listed by /health and denops.about, and only its own ops fail. true: refuse to start.
   # Missing secrets or an impossible connector config is fatal either way.
   failFast: false
