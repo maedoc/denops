@@ -368,7 +368,7 @@ export function githubPort(http: ForgeHttp): ForgePort {
         try {
           const repo = obj(await http.get(repoPath(ref)));
           const def = str(repo.default_branch);
-          if (def) for (const b of items) b.default = b.name === def;
+          if (def) { for (const b of items) b.default = b.name === def; }
         } catch {
           // listing must not fail on a detail read
         }
@@ -400,7 +400,13 @@ export function githubPort(http: ForgeHttp): ForgePort {
         return {
           path: str(row.path) ?? str(row.name) ?? "",
           name: str(row.name) ?? "",
-          type: kind === "dir" ? "dir" : kind === "submodule" ? "submodule" : kind === "symlink" ? "symlink" : "file",
+          type: kind === "dir"
+            ? "dir"
+            : kind === "submodule"
+            ? "submodule"
+            : kind === "symlink"
+            ? "symlink"
+            : "file",
           size: num(row.size),
         };
       });

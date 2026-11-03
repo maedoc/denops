@@ -19,7 +19,13 @@
     "strict": true
   },
   "fmt": {
-    "lineWidth": 100
+    "lineWidth": 100,
+    "exclude": [
+      "tests/fixtures/",
+      "CHANGELOG.md",
+      "AGENTS.md",
+      "SKILL.md"
+    ]
   },
   "lint": {
     "rules": {

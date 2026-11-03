@@ -335,7 +335,7 @@ Deno.test("conformance/github: comments, commits and branches normalize", async 
   }
 });
 
-Deno.test("conformance/github: tree entries, raw file text and users", async () => {
+Deno.test("conformance/github: tree entries, raw file text and users", () => {
   const rows = gh<Array<Record<string, unknown>>>("tree_page.json");
   assert(rows.length > 0);
   for (const row of rows) {
