@@ -115,17 +115,18 @@ overwritten; update is read-modify-write so `VALARM`/vendor props survive).
 before the start; `events.get` returns them; an update replaces DISPLAY alarms only).
 **ATTENDEE/ORGANIZER and EMAIL alarms are refused**: iCloud auto-schedules and would send real mail.
 
-**dav** (14 ops) — WebDAV/Nextcloud files. `dav.accounts` gives each `shareRoot`; every op takes
-`path` relative to it ("" = root, no leading "/", no "..") and returns that same form. Reads:
-`dav.list` (depth 1, not recursive), `dav.stat` (fresh `etag` for writes), `dav.get` (text only,
-64 KiB default — **binary refused → `dav.stage`**), `dav.find({pattern})` (bounded walk;
-`stoppedBy` says which cap), `dav.quota`,
-`dav.stage` (bytes onto the host: returns `staged` for `putStaged`, and `fsRoot`+`path` for
-`fs.read`/`fs.grep`; `dav.staging.clear` prunes). Writes are approval: `dav.put({path, text,
-overwrite?, ifMatch?})`, `dav.putStaged`, `dav.mkdir` (parents included), `dav.move`, `dav.copy`,
-`dav.delete` (a directory also needs `recursive: true`; no grant covers it).
-**Create-only by default** (`If-None-Match: *`): a 412 means it changed — re-read, or pass
-`overwrite: true`. Read-only accounts are refused before approval.
+**dav** (15 ops) — WebDAV/Nextcloud files. `dav.accounts` gives each `shareRoot` and why it is read-only if
+it is; every op takes `path` relative to it ("" = root, no "/" or ".." prefix) and returns that form. Reads: `dav.list` (depth 1; `offset`/`nextOffset` page it), `dav.stat` (fresh
+`etag`), `dav.get` (text only, 64 KiB default — **binary refused → `dav.stage`**),
+`dav.find({pattern})` (parallel bounded walk; `stoppedBy`/`resumeFrom` say what it never reached),
+`dav.quota`, `dav.stage`/`dav.staging.clear` (bytes onto the host: `staged` for `putStaged`,
+`fsRoot`+`path` for `fs.read`). Writes are approval: `dav.edit({path, append?, prepend?, replace?})`
+is read-modify-write in **one** call, and its write carries the etag of the read it just made
+(literal `replace`; no match is an error unless that entry is `optional`); then `dav.put({path, text,
+overwrite?, ifMatch?})`, `dav.putStaged`, `dav.mkdir`, `dav.move`, `dav.copy`, `dav.delete` (a
+directory needs `recursive: true`; no grant covers it). **Create-only by default**
+(`If-None-Match: *`): a 412 means re-read, or pass `overwrite: true` — which reports what it
+replaced. Read-only accounts are refused before approval.
 
 **web** (1 op) — `web.fetch({url, format?:"text"|"html", maxBytes?})`: one http(s) document as text
 (HTML converted best-effort, no JS) or raw markup. Only hosts in the live config's `allowedHosts`
@@ -134,17 +135,15 @@ re-validated. A refused host is a config question for the operator, not somethin
 
 **dev** (5 ops) / **deploy** (3 ops) — work on this server's own code without a shell: `dev.roots`,
 `dev.run({root, task})` (`check`/`test`/`fmt`/`lint`… argv from config, no shell; returns
-`{code, stdout, stderr, sha, dirty}` and records the outcome against the current **tree**, by exit
-code and tree identity, never by output), `dev.git({root, action, message?})`,
-`dev.try({root, op, args})` (one op from the dev checkout's own registry that is **open-tier on the
-live server** — the checkout's own manifest cannot reopen an approval op — against the real APIs),
+`{code, stdout, stderr, sha, dirty}`; recorded against the current **tree** by exit code and tree
+identity, never by output), `dev.git({root, action, message?})`, `dev.try({root, op, args})` (one op
+from the dev checkout's registry that is **open-tier on the live server** — a checkout cannot reopen
+an approval op — against the real APIs),
 `deploy.status`, `deploy.promote` (approval: runs the test task, records intent),
-`deploy.rollback({commit?})`. `dev.try` runs **committed, checked code only** — a dirty tracked tree
-is refused and the root's `check` must have passed for this tree — inside a pinned child (read =
-checkout + secrets symlink, write = its `dataDir`, net = hosts the **live** config declares, no
-subprocess, and no env/sys beyond `NODE_V8_COVERAGE`/`hostname`, which its own module graph probes
-while loading), so `NotCapable` means the op left that envelope. Returns
-`{code, stdout, stderr, commit, subject, dirty, check}`. Flow: edit → `dev.run("check")`/`("test")`
+`deploy.rollback({commit?})`. `dev.try` runs **committed, checked code only** (a dirty tracked tree
+is refused; the root's `check` must have passed for this tree) inside a pinned child — read =
+checkout, write = its `dataDir`, net = the **live** config's hosts, no subprocess — so `NotCapable`
+means the op left that envelope. Returns `{code, stdout, stderr, commit, subject, dirty, check}`. Flow: edit → `dev.run("check")`/`("test")`
 → `dev.git commit` → `dev.try` → `deploy.promote` (human approves) → supervisor restarts, probes
 `/health`, soaks 60 s, advances `main`; failure auto-reverts. `deploy.status` shows live/main/dev
 shas, ahead/behind and dirty flags (untracked files never block).

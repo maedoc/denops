@@ -77,11 +77,13 @@ function mockDav(recorded: Recorded[], opts: { quota?: boolean; unlimited?: bool
 
     if (req.method === "PROPFIND") {
       if (!node) {
+        // what Nextcloud/Sabre actually answers, body and all
         return new Response(
-          `<?xml version="1.0"?><d:multistatus xmlns:d="DAV:"><d:response>` +
-            `<d:href>${href}</d:href><d:status>HTTP/1.1 404 Not Found</d:status></d:response>` +
-            `</d:multistatus>`,
-          { status: 207 },
+          `<?xml version="1.0" encoding="utf-8"?><d:error xmlns:d="DAV:" ` +
+            `xmlns:s="http://sabredav.org/ns">` +
+            `<s:exception>Sabre\DAV\Exception\NotFound</s:exception>` +
+            `<s:message>File with name ${href} could not be located</s:message></d:error>`,
+          { status: 404, headers: { "content-type": "application/xml; charset=utf-8" } },
         );
       }
       const propsOf = (p: string, n: Node) => {
@@ -676,6 +678,7 @@ Deno.test("dav: the op surface is the documented one", async () => {
       "dav.accounts",
       "dav.copy",
       "dav.delete",
+      "dav.edit",
       "dav.find",
       "dav.get",
       "dav.list",
@@ -692,6 +695,7 @@ Deno.test("dav: the op surface is the documented one", async () => {
     assertEquals(approval, [
       "dav.copy",
       "dav.delete",
+      "dav.edit",
       "dav.mkdir",
       "dav.move",
       "dav.put",
@@ -705,6 +709,186 @@ Deno.test("dav: the op surface is the documented one", async () => {
       );
       assertStringIncludes(text, "alice", `${op.name} summary names the account`);
     }
+  } finally {
+    await h.close();
+  }
+});
+
+Deno.test("dav: edit is one approval, one conditional write, no body round trip", async () => {
+  const h = await harness();
+  try {
+    // append to an existing file: the write carries the etag of the read
+    const out = await h.call("edit", { path: "docs/intro.md", append: "tail\n" }) as {
+      created: boolean;
+      unchanged: boolean;
+      bytes: number;
+      previousBytes: number;
+      etag: string;
+      precondition: string;
+    };
+    assertEquals(out.created, false);
+    assertEquals(out.previousBytes, 14);
+    assertEquals(out.bytes, 19);
+    assertEquals(out.precondition, "if-match");
+    const put = h.recorded.filter((r) => r.method === "PUT").at(-1)!;
+    assert(put.headers.get("if-match") !== null, "edit always sends the etag it read");
+    assertEquals(h.nodes.get(`${SHARE}/docs/intro.md`)!.bytes.byteLength, 19);
+
+    // a transform that changes nothing must not write at all
+    const before = h.recorded.filter((r) => r.method === "PUT").length;
+    const noop = await h.call("edit", { path: "docs/intro.md", append: "" }) as {
+      unchanged: boolean;
+    };
+    assertEquals(noop.unchanged, true);
+    assertEquals(h.recorded.filter((r) => r.method === "PUT").length, before);
+
+    // literal replace, first occurrence only by default, with a count
+    const rep = await h.call("edit", {
+      path: "docs/intro.md",
+      replace: [{ find: "l", replace: "L" }],
+    }) as { replacements: Array<{ find: string; replaced: number }> };
+    assertEquals(rep.replacements[0].replaced, 1);
+    const text = new TextDecoder().decode(h.nodes.get(`${SHARE}/docs/intro.md`)!.bytes);
+    assertEquals(text, "# Intro\nheLlo\ntail\n", "first l only, everything else untouched");
+
+    // a find that matches nothing is an error, not a silent no-op
+    const miss = await assertRejects(() =>
+      h.call("edit", { path: "docs/intro.md", replace: [{ find: "absent", replace: "x" }] })
+    ) as Error;
+    assertStringIncludes(miss.message, "matched nothing");
+    const optional = await h.call("edit", {
+      path: "docs/intro.md",
+      replace: [{ find: "absent", replace: "x", optional: true }],
+    }) as { unchanged: boolean };
+    assertEquals(optional.unchanged, true, "an optional miss is not a change");
+
+    // createIfMissing creates; without it, a missing file is an error
+    const created = await h.call("edit", {
+      path: "docs/new-journal.md",
+      append: "# day one\n",
+      createIfMissing: true,
+    }) as { created: boolean; precondition: string };
+    assertEquals(created.created, true);
+    assertEquals(created.precondition, "if-none-match");
+    const missing = await assertRejects(() =>
+      h.call("edit", { path: "docs/nope.md", append: "x" })
+    ) as Error;
+    assertStringIncludes(missing.message, "createIfMissing");
+
+    // stale knowledge is refused before anything is written
+    const stat = await h.call("stat", { path: "docs/intro.md" }) as { etag: string };
+    const stale = await assertRejects(() =>
+      h.call("edit", { path: "docs/intro.md", append: "x", ifMatch: '"etag-1"' })
+    ) as Error;
+    assertStringIncludes(stale.message, "412");
+    assertEquals(
+      new TextDecoder().decode(h.nodes.get(`${SHARE}/docs/intro.md`)!.bytes).endsWith("x"),
+      false,
+    );
+    // ...and the current etag is accepted
+    await h.call("edit", { path: "docs/intro.md", append: "!", ifMatch: stat.etag });
+
+    // a directory, a binary file and an empty transform list are all refused
+    assertStringIncludes(
+      String(await assertRejects(() => h.call("edit", { path: "docs", append: "x" }))),
+      "directory",
+    );
+    assertStringIncludes(
+      String(await assertRejects(() => h.call("edit", { path: "logo.png", append: "x" }))),
+      "not text",
+    );
+    assertEquals(
+      h.schema("edit", { path: "docs/intro.md" }),
+      "pass at least one of append, prepend or replace",
+    );
+  } finally {
+    await h.close();
+  }
+});
+
+Deno.test("dav: list continues with nextOffset, and overlap semantics are exact", async () => {
+  const h = await harness();
+  try {
+    const first = await h.call("list", { path: "docs", limit: 2 }) as {
+      count: number;
+      total: number;
+      offset: number;
+      more: number;
+      nextOffset: number | null;
+      entries: Array<{ name: string }>;
+    };
+    assertEquals(first.count, 2);
+    assertEquals(first.offset, 0);
+    assertEquals(first.nextOffset, 2);
+    assertEquals(first.more, 1);
+
+    const second = await h.call("list", { path: "docs", limit: 2, offset: 2 }) as {
+      count: number;
+      nextOffset: number | null;
+      entries: Array<{ name: string }>;
+    };
+    assertEquals(second.count, 1);
+    assertEquals(second.nextOffset, null, "end of the directory");
+    assertEquals(
+      [...first.entries, ...second.entries].map((e) => e.name),
+      ["data.csv", "intro.md", "sub"],
+      "paging in order is the whole directory, once",
+    );
+
+    const past = await h.call("list", { path: "docs", offset: 99 }) as { count: number };
+    assertEquals(past.count, 0);
+  } finally {
+    await h.close();
+  }
+});
+
+Deno.test("dav: put with overwrite reports what it replaced", async () => {
+  const h = await harness();
+  try {
+    const out = await h.call("put", {
+      path: "docs/intro.md",
+      text: "replaced\n",
+      overwrite: true,
+    }) as { created: boolean; replaced?: { size?: number; etag?: string; modified?: string } };
+    assertEquals(out.created, false);
+    assertEquals(out.replaced?.size, 14, "the destroyed file's size comes back");
+    assert(String(out.replaced?.etag).startsWith('"'), "and its etag, for version lookup");
+
+    // create-only and etag-gated writes report nothing replaced: they cannot clobber
+    const fresh = await h.call("put", { path: "docs/fresh.md", text: "x" }) as {
+      replaced?: unknown;
+    };
+    assertEquals(fresh.replaced, undefined);
+    const gated = await h.call("put", {
+      path: "docs/intro.md",
+      text: "gated\n",
+      ifMatch: (await h.call("stat", { path: "docs/intro.md" }) as { etag: string }).etag,
+    }) as { replaced?: unknown };
+    assertEquals(gated.replaced, undefined);
+  } finally {
+    await h.close();
+  }
+});
+
+Deno.test("dav: accounts explains a read-only account instead of leaving it a mystery", async () => {
+  const h = await harness({ writable: false });
+  try {
+    const out = await h.call("accounts") as {
+      accounts: Array<{ writable: boolean; note?: string }>;
+    };
+    assertEquals(out.accounts[0].writable, false);
+    assertStringIncludes(String(out.accounts[0].note), "writable: false in config.yaml");
+  } finally {
+    await h.close();
+  }
+});
+
+Deno.test("dav: a server error body is reduced to the sentence that matters", async () => {
+  const h = await harness();
+  try {
+    const err = await assertRejects(() => h.call("stat", { path: "docs/nope.md" })) as Error;
+    assert(!err.message.includes("<d:"), "no raw XML in the message");
+    assertStringIncludes(err.message, "no such path");
   } finally {
     await h.close();
   }

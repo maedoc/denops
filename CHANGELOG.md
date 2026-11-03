@@ -8,6 +8,41 @@ actually talking to instead of probing behaviour.
 Format: `## <version> — <YYYY-MM-DD>`, newest first, then a short bullet list. Keep bullets about
 the API surface; implementation notes belong in the commit message.
 
+## 0.11.0 — 2026-11-03
+
+Brought the `dav` surface up to what a real reviewer's use of it asked for. Everything here came from
+either a live probe of both Nextcloud servers or Mistral's shakedown of the live connector.
+
+- **`dav.edit` (new, approval): read-modify-write in one call.** `{ account, path, append?, prepend?,
+  replace?: [{ find, replace, all?, optional? }], createIfMissing?, ifMatch?, maxBytes? }` reads the
+  file, applies the transforms and writes the result back carrying the etag of that same read — so a
+  journal-style append is one approval and a few hundred bytes instead of `get` + full-body `put`. It
+  is honest about its edges: a `find` that matches nothing is an error unless the entry says
+  `optional` (a silent no-op is the one outcome worth failing on), transforms that produce identical
+  text write nothing, a file above `maxBytes` is refused rather than half-edited, and a stale
+  `ifMatch` is a 412 before anything is sent.
+- **`dav.list` pages deterministically**: `offset` in, `offset`/`nextOffset` out alongside `count`,
+  `total` and `more` — pass `nextOffset` back to continue. The server still sends the whole directory
+  (PROPFIND cannot page), so the docs say so rather than implying a cheaper call.
+- **`dav.find` got faster and more honest.** Depth-1 listings are now walked four at a time instead of
+  one after another (the walk is latency-bound: on the AMU box a serial depth-4 walk burned the whole
+  5 s budget after 27 entries), the default budget is 8 s (cap 20 s), and a capped walk now reports
+  `unscanned` plus a `resumeFrom` sample of the directories it never reached, so a follow-up search
+  continues instead of starting over. There is no server-side search to fall back on: WebDAV SEARCH
+  returns **501 NotImplemented** on both servers (probed), and Nextcloud's full-text endpoint is an
+  app endpoint, not a protocol.
+- **`dav.put`/`dav.putStaged` with `overwrite: true` report what they replaced** (`replaced: { size,
+  etag, modified }`, one PROPFIND, paid only on that path). The lost-update hole stays closed by
+  `ifMatch`; this makes the explicit escape hatch visible instead of blind, so the bytes can still be
+  recovered from Nextcloud's version history.
+- **`dav.accounts` explains a read-only account** instead of leaving it a mystery. Probing both
+  servers showed the AMU account is in fact writable (conditional PUT 201 → 204, wrong `If-Match` →
+  412), i.e. `writable: false` is always a config choice here, never a credential limitation — so the
+  note says which knob to turn.
+- **Error messages carry the server's sentence, not its XML.** Sabre puts the useful text in
+  `<s:message>`; a 404 now reads "no such path … File with name … could not be located" instead of a
+  wall of markup.
+
 ## 0.10.1 — 2026-11-03
 
 - **`dav.get` reports the DAV `getetag`, not the GET response `ETag`.** Nextcloud appends `-gzip`

@@ -129,11 +129,13 @@ export function davConnector(deps: DavConnectorDeps): Connector {
         account: string;
         path?: string;
         limit?: number;
+        offset?: number;
         sort?: "name" | "modified" | "size";
         kind?: "file" | "dir" | "all";
       }) =>
         await host.get(a.account).list(normalizePath(a.path), {
           limit: Math.min(a.limit ?? 100, 500),
+          offset: Math.max(a.offset ?? 0, 0),
           sort: a.sort ?? "name",
           kind: a.kind ?? "all",
         })),
@@ -166,7 +168,7 @@ export function davConnector(deps: DavConnectorDeps): Connector {
           pattern: a.pattern,
           maxDepth: Math.min(a.maxDepth ?? 3, 6),
           maxEntries: Math.min(a.maxEntries ?? 100, 500),
-          maxMs: Math.min(a.maxMs ?? 5_000, 15_000),
+          maxMs: Math.min(a.maxMs ?? 8_000, 20_000),
           kind: a.kind ?? "file",
         })),
 
@@ -182,6 +184,25 @@ export function davConnector(deps: DavConnectorDeps): Connector {
         account: string;
         olderThanHours?: number;
       }) => await host.get(a.account).clearStaging(a.olderThanHours ?? 0)),
+
+      "edit": wrap("edit", async (a: {
+        account: string;
+        path: string;
+        prepend?: string;
+        append?: string;
+        replace?: Array<{ find: string; replace: string; all?: boolean; optional?: boolean }>;
+        createIfMissing?: boolean;
+        ifMatch?: string;
+        maxBytes?: number;
+      }) =>
+        await host.get(a.account).edit(normalizePath(a.path), {
+          ...(a.prepend === undefined ? {} : { prepend: a.prepend }),
+          ...(a.append === undefined ? {} : { append: a.append }),
+          ...(a.replace === undefined ? {} : { replace: a.replace }),
+          ...(a.createIfMissing === undefined ? {} : { createIfMissing: a.createIfMissing }),
+          ...(a.ifMatch === undefined ? {} : { ifMatch: a.ifMatch }),
+          maxBytes: Math.min(a.maxBytes ?? 1024 * 1024, 1024 * 1024),
+        })),
 
       "put": wrap("put", async (a: {
         account: string;
@@ -262,12 +283,13 @@ export function davConnector(deps: DavConnectorDeps): Connector {
       name: "dav.list",
       tier: "open",
       doc:
-        "One directory, depth 1. args: { account, path?, limit?, sort?, kind? } — path defaults " +
-        "to the share root; sort is name|modified|size (default name; modified/size newest/largest " +
-        "first); kind is file|dir|all. Returns { account, path, count, total, more, entries: " +
-        "[{ name, path, kind, size?, modified?, etag?, contentType? }] }. Not recursive (use " +
-        "dav.find), and there is no paging on the server side: `more` counts what the limit " +
-        "sliced off." + HINT,
+        "One directory, depth 1. args: { account, path?, limit?, offset?, sort?, kind? } — path " +
+        "defaults to the share root; sort is name|modified|size (default name; modified/size " +
+        "newest/largest first); kind is file|dir|all. Returns { account, path, count, total, " +
+        "offset, more, nextOffset, entries: [{ name, path, kind, size?, modified?, etag?, " +
+        "contentType? }] }. Not recursive (use dav.find). The server cannot page a PROPFIND, so " +
+        "the whole directory is fetched once and sliced here: pass `nextOffset` back as `offset` " +
+        "to continue, and treat `more`/`nextOffset: null` as the end." + HINT,
       argSchema: compose(
         rejectUnknown(),
         acc,
@@ -326,8 +348,10 @@ export function davConnector(deps: DavConnectorDeps): Connector {
         "Bounded recursive name search — the 'where is that file?' op. args: { account, path?, " +
         "pattern, maxDepth?, maxEntries?, maxMs?, kind? }. pattern is a case-insensitive substring, " +
         "or a `*`/`?` glob when it contains them. maxDepth default 3 (cap 6), maxEntries 100 (cap " +
-        "500), maxMs 5000 (cap 15000). Returns { scanned, matched, truncated, stoppedBy?, entries }. " +
-        "truncated is honest: stoppedBy says whether depth, entries or time cut the walk." + HINT,
+        "500), maxMs 8000 (cap 20000). Directories are walked in parallel, four at a time. Returns " +
+        "{ scanned, matched, truncated, stoppedBy?, unscanned?, resumeFrom?, entries }. truncated is " +
+        "honest: stoppedBy says whether depth, entries or time cut the walk, and `resumeFrom` lists " +
+        "the directories it never reached — find inside those instead of starting over." + HINT,
       argSchema: compose(
         rejectUnknown(),
         acc,
@@ -352,8 +376,8 @@ export function davConnector(deps: DavConnectorDeps): Connector {
           if (r.maxEntries !== undefined && (r.maxEntries < 1 || r.maxEntries > 500)) {
             return "maxEntries: expected 1..500";
           }
-          if (r.maxMs !== undefined && (r.maxMs < 100 || r.maxMs > 15000)) {
-            return "maxMs: expected 100..15000";
+          if (r.maxMs !== undefined && (r.maxMs < 100 || r.maxMs > 20_000)) {
+            return "maxMs: expected 100..20000";
           }
           return null;
         },
@@ -391,6 +415,102 @@ export function davConnector(deps: DavConnectorDeps): Connector {
         "olderThanHours? } (0 = all, the default). Returns { account, removed: [names] }. Only the " +
         "account's own staging subdirectory is touched.",
       argSchema: compose(rejectUnknown(), acc, optNum("olderThanHours")),
+    },
+    {
+      name: "dav.edit",
+      tier: "approval",
+      summarize: async (a) => {
+        const r = a as {
+          account?: string;
+          path?: string;
+          prepend?: string;
+          append?: string;
+          replace?: Array<{ find?: string; replace?: string }>;
+          createIfMissing?: boolean;
+        };
+        const target = await describeTarget(String(r.account), String(r.path ?? ""));
+        const parts: string[] = [];
+        const replaces = Array.isArray(r.replace) ? r.replace : [];
+        if (replaces.length > 0) {
+          parts.push(
+            replaces.length === 1
+              ? `replace ${JSON.stringify(String(replaces[0]?.find ?? ""))}`
+              : `${replaces.length} literal replacements`,
+          );
+        }
+        if (r.prepend !== undefined) parts.push(`prepend ${r.prepend.length} chars`);
+        if (r.append !== undefined) parts.push(`append ${r.append.length} chars`);
+        return `Edit ${r.account}:${r.path} — ${target}; ${parts.join(", ")}. ` +
+          `The write is conditional on the etag read in the same call (412 if it changed).`;
+      },
+      doc: "Read-modify-write in ONE approval: the file is read, the transforms applied, and the " +
+        "result written back carrying the etag of that same read — no full body through the " +
+        "caller, no lost update. args: { account, path, append?, prepend?, replace?, " +
+        "createIfMissing?, ifMatch?, maxBytes? }. `replace` is [{ find, replace, all?, optional? }]: " +
+        "**literal** text, first occurrence unless all: true, and a find that matches nothing is an " +
+        "error unless that entry is optional — a silent no-op is the one outcome worth failing on. " +
+        "Order: replace → prepend → append. A file larger than maxBytes (1 MiB) is refused: stage " +
+        "it and rewrite with dav.putStaged instead. If the transforms produce identical text, " +
+        "nothing is written (unchanged: true). Returns { path, created, unchanged, previousBytes, " +
+        "bytes, etag, replacements, precondition }.",
+      argSchema: compose(
+        rejectUnknown(),
+        acc,
+        str("path"),
+        optStr("prepend", 262_144),
+        optStr("append", 262_144),
+        optStr("ifMatch", 200),
+        optBool("createIfMissing"),
+        optNum("maxBytes"),
+        pathArg("path"),
+        writable("dav.edit"),
+        (a) => {
+          const r = a as {
+            path?: string;
+            prepend?: string;
+            append?: string;
+            maxBytes?: number;
+            replace?: unknown;
+          };
+          if (r.path !== undefined && normalizePath(r.path).segments.length === 0) {
+            return "path: the share root is a directory, name a file";
+          }
+          if (r.prepend === undefined && r.append === undefined && r.replace === undefined) {
+            return "pass at least one of append, prepend or replace";
+          }
+          if (r.maxBytes !== undefined && (r.maxBytes < 1 || r.maxBytes > 1024 * 1024)) {
+            return "maxBytes: expected 1..1048576";
+          }
+          if (r.replace === undefined) return null;
+          if (!Array.isArray(r.replace)) return "replace: expected an array of { find, replace }";
+          if (r.replace.length === 0) return "replace: must not be empty";
+          if (r.replace.length > 20) return `replace: too many entries (${r.replace.length} > 20)`;
+          for (let i = 0; i < r.replace.length; i++) {
+            const entry = r.replace[i];
+            if (!isRecord(entry)) return `replace[${i}]: expected an object`;
+            for (const key of Object.keys(entry)) {
+              if (!["find", "replace", "all", "optional"].includes(key)) {
+                return `replace[${i}]: unexpected field "${key}" (allowed: find, replace, all, optional)`;
+              }
+            }
+            if (typeof entry.find !== "string" || entry.find === "") {
+              return `replace[${i}].find: expected a non-empty string (literal text, not a pattern)`;
+            }
+            if (entry.find.length > 4096) return `replace[${i}].find: max 4096 chars`;
+            if (typeof entry.replace !== "string") {
+              return `replace[${i}].replace: expected a string (pass "" to delete the match)`;
+            }
+            if (entry.replace.length > 262_144) return `replace[${i}].replace: max 262144 chars`;
+            if (entry.all !== undefined && typeof entry.all !== "boolean") {
+              return `replace[${i}].all: expected boolean`;
+            }
+            if (entry.optional !== undefined && typeof entry.optional !== "boolean") {
+              return `replace[${i}].optional: expected boolean`;
+            }
+          }
+          return null;
+        },
+      ),
     },
     {
       name: "dav.put",
@@ -619,7 +739,9 @@ const DAV_SHAPE: Partial<Record<string, string[]>> = {
     "path",
     "count",
     "total",
+    "offset",
     "more",
+    "nextOffset",
     "entries.name",
     "entries.path",
     "entries.kind",
@@ -628,10 +750,13 @@ const DAV_SHAPE: Partial<Record<string, string[]>> = {
     "entries.etag",
   ],
   find: [
+    "pattern",
     "scanned",
     "matched",
     "truncated",
     "stoppedBy",
+    "unscanned",
+    "resumeFrom",
     "entries.name",
     "entries.path",
     "entries.kind",

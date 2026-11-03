@@ -45,6 +45,27 @@ const MAX_INLINE_BYTES = 1024 * 1024;
 export const DEFAULT_INLINE_BYTES = 64 * 1024;
 const DEFAULT_MAX_STAGE_BYTES = 64 * 1024 * 1024;
 const MAX_REDIRECTS = 3;
+/** PROPFIND-per-directory walks are latency-bound; a few in flight beats a chain. */
+const FIND_CONCURRENCY = 4;
+
+/** Run `fn` over `items` with at most `limit` in flight, preserving order of results. */
+async function mapLimit<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    for (;;) {
+      const i = next++;
+      if (i >= items.length) return;
+      out[i] = await fn(items[i]);
+    }
+  });
+  await Promise.all(workers);
+  return out;
+}
 
 export interface DavAccountConfig {
   id: string;
@@ -130,9 +151,17 @@ function bareType(v: string | null | undefined): string | undefined {
  * "412 Precondition Failed" is useless to a model, "it changed since you read it — call
  * dav.stat and retry with the new etag" is not.
  */
+/** Nextcloud/Sabre puts the actionable sentence in <s:message>, not in the prose. */
+function sabreMessage(body: string): string | undefined {
+  const msg = /<(?:[a-z]+:)?message>([^<]{1,300})<\//i.exec(body)?.[1].trim();
+  if (msg) return msg;
+  return /<(?:[a-z]+:)?exception>([^<]{1,160})<\//i.exec(body)?.[1].trim();
+}
+
 function failure(op: string, path: string, status: number, body: string): Error {
   const where = path === "" ? "the share root" : JSON.stringify(path);
-  const snippet = body.replace(/\s+/g, " ").trim().slice(0, 200);
+  const sabre = sabreMessage(body);
+  const snippet = sabre ?? body.replace(/\s+/g, " ").trim().slice(0, 200);
   const tail = snippet === "" ? "" : ` — ${snippet}`;
   switch (status) {
     case 401:
@@ -454,6 +483,13 @@ class DavAccount {
       origin: this.origin.origin,
       shareRoot: this.shareRoot,
       writable: this.writable,
+      // "read-only" is always a config decision here (the app password may well allow
+      // writes — verify with a conditional PUT before assuming otherwise), so say which
+      // knob turns it on instead of leaving the caller to guess.
+      ...(this.writable ? {} : {
+        note: "read-only by config: writable: false in config.yaml; every mutating op is refused " +
+          "before approval",
+      }),
     } as JsonValue;
   }
 
@@ -468,7 +504,12 @@ class DavAccount {
 
   async list(
     path: DavPath,
-    opts: { limit: number; sort: "name" | "modified" | "size"; kind: DavEntryKind },
+    opts: {
+      limit: number;
+      offset: number;
+      sort: "name" | "modified" | "size";
+      kind: DavEntryKind;
+    },
   ): Promise<JsonValue> {
     const responses = await this.propfind(path, "1");
     const self = this.urlOf(path).pathname;
@@ -490,13 +531,16 @@ class DavAccount {
       if (opts.sort === "size") return (b.size ?? -1) - (a.size ?? -1);
       return (b.modified ?? "").localeCompare(a.modified ?? "");
     });
-    const page = sorted.slice(0, opts.limit);
+    const page = sorted.slice(opts.offset, opts.offset + opts.limit);
+    const seen = opts.offset + page.length;
     return {
       account: this.id,
       path: path.rel,
       count: page.length,
       total: sorted.length,
-      more: Math.max(0, sorted.length - page.length),
+      offset: opts.offset,
+      more: Math.max(0, sorted.length - seen),
+      nextOffset: seen < sorted.length ? seen : null,
       entries: page,
     } as unknown as JsonValue;
   }
@@ -543,9 +587,23 @@ class DavAccount {
     return stat;
   }
 
-  async get(path: DavPath, maxBytes: number): Promise<JsonValue> {
-    const meta = await this.requireFile("dav.get", path);
-    const cap = Math.min(maxBytes, MAX_INLINE_BYTES);
+  /**
+   * Read a file inline as text: cap the bytes, refuse binary, and report the DAV
+   * getetag (the one If-Match is compared against — see the -gzip note).
+   */
+  private async readInline(
+    op: string,
+    path: DavPath,
+    cap: number,
+  ): Promise<{
+    text: string;
+    bytes: number;
+    size?: number;
+    truncated: boolean;
+    contentType: string;
+    etag?: string;
+  }> {
+    const meta = await this.requireFile(op, path);
     const reply = await this.expect("GET", this.urlOf(path), {
       ok: [200],
       maxBytes: cap + 1,
@@ -555,7 +613,7 @@ class DavAccount {
     const contentType = bareType(reply.headers.get("content-type")) ?? contentTypeFor(path.rel);
     if (!isTextual(contentType) || looksBinary(reply.bytes)) {
       throw new Error(
-        `dav.get ${JSON.stringify(path.rel)}: ${contentType} is not text — refusing to inline ` +
+        `${op} ${JSON.stringify(path.rel)}: ${contentType} is not text — refusing to inline ` +
           `binary bytes. Use dav.stage({ account, path }) and read the staged file with ` +
           `fs.read/fs.grep (or fs.glob for a listing)`,
       );
@@ -564,24 +622,175 @@ class DavAccount {
     const slice = truncated ? reply.bytes.subarray(0, cap) : reply.bytes;
     const declared = Number(reply.headers.get("content-length") ?? "");
     return {
+      text: this.decode(slice),
+      bytes: reply.bytes.byteLength,
+      ...(Number.isFinite(declared) ? { size: declared } : {}),
+      truncated,
+      contentType,
+      ...(meta.etag === undefined ? {} : { etag: meta.etag }),
+    };
+  }
+
+  async get(path: DavPath, maxBytes: number): Promise<JsonValue> {
+    const read = await this.readInline("dav.get", path, Math.min(maxBytes, MAX_INLINE_BYTES));
+    return {
       account: this.id,
       path: path.rel,
-      contentType,
-      ...(Number.isFinite(declared) ? { size: declared } : {}),
-      bytes: reply.bytes.byteLength,
-      truncated,
-      // The PROPFIND getetag, deliberately NOT the GET response ETag: Nextcloud
-      // appends "-gzip" to the latter when it serves a compressed body, and an
-      // If-Match carrying that value is a bogus 412 on the next write.
-      ...(meta.etag === undefined ? {} : { etag: meta.etag }),
-      text: this.decode(slice),
+      ...read,
     } as JsonValue;
   }
 
   /**
-   * Bounded recursive name search. Nextcloud has no portable server-side file search
-   * (SEARCH is a draft most servers do not implement), so this walks depth-1 listings
-   * breadth-first under hard caps and reports exactly which cap it stopped on.
+   * Read-modify-write in one approval. The point is what it *does not* do: the body
+   * never travels back through the caller, and the write carries the etag of the read
+   * it just made, so a concurrent change is a 412 instead of a lost update.
+   */
+  async edit(
+    path: DavPath,
+    opts: {
+      prepend?: string;
+      append?: string;
+      replace?: Array<{ find: string; replace: string; all?: boolean; optional?: boolean }>;
+      createIfMissing?: boolean;
+      ifMatch?: string;
+      maxBytes: number;
+    },
+  ): Promise<JsonValue> {
+    this.requireWritable("dav.edit");
+    if (path.rel === "") throw new Error("dav.edit: the share root is a collection, not a file");
+    const transforms = (opts.replace ?? []).length + (opts.prepend === undefined ? 0 : 1) +
+      (opts.append === undefined ? 0 : 1);
+    if (transforms === 0) {
+      throw new Error(
+        "dav.edit: nothing to change — pass at least one of append, prepend or replace",
+      );
+    }
+
+    const meta = await this.tryStat(path);
+    let created = false;
+    let before = "";
+    let etag: string | undefined;
+    if (meta === undefined) {
+      if (opts.createIfMissing !== true) {
+        throw new Error(
+          `dav.edit ${JSON.stringify(path.rel)}: no such file. Pass createIfMissing: true to ` +
+            `create it (append/prepend then apply to an empty file)`,
+        );
+      }
+      created = true;
+    } else {
+      if (meta.kind !== "file") {
+        throw new Error(
+          `dav.edit ${JSON.stringify(path.rel)}: that is a directory, not a file`,
+        );
+      }
+      if (opts.ifMatch !== undefined && meta.etag !== undefined && opts.ifMatch !== meta.etag) {
+        throw new Error(
+          `dav.edit ${JSON.stringify(path.rel)}: 412 — the file changed since you read it ` +
+            `(the etag you passed is not the current one). Re-read with dav.stat and retry`,
+        );
+      }
+      const read = await this.readInline("dav.edit", path, opts.maxBytes);
+      if (read.truncated) {
+        throw new Error(
+          `dav.edit ${JSON.stringify(path.rel)}: the file is larger than maxBytes ` +
+            `(${read.bytes} bytes read). An edit needs the whole file — raise maxBytes, or ` +
+            `stage it and write the result with dav.putStaged`,
+        );
+      }
+      before = read.text;
+      etag = read.etag ?? meta.etag;
+    }
+
+    let next = before;
+    const replacements: Array<{ find: string; replaced: number }> = [];
+    for (const r of opts.replace ?? []) {
+      const first = next.indexOf(r.find);
+      const count = first < 0 ? 0 : r.all === true ? next.split(r.find).length - 1 : 1;
+      if (count === 0) {
+        if (r.optional === true) {
+          replacements.push({ find: r.find, replaced: 0 });
+          continue;
+        }
+        throw new Error(
+          `dav.edit ${JSON.stringify(path.rel)}: replace ${JSON.stringify(r.find)} matched ` +
+            `nothing${r.all === true ? "" : ""}. Check the exact text (it is literal, not a ` +
+            `pattern), or mark that entry optional: true`,
+        );
+      }
+      next = r.all === true
+        ? next.split(r.find).join(r.replace)
+        : `${next.slice(0, first)}${r.replace}${next.slice(first + r.find.length)}`;
+      replacements.push({ find: r.find, replaced: count });
+    }
+    if (opts.prepend !== undefined) next = `${opts.prepend}${next}`;
+    if (opts.append !== undefined) next = `${next}${opts.append}`;
+
+    if (!created && next === before) {
+      return {
+        account: this.id,
+        path: path.rel,
+        created: false,
+        unchanged: true,
+        bytes: new TextEncoder().encode(next).byteLength,
+        ...(etag === undefined ? {} : { etag }),
+        replacements,
+        note: "the transforms produced identical text; nothing was written",
+      } as unknown as JsonValue;
+    }
+
+    const headers: Record<string, string> = {
+      "content-type": contentTypeFor(path.rel),
+    };
+    let precondition: "if-match" | "if-none-match" | "none" = "none";
+    if (created) {
+      headers["if-none-match"] = "*";
+      precondition = "if-none-match";
+    } else if (etag !== undefined) {
+      headers["if-match"] = etag;
+      precondition = "if-match";
+    }
+    const body = new TextEncoder().encode(next);
+    const reply = await this.expect("PUT", this.urlOf(path), {
+      body,
+      headers,
+      ok: [200, 201, 204],
+      path: path.rel,
+    });
+    const newEtag = reply.headers.get("etag") ?? reply.headers.get("oc-etag") ??
+      await this.freshEtag(path);
+    return {
+      account: this.id,
+      path: path.rel,
+      created: created || reply.status === 201,
+      unchanged: false,
+      previousBytes: new TextEncoder().encode(before).byteLength,
+      bytes: body.byteLength,
+      ...(newEtag === undefined ? {} : { etag: newEtag }),
+      replacements,
+      precondition,
+    } as unknown as JsonValue;
+  }
+
+  /** Depth-0 stat that reports a missing path as undefined instead of throwing. */
+  private async tryStat(
+    path: DavPath,
+  ): Promise<{ kind: string; etag?: string; size?: number } | undefined> {
+    try {
+      return await this.stat(path) as { kind: string; etag?: string; size?: number };
+    } catch (err) {
+      if (/\(404\)/.test((err as Error).message)) return undefined;
+      throw err;
+    }
+  }
+
+  /**
+   * Bounded recursive name search. There is no portable server-side search to lean on:
+   * WebDAV SEARCH is a draft that Nextcloud answers with 501 NotImplemented, and the
+   * full-text endpoint is an app, not a protocol. So this walks depth-1 listings
+   * breadth-first, one level at a time, a few directories in parallel (the walk is
+   * latency-bound, not CPU-bound), and reports exactly which cap stopped it plus what
+   * it never reached — a follow-up find can start there instead of from the root.
    */
   async find(
     path: DavPath,
@@ -600,16 +809,14 @@ class DavAccount {
     const deadline = Date.now() + opts.maxMs;
     let frontier: DavPath[] = [path];
     let depth = 0;
+    let pending: DavPath[] = [];
     while (frontier.length > 0) {
-      if (depth > opts.maxDepth) {
-        stoppedBy = stoppedBy ?? "depth";
-        break;
-      }
       const next: DavPath[] = [];
-      for (const dir of frontier) {
+      await mapLimit(frontier, FIND_CONCURRENCY, async (dir) => {
+        if (stoppedBy !== null) return;
         if (Date.now() > deadline) {
           stoppedBy = "time";
-          break;
+          return;
         }
         let entries: DavEntry[];
         try {
@@ -618,26 +825,37 @@ class DavAccount {
           // A subdirectory we cannot read (403 on a share inside a share) must not fail
           // the whole search: skip it, the caller still gets what is reachable.
           if (dir.rel === path.rel) throw err;
-          continue;
+          return;
         }
         scanned += 1;
         for (const e of entries) {
           if (e.kind === "dir") {
-            if (e.name !== ".snapshot" && e.name !== "versions") next.push(normalizePath(e.path));
+            if (e.name !== ".snapshot" && e.name !== "versions") {
+              if (depth + 1 > opts.maxDepth) {
+                pending.push(normalizePath(e.path));
+                stoppedBy = stoppedBy ?? "depth";
+              } else {
+                next.push(normalizePath(e.path));
+              }
+            }
             if (opts.kind !== "file" && glob(e.name)) matches.push(e);
             continue;
           }
           if (opts.kind !== "dir" && glob(e.name)) matches.push(e);
           if (matches.length >= opts.maxEntries) {
-            stoppedBy = "entries";
+            stoppedBy = stoppedBy ?? "entries";
             break;
           }
         }
-        if (stoppedBy) break;
+      });
+      if (stoppedBy === "entries" || stoppedBy === "time") {
+        // whatever we had queued for this level is unscanned too
+        pending = [...pending, ...next];
+        break;
       }
-      if (stoppedBy) break;
       frontier = next;
       depth += 1;
+      if (frontier.length === 0 && stoppedBy === "depth") break;
     }
     matches.sort((a, b) => a.path.localeCompare(b.path));
     return {
@@ -648,6 +866,11 @@ class DavAccount {
       matched: matches.length,
       truncated: stoppedBy !== null,
       ...(stoppedBy === null ? {} : { stoppedBy }),
+      ...(pending.length === 0 ? {} : {
+        unscanned: pending.length,
+        // a sample, not the whole queue: the point is where to resume, not a listing
+        resumeFrom: pending.slice(0, 10).map((p) => p.rel),
+      }),
       entries: matches,
     } as unknown as JsonValue;
   }
@@ -768,6 +991,30 @@ class DavAccount {
     }
   }
 
+  /**
+   * What `overwrite: true` is about to destroy. Cheap (one PROPFIND) and only paid on
+   * the unconditional-overwrite path: it turns a blind clobber into a reported one, so
+   * a caller can still find the bytes in Nextcloud's version history.
+   */
+  private async replacedInfo(path: DavPath): Promise<JsonValue | undefined> {
+    try {
+      const stat = await this.stat(path) as {
+        kind: string;
+        size?: number;
+        etag?: string;
+        modified?: string;
+      };
+      if (stat.kind !== "file") return undefined;
+      return {
+        ...(stat.size === undefined ? {} : { size: stat.size }),
+        ...(stat.etag === undefined ? {} : { etag: stat.etag }),
+        ...(stat.modified === undefined ? {} : { modified: stat.modified }),
+      } as JsonValue;
+    } catch {
+      return undefined;
+    }
+  }
+
   private async freshEtag(path: DavPath): Promise<string | undefined> {
     try {
       const stat = await this.stat(path) as { etag?: string };
@@ -784,6 +1031,9 @@ class DavAccount {
   ): Promise<JsonValue> {
     this.requireWritable("dav.put");
     if (path.rel === "") throw new Error("dav.put: the share root is a collection, not a file");
+    const replaced = opts.overwrite === true && opts.ifMatch === undefined
+      ? await this.replacedInfo(path)
+      : undefined;
     const headers: Record<string, string> = {
       "content-type": opts.contentType ?? contentTypeFor(path.rel),
     };
@@ -806,6 +1056,7 @@ class DavAccount {
       bytes: body.byteLength,
       contentType: headers["content-type"],
       ...(etag === undefined ? {} : { etag }),
+      ...(replaced === undefined ? {} : { replaced }),
     } as JsonValue;
   }
 
@@ -821,6 +1072,9 @@ class DavAccount {
     const source = normalizePath(staged, "staged");
     if (source.rel === "") throw new Error("dav.putStaged: staged: expected a file name");
     const bytes = await readStagedBytes(this.stagingRoot, source);
+    const replaced = opts.overwrite === true && opts.ifMatch === undefined
+      ? await this.replacedInfo(path)
+      : undefined;
     const headers: Record<string, string> = {
       "content-type": opts.contentType ?? contentTypeFor(path.rel),
     };
@@ -843,6 +1097,7 @@ class DavAccount {
       contentType: headers["content-type"],
       staged: source.rel,
       ...(etag === undefined ? {} : { etag }),
+      ...(replaced === undefined ? {} : { replaced }),
     } as JsonValue;
   }
 
