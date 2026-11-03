@@ -252,7 +252,15 @@ export async function buildApp(configPath: string, secretsPath: string): Promise
       skillPath: "SKILL.md",
       version: "0.4.0",
       // the supervisor exports the commit it checked out
-      commit: Deno.env.get("DENOPS_COMMIT") ?? undefined,
+      // The env-reading child (dev_try) runs with no --allow-env; the commit is
+      // informational, so an inaccessible DENOPS_COMMIT is just "unknown" there.
+      commit: (() => {
+        try {
+          return Deno.env.get("DENOPS_COMMIT") ?? undefined;
+        } catch {
+          return undefined;
+        }
+      })(),
       connectors: () => registry.list().map((c) => c.id),
       // live reference: filled in by the validation loop above
       degraded: () => startupFailures,

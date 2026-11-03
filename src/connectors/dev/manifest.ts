@@ -361,7 +361,9 @@ export function devConnector(opts: DevConnectorOptions): Connector {
         const argv = [
           Deno.execPath(),
           "run",
-          ...permissionFlags(plan),
+          // the child runs agent-written code: no env/sys reach at all. It reads
+          // its config from argv and file paths it's already allowed to read.
+          ...permissionFlags(plan, { noEnv: true }),
           `${r.path}/scripts/dev_try.ts`,
           r.path,
           op,
