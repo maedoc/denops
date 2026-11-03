@@ -15,6 +15,9 @@ the API surface; implementation notes belong in the commit message.
   Forgejo and GitHub default to the default branch, so the gitlab adapter now resolves the default
   branch itself (once per repo, cached). Found by calling the same op against every account and
   comparing results, which is the check the family exists for.
+- **`forge.repository.tree.list` at the repository root asks GitHub for `/contents`, not
+  `/contents/`** — the slash form reached GitHub's edge as a distinct URL and failed with a 503. The
+  same check surfaced it, and it left the op unusable (not merely inconsistent) on that account.
 ## 0.9.0 — 2026-11-03
 
 - **`forge` gains a GitHub adapter** — the third flavor, so one account set spans git.ins-amu.fr,
