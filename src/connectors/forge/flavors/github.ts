@@ -391,7 +391,10 @@ export function githubPort(http: ForgeHttp): ForgePort {
     async listTree(ref: RepoRef, q: ListQuery & { ref?: string; path?: string }) {
       const limit = http.clampLimit(q.limit);
       const path = (q.path ?? "").replace(/^\/+/, "");
-      const body = await http.get(`${repoPath(ref)}/contents/${path}`, {
+      // At the root, `/contents` (no trailing slash) is the documented form; the slash
+      // form reaches GitHub's edge as a distinct URL and is not reliably cached.
+      const suffix = path === "" ? "" : `/${path}`;
+      const body = await http.get(`${repoPath(ref)}/contents${suffix}`, {
         ...(q.ref ? { ref: q.ref } : {}),
       });
       const rows = Array.isArray(body) ? body.map((e) => obj(e)) : [];
