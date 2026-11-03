@@ -114,13 +114,15 @@ overwritten; update is read-modify-write so `VALARM`/vendor props survive).
 before the start; `events.get` returns them; an update replaces DISPLAY alarms only).
 **ATTENDEE/ORGANIZER and EMAIL alarms are refused**: iCloud auto-schedules and would send real mail.
 
-**dav** (16 ops) — WebDAV/Nextcloud files. `dav.accounts` gives each `shareRoot` and why it is read-only if
+**dav** (21 ops) — WebDAV files; `nextcloud: true` adds the trash/version trees. `dav.accounts` gives each `shareRoot` and why it is read-only if
 it is; every op takes `path` relative to it ("" = root, no "/" or ".." prefix) and returns that form. Reads: `dav.list` (depth 1; `offset`/`nextOffset` page it), `dav.stat` (fresh
 `etag`), `dav.get` (text only, 64 KiB default — **binary refused → `dav.stage`**),
 `dav.find({pattern})` (parallel bounded walk; `stoppedBy`/`resumeFrom` say what it never reached),
 `dav.grep({pattern, namePattern?})` (which files *mention* it — literal, bounded, counts what it
 skipped), `dav.get` windows (`offset` → `nextOffset`), `dav.quota`, `dav.stage`/`dav.staging.clear`
-(bytes onto the host: `staged` for `putStaged`, `fsRoot`+`path` for `fs.read`). Writes are approval: `dav.edit({path, append?, prepend?, replace?})`
+(bytes onto the host: `staged` for `putStaged`, `fsRoot`+`path` for `fs.read`). On a Nextcloud
+account: `dav.trash.list`/`restore`/`purge` (a delete is recoverable) and
+`dav.versions.list`/`restore` (the bytes an overwrite replaced; restore keeps the current content). Writes are approval: `dav.edit({path, append?, prepend?, replace?})`
 is read-modify-write in **one** call, and its write carries the etag of the read it just made
 (literal `replace`; no match is an error unless that entry is `optional`); then `dav.put({path, text,
 overwrite?, ifMatch?})`, `dav.putStaged`, `dav.mkdir`, `dav.move`, `dav.copy`, `dav.delete` (a

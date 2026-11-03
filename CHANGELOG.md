@@ -8,6 +8,33 @@ actually talking to instead of probing behaviour.
 Format: `## <version> — <YYYY-MM-DD>`, newest first, then a short bullet list. Keep bullets about
 the API surface; implementation notes belong in the commit message.
 
+## 0.13.0 — 2026-11-03
+
+The dav surface could destroy things with no way back. Both targets turned out to be Nextcloud, which
+keeps a trashbin and a version per overwrite, so both trees are now wired — while staying optional,
+because a plain WebDAV server has neither.
+
+- **`dav.trash.list` / `dav.trash.restore` / `dav.trash.purge` (Nextcloud).** `delete` is no longer a
+  one-way door: the list is newest-deletion-first with the original location and deletion time the
+  server recorded, `restore` puts the entry back (or at `to`), and it refuses (412) to land on an
+  existing file unless `overwrite: true`. `purge` is the single irreversible call and there is no
+  "empty trash" op on purpose. `id` is the opaque value from the listing, validated as one path
+  segment so it cannot address somebody else's trash.
+- **`dav.versions.list` / `dav.versions.restore` (Nextcloud).** This is the recovery path for
+  `put({ overwrite: true })` — the result of that op already says `replaced: { size, etag, modified }`,
+  and this is what you do about it. Restoring keeps the current content as a new version, so it is
+  itself reversible. The file id comes from `oc:fileid` on a depth-0 PROPFIND; nothing about it is
+  caller-supplied.
+- **Both are absent, not broken, on a plain WebDAV server.** They appear only when an account sets
+  `nextcloud: true` (a config flag, default off): otherwise the registry drops them, so `api.search`
+  never lists an op that could only 404, and `dav.accounts` reports the flag so a caller can see why.
+  Both trees hang off the dav root derived from `shareRoot` (`…/files/<user>`), and an account whose
+  `shareRoot` is not of that shape gets a named error instead of a mystery.
+- Verified against both live servers before wiring: the trashbin PROPFIND (`nc:trashbin-filename`,
+  `nc:trashbin-original-location`, `nc:trashbin-deletion-time`), the versions tree keyed by
+  `oc:fileid`, and the `MOVE`-with-`Destination` restore shape. The tests' mock reproduces those
+  bodies rather than the docs' prose.
+
 ## 0.12.1 — 2026-11-03
 
 - **`dav.grep` no longer spends its budget on files that cannot contain text.** Measured against the

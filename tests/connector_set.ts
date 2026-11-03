@@ -74,6 +74,7 @@ export async function allConnectors(): Promise<Connector[]> {
         auth: "basic",
         password: "p",
         writable: true,
+        nextcloud: true,
       }],
       stagingRoot: tmp,
     }),

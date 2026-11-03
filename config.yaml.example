@@ -118,6 +118,7 @@ connectors:
 #         user: alice
 #         auth: basic                              # basic = app password; bearer = token
 #         writable: false
+#         nextcloud: true    # adds trashbin + versions repair ops (absent otherwise)
 #         # password lives in secrets.json as dav.work.password (bearer: dav.<id>.token)
 
 # --- calendars (optional, CalDAV) ---------------------------------------------

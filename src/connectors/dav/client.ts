@@ -38,6 +38,24 @@ import {
 
 /** Nextcloud/ownCloud quota properties. */
 const OC = "http://owncloud.org/ns";
+/** Nextcloud-specific trees (trashbin, versions) live in this namespace. */
+const NC = "http://nextcloud.org/ns";
+
+/** Trash entries: one row per deleted file/directory, hrefs under `<davRoot>/trashbin/<user>/trash`. */
+const TRASH_PROPS: PropRef[] = [
+  { ns: NC, name: "trashbin-filename" },
+  { ns: NC, name: "trashbin-original-location" },
+  { ns: NC, name: "trashbin-deletion-time" },
+  { ns: DAV, name: "getcontentlength" },
+  { ns: DAV, name: "getlastmodified" },
+  { ns: DAV, name: "resourcetype" },
+  { ns: OC, name: "fileid" },
+];
+
+const VERSION_PROPS: PropRef[] = [
+  { ns: DAV, name: "getcontentlength" },
+  { ns: DAV, name: "getlastmodified" },
+];
 
 const DEFAULT_TIMEOUT_MS = 20_000;
 const DEFAULT_MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
@@ -88,6 +106,11 @@ export interface DavAccountConfig {
   password: string;
   /** false ⇒ every mutating op is refused in precheck */
   writable: boolean;
+  /**
+   * Nextcloud-only trees (trashbin, versions) exist. Off by default: a plain WebDAV
+   * server has neither, and guessing would turn "restore" into a 404 mystery.
+   */
+  nextcloud?: boolean;
 }
 
 export interface DavHostOptions {
@@ -334,12 +357,16 @@ class DavAccount {
   private readonly maxStageBytes: number;
   private readonly stagingFsRoot?: { name: string; path: string };
 
+  private readonly nextcloud: boolean;
+  private readonly ncRoot?: { davRoot: string; user: string };
+
   constructor(
     readonly id: string,
     cfg: DavAccountConfig,
     readonly writable: boolean,
     opts: DavHostOptions = {},
   ) {
+    this.nextcloud = cfg.nextcloud === true;
     this.origin = new URL(cfg.origin);
     const loopback = ["127.0.0.1", "::1", "localhost"].includes(this.origin.hostname);
     if (this.origin.protocol !== "https:" && !(loopback && this.origin.protocol === "http:")) {
@@ -367,6 +394,10 @@ class DavAccount {
     this.stagingRoot = opts.stagingRoot ?? "data/staging-dav";
     this.maxStageBytes = opts.maxStageBytes ?? DEFAULT_MAX_STAGE_BYTES;
     this.stagingFsRoot = opts.stagingFsRoot;
+    // `/remote.php/dav/files/<user>` → `/remote.php/dav` + `<user>`: the trashbin and
+    // versions trees hang off the same dav root, so it is derived, never configured.
+    const m = /^(.*)\/files\/([^/]+)\/?$/.exec(this.shareRoot);
+    if (m) this.ncRoot = { davRoot: m[1], user: m[2] };
   }
 
   // --- plumbing -------------------------------------------------------------
@@ -539,6 +570,7 @@ class DavAccount {
       origin: this.origin.origin,
       shareRoot: this.shareRoot,
       writable: this.writable,
+      nextcloud: this.nextcloud,
       // "read-only" is always a config decision here (the app password may well allow
       // writes — verify with a conditional PUT before assuming otherwise), so say which
       // knob turns it on instead of leaving the caller to guess.
@@ -1066,6 +1098,242 @@ class DavAccount {
       ...(stoppedBy === null ? {} : { stoppedBy }),
       skipped,
       hits,
+    } as unknown as JsonValue;
+  }
+
+  // --- Nextcloud trees: trashbin + versions ---------------------------------
+  //
+  // Both live outside the share root (`<davRoot>/trashbin/<user>/trash`,
+  // `<davRoot>/versions/<user>/versions/<fileid>`), so they get their own builder that
+  // is still pinned to the origin and still refuses any caller text that could walk out
+  // of those two prefixes.
+
+  private ncTrees(): { davRoot: string; user: string } {
+    if (!this.nextcloud) {
+      throw new Error(
+        `dav account ${this.id} is not marked nextcloud: true, so it has no trashbin or ` +
+          `versions tree — "restore" is a Nextcloud extension, not WebDAV`,
+      );
+    }
+    if (!this.ncRoot) {
+      throw new Error(
+        `dav account ${this.id}: shareRoot ${JSON.stringify(this.shareRoot)} is not a ` +
+          `Nextcloud files root (expected …/files/<user>), so the trashbin and versions trees ` +
+          `cannot be located`,
+      );
+    }
+    return this.ncRoot;
+  }
+
+  /** Absolute URL under the dav root, refusing anything that could leave the prefix. */
+  private ncUrl(prefix: "trashbin" | "versions", rel: string[]): URL {
+    const { davRoot, user } = this.ncTrees();
+    const leaf = prefix === "trashbin" ? "trash" : "versions";
+    const encoded = encodeSegments(rel);
+    const path = rel.length === 0
+      ? `${davRoot}/${prefix}/${user}/${leaf}/`
+      : `${davRoot}/${prefix}/${user}/${leaf}/${encoded}`;
+    return this.pin(new URL(path, this.origin.origin));
+  }
+
+  /**
+   * One id from the trash: a basename like `notes.md.d1793725623` (directories keep the
+   * trailing slash in the href). Validated as a single segment, so it cannot address
+   * another user's trash or walk up.
+   */
+  private trashId(id: string): string[] {
+    const trimmed = String(id).trim().replace(/\/+$/, "");
+    if (
+      trimmed === "" || trimmed.includes("/") || trimmed.includes("\\") ||
+      trimmed === "." || trimmed === ".."
+    ) {
+      throw new Error(
+        `dav account ${this.id}: id ${JSON.stringify(id)} is not a trash entry id — pass the ` +
+          `\`id\` from dav.trash.list verbatim`,
+      );
+    }
+    return [trimmed];
+  }
+
+  async trashList(limit: number, offset: number): Promise<JsonValue> {
+    this.ncTrees();
+    const reply = await this.expect("PROPFIND", this.ncUrl("trashbin", []), {
+      body: propfindBody(TRASH_PROPS),
+      headers: { depth: "1", "content-type": "application/xml; charset=utf-8" },
+      ok: [207],
+      path: "trash",
+    });
+    const parsed = parseMultiStatus(this.decode(reply.bytes));
+    const self = this.ncUrl("trashbin", []).pathname;
+    const entries: JsonValue[] = [];
+    for (const r of parsed.responses) {
+      const href = new URL(r.href, this.origin.origin).pathname;
+      if (href.replace(/\/$/, "") === self.replace(/\/$/, "")) continue;
+      const id = href.replace(/\/$/, "").split("/").pop() ?? "";
+      if (id === "") continue;
+      const prop = (name: string) => okProp(r, name)?.text.trim();
+      const deleted = prop("trashbin-deletion-time");
+      const size = prop("getcontentlength");
+      entries.push({
+        id: href.endsWith("/") ? `${id}/` : id,
+        name: prop("trashbin-filename") ?? id.replace(/\.d\d+\/?$/, ""),
+        originalLocation: prop("trashbin-original-location") ?? "",
+        ...(deleted === undefined
+          ? {}
+          : { deletedAt: new Date(Number(deleted) * 1000).toISOString() }),
+        kind: DavAccount.isCollection(okProp(r, "resourcetype")) ? "dir" : "file",
+        ...(size === undefined || size === "" ? {} : { size: Number(size) }),
+        ...(prop("fileid") === undefined ? {} : { fileid: Number(prop("fileid")) }),
+      });
+    }
+    // newest deletion first: a restore target is nearly always a recent mistake
+    entries.sort((a, b) =>
+      String((b as { deletedAt?: string }).deletedAt ?? "").localeCompare(
+        String((a as { deletedAt?: string }).deletedAt ?? ""),
+      )
+    );
+    const page = entries.slice(offset, offset + limit);
+    return {
+      account: this.id,
+      count: page.length,
+      total: entries.length,
+      offset,
+      more: Math.max(0, entries.length - offset - page.length),
+      nextOffset: offset + page.length < entries.length ? offset + page.length : null,
+      entries: page,
+    } as unknown as JsonValue;
+  }
+
+  async trashRestore(id: string, to: string | undefined, overwrite: boolean): Promise<JsonValue> {
+    this.requireWritable("dav.trash.restore");
+    const rel = this.trashId(id);
+    const listed = await this.trashList(500, 0) as { entries: Array<Record<string, JsonValue>> };
+    const entry = listed.entries.find((e) =>
+      String(e.id) === (String(id).endsWith("/") ? id : rel[0])
+    );
+    if (!entry) {
+      throw new Error(
+        `dav.trash.restore: ${JSON.stringify(id)} is not in the trash (it may have been restored ` +
+          `or purged already); dav.trash.list shows what is there`,
+      );
+    }
+    const target = to ?? String(entry.originalLocation ?? "");
+    if (target === "") {
+      throw new Error(
+        `dav.trash.restore: the server did not record where ${JSON.stringify(id)} came from; ` +
+          `pass \`to\` explicitly`,
+      );
+    }
+    const path = normalizePath(target, "to");
+    if (path.rel === "") throw new Error("dav.trash.restore: to: expected a path with a name");
+    const destination = this.urlOf(path);
+    const reply = await this.send("MOVE", this.ncUrl("trashbin", rel), {
+      headers: { destination: destination.href, overwrite: overwrite ? "T" : "F" },
+    });
+    if (![201, 204].includes(reply.status)) {
+      throw failure("dav.trash.restore", String(target), reply.status, this.decode(reply.bytes));
+    }
+    return {
+      account: this.id,
+      restored: { id, to: path.rel, name: entry.name },
+      ...(to === undefined ? { note: "restored to the location the server recorded" } : {}),
+    } as unknown as JsonValue;
+  }
+
+  async trashPurge(id: string): Promise<JsonValue> {
+    this.requireWritable("dav.trash.purge");
+    const rel = this.trashId(id);
+    const reply = await this.send("DELETE", this.ncUrl("trashbin", rel), {});
+    if (![200, 204].includes(reply.status)) {
+      throw failure("dav.trash.purge", rel.join("/"), reply.status, this.decode(reply.bytes));
+    }
+    return { account: this.id, purged: id } as unknown as JsonValue;
+  }
+
+  /** The numeric file id Nextcloud uses to key a file's version history. */
+  private async fileIdOf(path: DavPath): Promise<string> {
+    const reply = await this.expect("PROPFIND", this.urlOf(path), {
+      body: propfindBody([{ ns: OC, name: "fileid" }]),
+      headers: { depth: "0", "content-type": "application/xml; charset=utf-8" },
+      ok: [207],
+      path: path.rel,
+    });
+    const parsed = parseMultiStatus(this.decode(reply.bytes));
+    const id = parsed.responses[0] ? okProp(parsed.responses[0], "fileid")?.text.trim() : undefined;
+    if (!id) {
+      throw new Error(
+        `dav.versions: the server did not report oc:fileid for ${JSON.stringify(path.rel)} — ` +
+          `version history is a Nextcloud extension`,
+      );
+    }
+    return id;
+  }
+
+  async versionsList(path: DavPath, limit: number): Promise<JsonValue> {
+    this.ncTrees();
+    const fileid = await this.fileIdOf(path);
+    const reply = await this.expect("PROPFIND", this.ncUrl("versions", [fileid]), {
+      body: propfindBody(VERSION_PROPS),
+      headers: { depth: "1", "content-type": "application/xml; charset=utf-8" },
+      ok: [207],
+      path: path.rel,
+    });
+    const parsed = parseMultiStatus(this.decode(reply.bytes));
+    const versions: JsonValue[] = [];
+    for (const r of parsed.responses) {
+      const href = new URL(r.href, this.origin.origin).pathname.replace(/\/$/, "");
+      const version = href.split("/").pop() ?? "";
+      if (!/^\d+$/.test(version)) continue; // the collection itself
+      const size = okProp(r, "getcontentlength")?.text.trim();
+      const modified = isoDate(okProp(r, "getlastmodified")?.text.trim());
+      versions.push({
+        version,
+        ...(modified === undefined ? {} : { modified }),
+        ...(size === undefined || size === "" ? {} : { size: Number(size) }),
+      } as unknown as JsonValue);
+    }
+    // newest first: the useful default is "the one before the mistake"
+    versions.sort((a, b) =>
+      Number((b as { version: string }).version) - Number((a as { version: string }).version)
+    );
+    return {
+      account: this.id,
+      path: path.rel,
+      fileid: Number(fileid),
+      count: Math.min(versions.length, limit),
+      total: versions.length,
+      versions: versions.slice(0, limit),
+    } as unknown as JsonValue;
+  }
+
+  async versionsRestore(
+    path: DavPath,
+    version: string,
+    overwrite: boolean,
+  ): Promise<JsonValue> {
+    this.requireWritable("dav.versions.restore");
+    if (!/^\d+$/.test(version)) {
+      throw new Error(
+        `dav.versions.restore: version ${JSON.stringify(version)} is not a version id — pass the ` +
+          `\`version\` from dav.versions.list verbatim`,
+      );
+    }
+    const fileid = await this.fileIdOf(path);
+    const reply = await this.send("MOVE", this.ncUrl("versions", [fileid, version]), {
+      headers: {
+        destination: this.urlOf(path).href,
+        overwrite: overwrite ? "T" : "F",
+      },
+    });
+    if (![201, 204].includes(reply.status)) {
+      throw failure("dav.versions.restore", path.rel, reply.status, this.decode(reply.bytes));
+    }
+    const restored = await this.freshEtag(path);
+    return {
+      account: this.id,
+      path: path.rel,
+      restored: version,
+      ...(restored === undefined ? {} : { etag: restored }),
     } as unknown as JsonValue;
   }
 

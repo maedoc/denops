@@ -308,6 +308,50 @@ export function davConnector(deps: DavConnectorDeps): Connector {
           a.overwrite === true,
         )),
 
+      "trash.list": wrap("trash.list", async (a: {
+        account: string;
+        limit?: number;
+        offset?: number;
+      }) =>
+        await host.get(a.account).trashList(
+          Math.min(a.limit ?? 50, 500),
+          Math.max(a.offset ?? 0, 0),
+        )),
+
+      "trash.restore": wrap("trash.restore", async (a: {
+        account: string;
+        id: string;
+        to?: string;
+        overwrite?: boolean;
+      }) => await host.get(a.account).trashRestore(a.id, a.to, a.overwrite === true)),
+
+      "trash.purge": wrap(
+        "trash.purge",
+        async (a: { account: string; id: string }) => await host.get(a.account).trashPurge(a.id),
+      ),
+
+      "versions.list": wrap("versions.list", async (a: {
+        account: string;
+        path: string;
+        limit?: number;
+      }) =>
+        await host.get(a.account).versionsList(
+          normalizePath(a.path),
+          Math.min(a.limit ?? 50, 200),
+        )),
+
+      "versions.restore": wrap("versions.restore", async (a: {
+        account: string;
+        path: string;
+        version: string;
+        overwrite?: boolean;
+      }) =>
+        await host.get(a.account).versionsRestore(
+          normalizePath(a.path),
+          a.version,
+          a.overwrite === true,
+        )),
+
       "delete": wrap("delete", async (a: {
         account: string;
         path: string;
@@ -808,6 +852,90 @@ export function davConnector(deps: DavConnectorDeps): Connector {
       ),
     },
     {
+      name: "dav.trash.list",
+      tier: "open",
+      doc:
+        "Nextcloud trashbin, newest deletion first. args: { account, limit?, offset? }. Returns " +
+        "{ count, total, offset, more, nextOffset, entries: [{ id, name, originalLocation, " +
+        "deletedAt, kind, size?, fileid? }] }. `id` is the opaque value dav.trash.restore/purge " +
+        "take back verbatim. Only for accounts marked `nextcloud: true`: this tree is a Nextcloud " +
+        "extension, not WebDAV." + HINT,
+      argSchema: compose(rejectUnknown(), acc, optNum("limit"), optNum("offset")),
+    },
+    {
+      name: "dav.trash.restore",
+      tier: "approval",
+      summarize: async (a) => {
+        const r = a as { account?: string; id?: string; to?: string };
+        return `Restore ${r.id} from the ${r.account} trash` +
+          `${r.to === undefined ? " to the location Nextcloud recorded" : ` to ${r.to}`}. ` +
+          `The restored file reappears in the share as a normal file.`;
+      },
+      doc:
+        "Restore one trash entry — the safety net behind `dav.delete` and a bad overwrite. args: " +
+        "{ account, id, to?, overwrite? } — `id` from dav.trash.list, `to` overrides the recorded " +
+        "location (still share-relative). Without `overwrite` an existing file at the destination " +
+        "is refused (412) rather than replaced. Returns { restored: { id, to, name } }.",
+      argSchema: compose(
+        rejectUnknown(),
+        acc,
+        str("id"),
+        optStr("to", MAX_PATH_CHARS),
+        optBool("overwrite"),
+        (a) => (a as { to?: string }).to === undefined ? null : pathArg("to")(a),
+        writable("dav.trash.restore"),
+      ),
+    },
+    {
+      name: "dav.trash.purge",
+      tier: "approval",
+      summarize: (a) => {
+        const r = a as { account?: string; id?: string };
+        return `Permanently delete trash entry ${r.id} on ${r.account}. This is the one delete ` +
+          `that cannot be undone afterwards.`;
+      },
+      doc:
+        "Permanently remove one entry from the trash, freeing its space. args: { account, id }. " +
+        "Returns { purged }. Nothing else in the trash is touched — there is no 'empty trash' op, " +
+        "on purpose: it is the one call with no way back.",
+      argSchema: compose(rejectUnknown(), acc, str("id"), writable("dav.trash.purge")),
+    },
+    {
+      name: "dav.versions.list",
+      tier: "open",
+      doc: "Version history of one file, newest first. args: { account, path, limit? }. Returns " +
+        "{ path, fileid, count, total, versions: [{ version, modified, size? }] }. Nextcloud keeps a " +
+        "version per overwrite, so this is how you get the bytes back that a `dav.put({overwrite: " +
+        "true})` replaced — dashboard `replaced` in that op's result tells you it happened." + HINT,
+      argSchema: compose(rejectUnknown(), acc, str("path"), optNum("limit"), pathArg("path")),
+    },
+    {
+      name: "dav.versions.restore",
+      tier: "approval",
+      summarize: (a) => {
+        const r = a as { account?: string; path?: string; version?: string };
+        return `Restore ${r.account}:${r.path} from version ${r.version}. The current content becomes ` +
+          `another version (nothing is destroyed), so this is reversible.`;
+      },
+      doc:
+        "Roll one file back to a version from dav.versions.list. args: { account, path, version, " +
+        "overwrite? }. Restoring keeps the current content as a new version, so it is reversible. " +
+        "Returns { path, restored, etag }.",
+      argSchema: compose(
+        rejectUnknown(),
+        acc,
+        str("path"),
+        str("version"),
+        optBool("overwrite"),
+        pathArg("path"),
+        writable("dav.versions.restore"),
+        (a) =>
+          /^\d+$/.test(String((a as { version?: string }).version ?? ""))
+            ? null
+            : "version: expected the numeric version id from dav.versions.list",
+      ),
+    },
+    {
       name: "dav.delete",
       tier: "approval",
       summarize: async (a) => {
@@ -843,9 +971,21 @@ export function davConnector(deps: DavConnectorDeps): Connector {
     },
   ];
 
+  // The trash/versions trees are a Nextcloud extension; when no account claims to be one,
+  // the ops are absent rather than always-failing (the registry drops `absent` ops, so
+  // they never reach api.search either).
+  const anyNextcloud = deps.accounts.some((a) => a.nextcloud === true);
+  const NEXTCLOUD_ONLY = new Set([
+    "dav.trash.list",
+    "dav.trash.restore",
+    "dav.trash.purge",
+    "dav.versions.list",
+    "dav.versions.restore",
+  ]);
+
   const conn: Connector = {
     id: "dav",
-    ops: ops.map((op) => ({
+    ops: ops.filter((op) => anyNextcloud || !NEXTCLOUD_ONLY.has(op.name)).map((op) => ({
       ...op,
       argSchema: compose(op.argSchema, checkShapeArgs),
       doc: DAV_SHAPE[shortOf(op.name)] && !op.doc.includes("Returns") ? op.doc + HINT : op.doc,

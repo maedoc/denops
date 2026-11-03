@@ -356,7 +356,7 @@ account origin and follows `current-user-principal` → `calendar-home-set`; iCl
 `pNN-caldav.icloud.com` host is granted automatically. A Nextcloud account needs its `/remote.php/
 dav/` root, because Nextcloud answers PROPFIND on `/` with 405.
 
-### dav (16 ops) — WebDAV / Nextcloud files, shaped for a model with a byte budget
+### dav (21 ops) — WebDAV / Nextcloud files, shaped for a model with a byte budget
 
 One address form: `dav.accounts` gives each account's `shareRoot`, and every other op takes `path`
 relative to it (`""` is the root, no leading `/`, no `..`) and returns that same form, so paths
@@ -370,6 +370,7 @@ absolute, backslash and control characters, and percent-encodes each segment on 
 | read     | `get` (`maxBytes` + `offset` → Range windows), `grep` (literal content search over a bounded walk), `quota`                                             |
 | staging  | `stage` (any file → host staging root, sha256 + the `fsRoot`/`path` `fs.read` wants), `staging.clear`                                                  |
 | write \* | `edit` (read-modify-write in one call), `put`, `putStaged` (binary up), `mkdir`, `move`, `copy`, `delete`                                               |
+| nextcloud | `trash.list`/`restore`/`purge`, `versions.list`/`restore` — only for accounts marked `nextcloud: true`                                                  |
 
 `*` approval-tier. **Create-only by default**: `put`/`putStaged` send `If-None-Match: *` unless given
 `overwrite: true` or the `ifMatch` etag from `stat`/`get`; `move`/`copy` send `Overwrite: F`; `delete`
@@ -388,8 +389,16 @@ connectors:
         user: alice
         auth: basic            # basic = app password; bearer = token
         writable: false        # false ⇒ every mutating op is refused before approval
+        nextcloud: true        # adds the trashbin + versions trees (Nextcloud only)
         # password lives in secrets.json as dav.work.password
 ```
+
+The Nextcloud trees are the safety net behind the writes: `dav.delete` is recoverable through
+`dav.trash.restore` (newest deletion first, original path from the server), and a destructive
+`put({overwrite: true})` is recoverable through `dav.versions.restore` — which keeps the content it
+replaced as another version, so it is reversible. Both are absent (`api.search` does not list them)
+unless some account sets `nextcloud: true`; a plain WebDAV server has neither tree, and guessing
+would turn "restore" into a 404 mystery.
 
 `writable: false` is always a config decision, not a credential limit — the note in `dav.accounts`
 says so, because "read-only and no reason given" is the kind of mystery that wastes a run. Non-UTF-8

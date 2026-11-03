@@ -20,11 +20,13 @@ interface Node {
   bytes: Uint8Array;
   mtime: string;
   etag: string;
+  fileid?: number;
 }
 
 function multistatus(body: string): string {
   return `<?xml version="1.0" encoding="utf-8"?><d:multistatus xmlns:d="DAV:" ` +
-    `xmlns:oc="http://owncloud.org/ns">${body}</d:multistatus>`;
+    `xmlns:oc="http://owncloud.org/ns" xmlns:nc="http://nextcloud.org/ns">${body}` +
+    `</d:multistatus>`;
 }
 
 function response(href: string, props: string, status = "HTTP/1.1 200 OK"): string {
@@ -39,8 +41,12 @@ function response(href: string, props: string, status = "HTTP/1.1 200 OK"): stri
  * request shapes the client is supposed to send (Depth, If-Match, If-None-Match,
  * Overwrite), because those are the safety properties under test.
  */
-function mockDav(recorded: Recorded[], opts: { quota?: boolean; unlimited?: boolean } = {}) {
+function mockDav(
+  recorded: Recorded[],
+  opts: { quota?: boolean; unlimited?: boolean; nextcloud?: boolean } = {},
+) {
   const nodes = new Map<string, Node>();
+  let nextFileId = 100;
   const enc = new TextEncoder();
   const add = (path: string, content: string | Uint8Array, kind: "file" | "dir" = "file") => {
     const bytes = typeof content === "string" ? enc.encode(content) : content;
@@ -49,7 +55,8 @@ function mockDav(recorded: Recorded[], opts: { quota?: boolean; unlimited?: bool
       bytes,
       mtime: "Mon, 02 Nov 2026 10:00:00 GMT",
       etag: `"etag-${nodes.size}"`,
-    });
+      ...(kind === "file" ? { fileid: nextFileId++ } : {}),
+    } as Node);
   };
   add("", "", "dir");
   add("docs", "", "dir");
@@ -60,6 +67,15 @@ function mockDav(recorded: Recorded[], opts: { quota?: boolean; unlimited?: bool
   add("notes.json", '{"a":1}');
   add("logo.png", new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01]));
 
+  const trashed = new Map<
+    string,
+    { name: string; original: string; deleted: number; bytes: Uint8Array }
+  >();
+  let nextVersion = 1_700_000_000;
+  const versionHistory = new Map<
+    number,
+    Array<{ version: string; bytes: Uint8Array; mtime: string }>
+  >();
   let base = "";
   const server = Deno.serve({ hostname: "127.0.0.1", port: 0, onListen: () => {} }, async (req) => {
     const url = new URL(req.url);
@@ -74,6 +90,89 @@ function mockDav(recorded: Recorded[], opts: { quota?: boolean; unlimited?: bool
     const node = nodes.get(path);
     const href = `${SHARE}${path.slice(SHARE.length)}`;
     const depth = req.headers.get("depth") ?? "1";
+
+    // --- Nextcloud-only trees: trashbin + versions ---------------------------
+    const trashMatch = /^\/remote\.php\/dav\/trashbin\/alice\/trash\/?(.*)$/.exec(path);
+    if (trashMatch && opts.nextcloud !== false) {
+      const id = trashMatch[1];
+      if (req.method === "PROPFIND") {
+        const rows = [...trashed.entries()].sort((a, b) => b[1].deleted - a[1].deleted);
+        const self =
+          `<d:response><d:href>${
+            SHARE.replace("/files/alice", "/trashbin/alice/trash/")
+          }</d:href>` +
+          `<d:propstat><d:prop/><d:status>HTTP/1.1 404 Not Found</d:status></d:propstat></d:response>`;
+        const body = rows.map(([tid, t]) =>
+          `<d:response><d:href>/remote.php/dav/trashbin/alice/trash/${tid}</d:href><d:propstat><d:prop>` +
+          `<d:getcontentlength>${t.bytes.byteLength}</d:getcontentlength>` +
+          `<oc:fileid>9${rows.length}</oc:fileid>` +
+          `<nc:trashbin-filename>${t.name}</nc:trashbin-filename>` +
+          `<nc:trashbin-original-location>${t.original}</nc:trashbin-original-location>` +
+          `<nc:trashbin-deletion-time>${t.deleted}</nc:trashbin-deletion-time>` +
+          `</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>`
+        ).join("");
+        return new Response(
+          `<?xml version="1.0"?><d:multistatus xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns" ` +
+            `xmlns:nc="http://nextcloud.org/ns">${self}${body}</d:multistatus>`,
+          { status: 207 },
+        );
+      }
+      const entry = trashed.get(id);
+      if (!entry) return new Response("gone", { status: 404 });
+      if (req.method === "MOVE") {
+        const dest = new URL(req.headers.get("destination") ?? "", base);
+        const destPath = decodeURIComponent(dest.pathname);
+        if (nodes.has(destPath) && req.headers.get("overwrite") === "F") {
+          return new Response("exists", { status: 412 });
+        }
+        nodes.set(destPath, {
+          kind: "file",
+          bytes: entry.bytes,
+          mtime: new Date().toUTCString(),
+          etag: '"restored"',
+        });
+        trashed.delete(id);
+        return new Response(null, { status: 201 });
+      }
+      if (req.method === "DELETE") {
+        trashed.delete(id);
+        return new Response(null, { status: 204 });
+      }
+    }
+    const verMatch = /^\/remote\.php\/dav\/versions\/alice\/versions\/(\d+)\/?(.*)$/.exec(path);
+    if (verMatch && opts.nextcloud !== false) {
+      const fileid = Number(verMatch[1]);
+      const version = verMatch[2];
+      const file = [...nodes.entries()].find(([, n]) =>
+        (n as unknown as { fileid?: number }).fileid === fileid
+      );
+      if (!file) return new Response("no such file id", { status: 404 });
+      if (req.method === "PROPFIND") {
+        const versions = versionHistory.get(fileid) ?? [];
+        const rows = versions.map((v) =>
+          `<d:response><d:href>/remote.php/dav/versions/alice/versions/${fileid}/${v.version}` +
+          `</d:href><d:propstat><d:prop><d:getcontentlength>${v.bytes.byteLength}` +
+          `</d:getcontentlength><d:getlastmodified>${v.mtime}</d:getlastmodified></d:prop>` +
+          `<d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>`
+        ).join("");
+        return new Response(
+          `<?xml version="1.0"?><d:multistatus xmlns:d="DAV:">${rows}</d:multistatus>`,
+          { status: 207 },
+        );
+      }
+      if (req.method === "MOVE") {
+        const v = (versionHistory.get(fileid) ?? []).find((x) => x.version === version);
+        if (!v) return new Response("no such version", { status: 404 });
+        // restoring keeps the current content as a new version
+        const current = file[1];
+        versionHistory.set(fileid, [
+          ...(versionHistory.get(fileid) ?? []),
+          { version: String(nextVersion++), bytes: current.bytes, mtime: new Date().toUTCString() },
+        ]);
+        nodes.set(file[0], { ...current, bytes: v.bytes, etag: `"restored-${version}"` });
+        return new Response(null, { status: 201 });
+      }
+    }
 
     if (req.method === "PROPFIND") {
       if (!node) {
@@ -100,7 +199,8 @@ function mockDav(recorded: Recorded[], opts: { quota?: boolean; unlimited?: bool
                 : p.endsWith(".json")
                 ? "application/json"
                 : "text/plain"
-            }</d:getcontenttype>`);
+            }</d:getcontenttype>` +
+              (n.fileid === undefined ? "" : `<oc:fileid>${n.fileid}</oc:fileid>`));
         if (p === SHARE && opts.quota) {
           // Nextcloud 33+ answers RFC 4331 names in the DAV: namespace; the oc: ones
           // 404. Serving exactly that is the point of this branch.
@@ -163,11 +263,19 @@ function mockDav(recorded: Recorded[], opts: { quota?: boolean; unlimited?: bool
         return new Response("stale", { status: 412 });
       }
       const created = !node;
+      if (node) {
+        const id = (node as unknown as { fileid?: number }).fileid ?? 0;
+        versionHistory.set(id, [
+          ...(versionHistory.get(id) ?? []),
+          { version: String(nextVersion++), bytes: node.bytes, mtime: node.mtime },
+        ]);
+      }
       nodes.set(path, {
         kind: "file",
         bytes,
         mtime: new Date().toUTCString(),
         etag: `"etag-new-${nodes.size + 1}"`,
+        fileid: node?.fileid ?? nextFileId++,
       });
       return new Response(null, {
         status: created ? 201 : 204,
@@ -203,6 +311,12 @@ function mockDav(recorded: Recorded[], opts: { quota?: boolean; unlimited?: bool
 
     if (req.method === "DELETE") {
       if (!node) return new Response("nope", { status: 404 });
+      trashed.set(`${path.split("/").pop()}.d${Math.floor(Date.now() / 1000)}`, {
+        name: path.split("/").pop() ?? "",
+        original: path.slice(SHARE.length + 1),
+        deleted: Math.floor(Date.now() / 1000),
+        bytes: node.bytes,
+      });
       for (const p of [...nodes.keys()]) {
         if (p === path || p.startsWith(`${path}/`)) nodes.delete(p);
       }
@@ -230,6 +344,8 @@ async function harness(
     writable?: boolean;
     quota?: boolean;
     unlimited?: boolean;
+    nextcloud?: boolean;
+    shareRoot?: string;
     stagingFsRoot?: { name: string; path: string };
   } = {},
 ): Promise<Harness> {
@@ -243,8 +359,9 @@ async function harness(
   const conn = davConnector({
     accounts: [{
       id: "alice",
+      nextcloud: opts.nextcloud !== false,
       origin: base,
-      shareRoot: SHARE,
+      shareRoot: opts.shareRoot ?? SHARE,
       user: "alice",
       auth: "basic",
       password: "app-password",
@@ -723,6 +840,11 @@ Deno.test("dav: the op surface is the documented one", async () => {
       "dav.stage",
       "dav.staging.clear",
       "dav.stat",
+      "dav.trash.list",
+      "dav.trash.purge",
+      "dav.trash.restore",
+      "dav.versions.list",
+      "dav.versions.restore",
     ]);
     const approval = h.conn.ops.filter((o) => o.tier === "approval").map((o) => o.name).sort();
     assertEquals(approval, [
@@ -733,6 +855,9 @@ Deno.test("dav: the op surface is the documented one", async () => {
       "dav.move",
       "dav.put",
       "dav.putStaged",
+      "dav.trash.purge",
+      "dav.trash.restore",
+      "dav.versions.restore",
     ]);
     // every approval op says where the write lands, in plain words
     for (const op of h.conn.ops.filter((o) => o.tier === "approval")) {
@@ -1113,5 +1238,142 @@ Deno.test("dav: delete and move honour an etag when one is given", async () => {
     );
   } finally {
     await h.close();
+  }
+});
+
+Deno.test("dav: trash lists what a delete removed, newest first, with the original path", async () => {
+  const h = await harness();
+  try {
+    await h.call("delete", { path: "docs/intro.md" });
+    const out = await h.call("trash.list") as {
+      count: number;
+      entries: Array<{
+        id: string;
+        name: string;
+        originalLocation: string;
+        deletedAt?: string;
+        kind: string;
+        size?: number;
+      }>;
+    };
+    assertEquals(out.count, 1);
+    const entry = out.entries[0];
+    assertEquals(entry.name, "intro.md");
+    assertEquals(entry.originalLocation, "docs/intro.md");
+    assertEquals(entry.kind, "file");
+    assertEquals(entry.size, 14);
+    assert(String(entry.id).startsWith("intro.md.d"), `id looks like a trash entry: ${entry.id}`);
+    assert(entry.deletedAt !== undefined && entry.deletedAt.endsWith("Z"));
+
+    // restore puts it back where it came from, and it leaves the trash
+    const restored = await h.call("trash.restore", { id: entry.id }) as {
+      restored: { to: string; name: string };
+    };
+    assertEquals(restored.restored.to, "docs/intro.md");
+    assertEquals(h.nodes.has(`${SHARE}/docs/intro.md`), true);
+    const after = await h.call("trash.list") as { count: number };
+    assertEquals(after.count, 0);
+  } finally {
+    await h.close();
+  }
+});
+
+Deno.test("dav: trash restore refuses to clobber unless told to, and purge is separate", async () => {
+  const h = await harness();
+  try {
+    await h.call("delete", { path: "docs/data.csv" });
+    const list = await h.call("trash.list") as { entries: Array<{ id: string }> };
+    const id = list.entries[0].id;
+    await h.call("put", { path: "docs/data.csv", text: "re-created\n" });
+
+    const clash = await assertRejects(() => h.call("trash.restore", { id })) as Error;
+    assertStringIncludes(clash.message, "412");
+    // still in the trash after the refusal
+    assertEquals((await h.call("trash.list") as { count: number }).count, 1);
+
+    await h.call("trash.restore", { id, overwrite: true });
+    assertEquals(
+      new TextDecoder().decode(h.nodes.get(`${SHARE}/docs/data.csv`)!.bytes),
+      "a,b\n1,2\n",
+      "the trashed bytes came back",
+    );
+
+    // purge removes one entry for good, and does not touch the rest
+    await h.call("delete", { path: "notes.json" });
+    const again = await h.call("trash.list") as { entries: Array<{ id: string }> };
+    const purged = await h.call("trash.purge", { id: again.entries[0].id }) as { purged: string };
+    assertEquals(purged.purged, again.entries[0].id);
+    assertEquals((await h.call("trash.list") as { count: number }).count, 0);
+    assertEquals(
+      h.recorded.filter((r) => r.method === "DELETE").length,
+      3,
+      "two file deletes plus one purge",
+    );
+  } finally {
+    await h.close();
+  }
+});
+
+Deno.test("dav: versions lists history and restoring is reversible", async () => {
+  const h = await harness();
+  try {
+    await h.call("put", { path: "docs/draft.md", text: "v1\n" });
+    await h.call("put", { path: "docs/draft.md", text: "v2\n", overwrite: true });
+    await h.call("put", { path: "docs/draft.md", text: "v3\n", overwrite: true });
+
+    const out = await h.call("versions.list", { path: "docs/draft.md" }) as {
+      fileid: number;
+      count: number;
+      total: number;
+      versions: Array<{ version: string; size?: number; modified?: string }>;
+    };
+    assertEquals(out.total, 2, "two overwrites, two versions");
+    assertEquals(out.versions[0].size, 3, "newest first");
+    assert(out.fileid > 0);
+
+    const version = out.versions[0].version;
+    const restored = await h.call("versions.restore", {
+      path: "docs/draft.md",
+      version,
+    }) as { restored: string; etag: string };
+    assertEquals(restored.restored, version);
+    assertEquals(
+      new TextDecoder().decode(h.nodes.get(`${SHARE}/docs/draft.md`)!.bytes),
+      "v2\n",
+    );
+    // reversible: the content that was current is now itself a version
+    const after = await h.call("versions.list", { path: "docs/draft.md" }) as { total: number };
+    assertEquals(after.total, 3);
+
+    const bad = await assertRejects(() =>
+      h.call("versions.restore", { path: "docs/draft.md", version: "not-a-version" })
+    ) as Error;
+    assertStringIncludes(bad.message, "not a version id");
+  } finally {
+    await h.close();
+  }
+});
+
+Deno.test("dav: the Nextcloud trees are absent, not broken, on a plain WebDAV server", async () => {
+  const h = await harness({ nextcloud: false });
+  try {
+    const names = h.conn.ops.map((o) => o.name);
+    for (const gone of ["dav.trash.list", "dav.trash.restore", "dav.versions.list"]) {
+      assert(!names.includes(gone), `${gone} must be absent when no account is nextcloud`);
+    }
+    // and an account that is not Nextcloud explains itself rather than 404-ing
+    const described = await h.call("accounts") as { accounts: Array<{ nextcloud?: boolean }> };
+    assertEquals(described.accounts[0].nextcloud, false);
+  } finally {
+    await h.close();
+  }
+
+  // nextcloud: true but a shareRoot that is not .../files/<user>: say so
+  const odd = await harness({ nextcloud: true, shareRoot: "/dav/root" });
+  try {
+    const err = await assertRejects(() => odd.call("trash.list")) as Error;
+    assertStringIncludes(err.message, "not a Nextcloud files root");
+  } finally {
+    await odd.close();
   }
 });
