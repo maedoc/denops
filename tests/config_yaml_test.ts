@@ -89,3 +89,21 @@ Deno.test("normalize keeps dataDir and validates budgets", async () => {
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+// Startup validation is a reachability probe: non-fatal unless explicitly asked. The
+// default changed in 0.4.0 after one dead local IMAP bridge took the whole server down.
+Deno.test("startup.failFast defaults to false and parses strictly", () => {
+  assertEquals(normalize({}).startup, { validate: "full", failFast: false });
+  assertEquals(normalize({ startup: { validate: "full" } }).startup, {
+    validate: "full",
+    failFast: false,
+  });
+  assertEquals(normalize({ startup: { failFast: true } }).startup, {
+    validate: "full",
+    failFast: true,
+  });
+  assertEquals(normalize({ startup: { validate: "none" } }).startup, {
+    validate: "none",
+    failFast: false,
+  });
+});

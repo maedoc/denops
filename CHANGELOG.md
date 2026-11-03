@@ -8,6 +8,22 @@ actually talking to instead of probing behaviour.
 Format: `## <version> — <YYYY-MM-DD>`, newest first, then a short bullet list. Keep bullets about
 the API surface; implementation notes belong in the commit message.
 
+## 0.4.0 — 2026-11-03
+
+- **A degraded connector no longer stops the server from starting.** `startup.validate: full`
+  awaited every connector's reachability probe unguarded, so one unreachable dependency made
+  `buildApp` reject, the server never bound its port, and Caddy answered **502 for every op**
+  while the supervisor restarted the same commit forever. (Live cause: the Proton IMAP bridge on
+  `127.0.0.1:1143` stopped running; `mail` was the first probe.) A failing probe now records that
+  connector as **degraded** — still registered, its own ops fail when called, everything else keeps
+  serving.
+- `/health` returns `{ok: true, degraded: ["<connector>", …]}` and `denops.about` returns the same
+  list with each error, so "up but degraded" is visible from a run instead of only in journald.
+  Startup logs one `[startup] DEGRADED <connector>: …` line plus a summary.
+- New `startup.failFast` (default **false**). `true` restores the previous all-or-nothing startup.
+  Missing secrets, an impossible connector config and a non-loopback bind without a token remain
+  fatal either way — only *reachability* degrades.
+
 ## 0.3.1 — 2026-11-02
 
 - `dev.try` now refuses, host-side, any op that is approval-tier in the **live** registry. The

@@ -93,9 +93,13 @@ connectors:
     #   # password lives in secrets.json as mail.work.password
 
 startup:
-  # full: validate secrets and reachability of all enabled connectors, fail fast on error.
-  # none: skip validation (dev only).
+  # full: probe reachability of every enabled connector at startup (a chatty, credential-
+  # checking connector logs what it found). none: skip probing (dev only).
   validate: full
+  # false (default): an unreachable connector is logged as DEGRADED, stays registered, is
+  # listed by /health and denops.about, and only its own ops fail. true: refuse to start.
+  # Missing secrets or an impossible connector config is fatal either way.
+  failFast: false
 
 # --- fetching the web (optional) ---------------------------------------------
 #  web: GET one http(s) document into a run (text, or raw html). allowedHosts is the

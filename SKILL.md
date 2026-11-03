@@ -89,11 +89,13 @@ them): `glob`, `list`, `read` (line windows with `hasMore`), `grep` (regex, capp
 - **Grants are levelled**: approving the first op on a root records `fs:<root>:read` or
   `fs:<root>:write` (implies read); `fs.rm`/`fs.exec` are never grant-covered.
   `grants({action, key})`. **denops** (6 ops) — `denops.skill` (this document; `{ section }`
-  filters), `denops.about` (version, skill freshness, connector families), `denops.version`
+  filters), `denops.about` (version, skill freshness, connector families, `degraded` +
+  why), `denops.version`
   (version, commit, CHANGELOG head — check this instead of probing whether a fix deployed),
   `denops.budget` (remaining wall clock and op count for THIS run — call it before long loops or
   multi-step writes), `denops.oplog` (read-only, redacted run log: recent runs, their ops, statuses,
-  approval/error counts; no args, no result bodies).
+  approval/error counts; no args, no result bodies). A non-empty `about().degraded` means that
+  family failed its startup reachability probe: only its own ops fail, the server is up.
 
 **web** (1 op) — `web.fetch({url, format?:"text"|"html", maxBytes?})`: one http(s) document as text
 (HTML converted best-effort, no JS) or raw markup. Only hosts in the live config's `allowedHosts`

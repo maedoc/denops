@@ -21,6 +21,8 @@ export interface DenopsConnectorOptions {
   permissions?: () => Record<string, JsonValue>;
   /** File the supervisor tees the server's stdout/stderr into, for denops.logs. */
   serverLogPath?: string;
+  /** Connectors that failed startup validation but are still registered (degraded). */
+  degraded?: () => Array<{ connector: string; error: string }>;
 }
 
 // Anything that looks like a credential is masked before a log line leaves the host:
@@ -254,6 +256,9 @@ export function denopsConnector(opts: DenopsConnectorOptions): Connector {
           skillUpdatedAt: updatedAt,
           skillBytes: new TextEncoder().encode(text).length,
           connectors: opts.connectors(),
+          // Non-empty means some connector failed startup reachability validation and
+          // its own ops will fail; the rest of the server is up and working.
+          degraded: opts.degraded ? opts.degraded() : [],
           // the derived --allow-* envelope: the fastest way to answer "can this
           // server even reach host X / read path Y?"
           ...(opts.permissions ? { permissions: opts.permissions() } : {}),

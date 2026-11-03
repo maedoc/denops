@@ -38,7 +38,7 @@ export interface Config {
   server: ServerConfig;
   budgets: Budgets;
   connectors: Record<string, Record<string, unknown> & { enabled: boolean }>;
-  startup: { validate: "full" | "none" };
+  startup: { validate: "full" | "none"; failFast: boolean };
   dataDir: string;
   mistralStartupCheck?: MistralStartupCheck;
 }
@@ -112,7 +112,15 @@ export function normalize(parsed: Record<string, unknown>): Config {
       maxLogBytes: Number(budgets.maxLogBytes ?? 10_485_760),
     },
     connectors,
-    startup: { validate: startup.validate === "none" ? "none" : "full" },
+    // `failFast` defaults to false: startup validation is *reachability*, so an
+    // optional dependency being down (a local IMAP bridge, an API having a bad day)
+    // must not decide whether the server binds its port at all. Missing secrets, a
+    // non-loopback bind without a token and an impossible connector config still throw
+    // above and remain fatal. Set `startup.failFast: true` for all-or-nothing.
+    startup: {
+      validate: startup.validate === "none" ? "none" : "full",
+      failFast: startup.failFast === true,
+    },
     dataDir: String(parsed.dataDir ?? "data"),
     mistralStartupCheck: check
       ? {

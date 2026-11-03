@@ -28,6 +28,11 @@ import { mistralConnector } from "./connectors/mistral/manifest.ts";
 const configPath = Deno.args[0] ?? "config.yaml";
 const secretsPath = Deno.args[1] ?? "secrets.json";
 
+export interface StartupFailure {
+  connector: string;
+  error: string;
+}
+
 export interface AppContext {
   config: Config;
   secrets: Record<string, unknown>;
@@ -38,6 +43,53 @@ export interface AppContext {
   grants: RootGrants;
   dataDir: string;
   budgets: Budgets;
+  /**
+   * Connectors whose startup reachability check failed. They stay registered (their ops
+   * fail individually) and the server serves everything else; surfaced by /health and
+   * denops.about so a caller can tell "degraded" from "broken".
+   */
+  startupFailures: StartupFailure[];
+}
+
+/**
+ * Run every connector's startup reachability check.
+ *
+ * A failure is *not* fatal by default: refusing to bind the port turns one optional
+ * dependency being down (a local IMAP bridge, an API having a bad day) into a 502 for
+ * every op on the server, with the supervisor restart-looping on it. Instead the
+ * connector is reported back as degraded, stays registered, and its own ops fail when
+ * called. `startup.failFast: true` restores the all-or-nothing contract.
+ *
+ * Config sanity is a different thing and stays fatal: missing secrets or an impossible
+ * connector config throws while the connectors are being built, before this runs.
+ */
+export async function validateConnectors(
+  registry: Registry,
+  ctx: {
+    config: Config;
+    secrets: Record<string, unknown>;
+    log: (entry: Record<string, unknown>) => void;
+  },
+): Promise<StartupFailure[]> {
+  const failures: StartupFailure[] = [];
+  if (ctx.config.startup.validate !== "full") return failures;
+  for (const c of registry.list()) {
+    if (!c.validateStartup) continue;
+    try {
+      await c.validateStartup({
+        config: ctx.config.connectors[c.id] as unknown as Record<string, unknown>,
+        secrets: ctx.secrets,
+        log: ctx.log,
+      });
+    } catch (e) {
+      const error = e instanceof Error ? e.message : String(e);
+      if (ctx.config.startup.failFast) {
+        throw new Error(`connector ${c.id}: startup validation failed: ${error}`);
+      }
+      failures.push({ connector: c.id, error });
+    }
+  }
+  return failures;
 }
 
 export async function buildApp(configPath: string, secretsPath: string): Promise<AppContext> {
@@ -88,6 +140,7 @@ export async function buildApp(configPath: string, secretsPath: string): Promise
   }
   const registry = new Registry();
   const startupLogs: string[] = [];
+  let startupFailures: StartupFailure[] = [];
   const log = (entry: Record<string, unknown>) => startupLogs.push(JSON.stringify(entry));
 
   const enabled = (name: string) => config.connectors[name]?.enabled === true;
@@ -197,10 +250,12 @@ export async function buildApp(configPath: string, secretsPath: string): Promise
   registry.register(
     denopsConnector({
       skillPath: "SKILL.md",
-      version: "0.3.1",
+      version: "0.4.0",
       // the supervisor exports the commit it checked out
       commit: Deno.env.get("DENOPS_COMMIT") ?? undefined,
       connectors: () => registry.list().map((c) => c.id),
+      // live reference: filled in by the validation loop above
+      degraded: () => startupFailures,
       dataDir: config.dataDir,
       changelogPath: "CHANGELOG.md",
       serverLogPath: `${config.dataDir}/server.log`,
@@ -248,18 +303,23 @@ export async function buildApp(configPath: string, secretsPath: string): Promise
     registry.register(imapConnector({ accounts }));
   }
 
-  if (config.startup.validate === "full") {
-    for (const c of registry.list()) {
-      if (c.validateStartup) {
-        await c.validateStartup({
-          config: config.connectors[c.id] as unknown as Record<string, unknown>,
-          secrets,
-          log,
-        });
-      }
-    }
-  }
+  // Validation is a reachability probe, not a config-sanity check (missing secrets and
+  // impossible arguments threw above and are still fatal).
+  startupFailures = await validateConnectors(registry, { config, secrets, log });
   for (const l of startupLogs) console.error(`[startup] ${l}`);
+  for (const f of startupFailures) {
+    console.error(
+      `[startup] DEGRADED ${f.connector}: startup validation failed, "${f.connector}.*" ops will fail: ${f.error}`,
+    );
+  }
+  if (startupFailures.length > 0) {
+    console.error(
+      `[startup] starting with ${startupFailures.length} degraded connector(s): ` +
+        `${
+          startupFailures.map((f) => f.connector).join(", ")
+        } (set startup.failFast: true to refuse instead)`,
+    );
+  }
 
   const clients = new Map<string, Record<string, (args: JsonValue) => Promise<JsonValue>>>();
   const hostCtx = {
@@ -314,6 +374,7 @@ export async function buildApp(configPath: string, secretsPath: string): Promise
     grants,
     dataDir: config.dataDir,
     budgets: config.budgets,
+    startupFailures,
   };
 }
 
@@ -626,7 +687,8 @@ export function createHttpHandler(
     trustedProxy: s.trustedProxy,
     skipLoopbackBan: s.skipLoopbackBan ?? true,
     maxBodyBytes: s.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES,
-    healthHandler: () => Response.json({ ok: true }),
+    healthHandler: () =>
+      Response.json({ ok: true, degraded: app.startupFailures.map((f) => f.connector) }),
     ...(oauth
       ? {
         oauthHandler: (req: Request, url: URL, body: string) =>
