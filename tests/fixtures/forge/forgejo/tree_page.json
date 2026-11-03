@@ -1,0 +1,46 @@
+[
+  {
+    "_links": {
+      "git": "https://git.ins-amu.fr/api/v1/repos/marmaduke/forge-probe/git/blobs/bc435d501f0f4f983e30d9e513406df87b5b54e1",
+      "html": "https://git.ins-amu.fr/marmaduke/forge-probe/src/branch/main/README.md",
+      "self": "https://git.ins-amu.fr/api/v1/repos/marmaduke/forge-probe/contents/README.md?ref=main"
+    },
+    "content": null,
+    "download_url": "https://git.ins-amu.fr/marmaduke/forge-probe/raw/branch/main/README.md",
+    "encoding": null,
+    "git_url": "https://git.ins-amu.fr/api/v1/repos/marmaduke/forge-probe/git/blobs/bc435d501f0f4f983e30d9e513406df87b5b54e1",
+    "html_url": "https://git.ins-amu.fr/marmaduke/forge-probe/src/branch/main/README.md",
+    "last_commit_sha": "5a417c8f6ebdce86cfa326daf499a44fe8824f33",
+    "last_commit_when": "2026-11-03T12:17:26+01:00",
+    "name": "README.md",
+    "path": "README.md",
+    "sha": "bc435d501f0f4f983e30d9e513406df87b5b54e1",
+    "size": 61,
+    "submodule_git_url": null,
+    "target": null,
+    "type": "file",
+    "url": "https://git.ins-amu.fr/api/v1/repos/marmaduke/forge-probe/contents/README.md?ref=main"
+  },
+  {
+    "_links": {
+      "git": "https://git.ins-amu.fr/api/v1/repos/marmaduke/forge-probe/git/blobs/ad7ac37bb280ccd34b350a59ba440614d9106e41",
+      "html": "https://git.ins-amu.fr/marmaduke/forge-probe/src/branch/main/probe.md",
+      "self": "https://git.ins-amu.fr/api/v1/repos/marmaduke/forge-probe/contents/probe.md?ref=main"
+    },
+    "content": null,
+    "download_url": "https://git.ins-amu.fr/marmaduke/forge-probe/raw/branch/main/probe.md",
+    "encoding": null,
+    "git_url": "https://git.ins-amu.fr/api/v1/repos/marmaduke/forge-probe/git/blobs/ad7ac37bb280ccd34b350a59ba440614d9106e41",
+    "html_url": "https://git.ins-amu.fr/marmaduke/forge-probe/src/branch/main/probe.md",
+    "last_commit_sha": "9b9075431ab9be253e835ed4b13e24ef334f85d7",
+    "last_commit_when": "2026-11-03T12:17:27+01:00",
+    "name": "probe.md",
+    "path": "probe.md",
+    "sha": "ad7ac37bb280ccd34b350a59ba440614d9106e41",
+    "size": 15,
+    "submodule_git_url": null,
+    "target": null,
+    "type": "file",
+    "url": "https://git.ins-amu.fr/api/v1/repos/marmaduke/forge-probe/contents/probe.md?ref=main"
+  }
+]

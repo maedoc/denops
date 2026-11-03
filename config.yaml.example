@@ -122,7 +122,7 @@ connectors:
 #          gitlab flavor falls back to secrets.gitlab.token, so an existing deployment
 #          needs no new secret). Reads are open, writes need approval, and the long tail is
 #          reached with forge.api.get({account, path}) against that account's pinned root.
-#          Only flavors with an adapter are accepted at startup (gitlab today).
+#          Only flavors with an adapter are accepted at startup (gitlab, forgejo today).
 #
 #   forge:
 #     enabled: true

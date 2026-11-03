@@ -8,6 +8,26 @@ actually talking to instead of probing behaviour.
 Format: `## <version> — <YYYY-MM-DD>`, newest first, then a short bullet list. Keep bullets about
 the API surface; implementation notes belong in the commit message.
 
+## 0.7.0 — 2026-11-03
+
+- **`forge` gains a Forgejo adapter**, so one account set addresses both git.ins-amu.fr (Forgejo
+  16.0.4) and gitlab.ebrains.eu with the same 26 ops and the same normalized results. Every
+  divergence is handled in `flavors/forgejo.ts`: `{ok,data}` envelopes on search, `limit` instead of
+  `per_page`, `PATCH` (which answers **201**), a merge that returns **200 with an empty body** (so
+  the PR is re-read), issue comments that ignore paging (capped client-side), `state=merged` filtered
+  on the `merged_at` flag, `/raw` for file reads, blob `sha` required for file updates, label names
+  resolved to ids, and `head.ref` on a PR *detail* being `refs/pull/<n>/head` (the branch is in
+  `head.label`). `forge.issues.get` refuses a number that is really a pull request and names
+  `forge.pulls.get` instead.
+- **`gitlab.*` now runs on the shared forge client** — same ops, arguments, tiers and upstream-shaped
+  results, one implementation of auth, origin pinning, query handling and error extraction. The
+  previous `GitLabClient` is gone; nothing about the family's contract changed except the error
+  string prefix (`ebrains (gitlab) GET … -> 404: …`).
+- **`gitlab.mutate` accepts `PATCH`**: the shared client supports it (Forgejo needs it for issues and
+  repos, GitLab for the same), so the generic escape hatch no longer hides a verb the API uses.
+- Conformance fixtures for Forgejo recorded from the live instance (`tests/fixtures/forge/forgejo/`)
+  run through the same assertions as the GitLab ones — a flavor that drifts fails there.
+
 ## 0.6.0 — 2026-11-03
 
 - **`forge.*` (26 ops): one family over several code hosts.** A `forge` account is a

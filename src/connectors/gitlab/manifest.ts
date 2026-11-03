@@ -13,12 +13,26 @@ import {
 } from "../../harness/args.ts";
 import type { Connector, HostContext, JsonValue } from "../../harness/types.ts";
 import { checkShapeArgs, wrapClient } from "../shape.ts";
-import { GitLabClient } from "./client.ts";
+import { ForgeHttp } from "../forge/client.ts";
+import type { ForgeAccount } from "../forge/port.ts";
 
 export function gitlabConnector(
   opts: { token: string; origin: string; apiPath: string },
 ): Connector {
-  const client = new GitLabClient(opts);
+  // The gitlab family is now a thin surface over the forge client: same ops, same args,
+  // same upstream-shaped results, but one implementation of auth/pinning/paging/errors.
+  // It stays on raw upstream JSON (not the normalized ForgePort) because existing callers
+  // depend on GitLab field names (path_with_namespace, iid, ...) — forge.* is the
+  // flavor-neutral surface; this family is the compatibility one.
+  const account: ForgeAccount = {
+    id: "gitlab",
+    flavor: "gitlab",
+    origin: opts.origin,
+    apiPath: opts.apiPath,
+    token: opts.token,
+    maxLimit: 100,
+  };
+  const client = new ForgeHttp(account);
   const conn: Connector = {
     id: "gitlab",
     ops: [
@@ -59,11 +73,11 @@ export function gitlabConnector(
         name: "gitlab.mutate",
         tier: "approval",
         doc:
-          "Generic write: POST/PUT/DELETE any path under the GitLab API root, e.g. { method: 'PUT', path: '/projects/42/issues/7', body: { state_event: 'close' } }. " +
+          "Generic write: POST/PUT/PATCH/DELETE any path under the GitLab API root, e.g. { method: 'PUT', path: '/projects/42/issues/7', body: { state_event: 'close' } }. " +
           "Approval tier — the run suspends until approve(). Returns the raw JSON.",
         argSchema: compose(
           rejectUnknown(),
-          oneOf("method", ["POST", "PUT", "DELETE"]),
+          oneOf("method", ["POST", "PUT", "PATCH", "DELETE"]),
           str("path"),
           checkGitlabPath,
           checkQueryObject,
@@ -363,7 +377,7 @@ export function gitlabConnector(
         },
         "mutate": (a) => {
           const r = a as {
-            method: "POST" | "PUT" | "DELETE";
+            method: "POST" | "PUT" | "PATCH" | "DELETE";
             path: string;
             query?: Record<string, unknown>;
             body?: JsonValue;

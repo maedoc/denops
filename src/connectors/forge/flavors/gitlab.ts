@@ -13,11 +13,13 @@ import {
   type IssueSummary,
   type IssueWrite,
   type ListQuery,
+  MAX_TEXT_BYTES,
   type NoteSummary,
   type OrgSummary,
   type Page,
   parseRepoRef,
   type ProjectSummary,
+  type PullQuery,
   type PullSummary,
   type PullWrite,
   type RepoRef,
@@ -38,9 +40,6 @@ import {
 
 const enc = (s: string): string => encodeURIComponent(s);
 const projectPath = (ref: RepoRef): string => `/projects/${enc(repoRefString(ref))}`;
-
-/** Files larger than this are reported as truncated rather than paid for in context. */
-export const MAX_TEXT_BYTES = 256 * 1024;
 
 function page<T>(items: T[], pageNo: number, limit: number): Page<T> {
   return { items, page: pageNo, nextPage: items.length >= limit ? pageNo + 1 : null };
@@ -72,10 +71,10 @@ export function normalizeState(raw: unknown): "open" | "closed" | "merged" {
   return "open"; // opened, locked, reopened
 }
 
-function issueStateParam(state: IssueQuery["state"]): string {
+function issueStateParam(state: IssueQuery["state"] | PullQuery["state"]): string {
   if (state === "open") return "opened";
   if (state === undefined || state === "all") return "all";
-  return state;
+  return state; // closed | merged
 }
 
 export function normalizeProject(raw: Record<string, unknown>): ProjectSummary {
@@ -284,7 +283,7 @@ export function gitlabPort(http: ForgeHttp): ForgePort {
       );
     },
 
-    async listPulls(ref: RepoRef, q: IssueQuery) {
+    async listPulls(ref: RepoRef, q: PullQuery) {
       const limit = http.clampLimit(q.limit);
       const raw = (await http.get(`${projectPath(ref)}/merge_requests`, {
         state: issueStateParam(q.state),

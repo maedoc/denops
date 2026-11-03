@@ -149,7 +149,11 @@ export class ForgeHttp {
   }
 }
 
-export type QueryObject = Record<string, string | number | boolean | undefined | null>;
+/**
+ * Query values are coerced with String() and arrays are repeated, so callers may pass the
+ * loosely-typed query object an op received (the argSchema is what constrains the shape).
+ */
+export type QueryObject = Record<string, unknown>;
 
 function scopeHint(status: number): string {
   if (status === 401) return "the token was rejected (check secrets.forge.<account>.token)";

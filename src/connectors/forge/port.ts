@@ -9,6 +9,9 @@ import type { JsonValue } from "../../harness/types.ts";
 
 export type ForgeFlavor = "gitlab" | "forgejo" | "github";
 
+/** Files larger than this are reported as truncated rather than paid for in context. */
+export const MAX_TEXT_BYTES = 256 * 1024;
+
 /** Where one account lives. Credentials are host-side and never in an op argument. */
 export interface ForgeAccount {
   id: string;
@@ -149,6 +152,11 @@ export interface IssueQuery extends ListQuery {
   state?: "open" | "closed" | "all";
 }
 
+/** Pulls add `merged`, which GitLab supports natively and the others filter on a flag. */
+export interface PullQuery extends ListQuery {
+  state?: "open" | "closed" | "merged" | "all";
+}
+
 export interface IssueWrite {
   title: string;
   body?: string;
@@ -189,7 +197,7 @@ export interface ForgePort {
   createNote(ref: RepoRef, n: number, body: string): Promise<NoteSummary>;
   /** PR/MR comments are a separate resource on GitLab, an issue comment elsewhere. */
   createPullNote(ref: RepoRef, n: number, body: string): Promise<NoteSummary>;
-  listPulls(ref: RepoRef, q: IssueQuery): Promise<Page<PullSummary>>;
+  listPulls(ref: RepoRef, q: PullQuery): Promise<Page<PullSummary>>;
   getPull(ref: RepoRef, n: number): Promise<PullSummary>;
   getChanges(ref: RepoRef, n: number): Promise<ChangeSet>;
   createPull(ref: RepoRef, w: PullWrite): Promise<PullSummary>;
@@ -206,6 +214,8 @@ export interface ForgePort {
   getUser(username: string): Promise<UserSummary | null>;
   currentUser(): Promise<UserSummary>;
   listOrgs(q: ListQuery): Promise<Page<OrgSummary>>;
+  /** Connector-specific startup check (instance limits), optional. */
+  validate?(): Promise<void>;
   /** Raw GET under the account's pinned API root; the long-tail escape hatch. */
   apiGet(path: string, query?: Record<string, string | number | boolean>): Promise<JsonValue>;
 }

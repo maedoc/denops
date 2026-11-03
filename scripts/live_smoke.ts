@@ -10,12 +10,15 @@ async function main(): Promise<void> {
   const results: Record<string, string> = {};
 
   if (enabled("gitlab")) {
-    const { GitLabClient } = await import("../src/connectors/gitlab/client.ts");
+    const { ForgeHttp } = await import("../src/connectors/forge/client.ts");
     const g = config.connectors.gitlab;
-    const c = new GitLabClient({
+    const c = new ForgeHttp({
+      id: "gitlab",
+      flavor: "gitlab",
       token: String((secrets.gitlab as Record<string, unknown> | undefined)?.token ?? ""),
       origin: String(g.origin ?? "https://gitlab.ebrains.eu"),
       apiPath: String(g.apiPath ?? "/api/v4"),
+      maxLimit: 100,
     });
     const user = await c.get("/user") as { username?: string };
     const projects = await c.get("/projects", { per_page: 1 }) as unknown[];

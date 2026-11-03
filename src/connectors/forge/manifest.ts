@@ -3,6 +3,7 @@ import type { Connector, HostContext, JsonValue, OpSpec } from "../../harness/ty
 import { checkShapeArgs, wrapClient } from "../shape.ts";
 import { ForgeHttp } from "./client.ts";
 import { gitlabPort } from "./flavors/gitlab.ts";
+import { forgejoPort } from "./flavors/forgejo.ts";
 import { type ForgeAccount, type ForgePort, parseRepoRef, repoRefString } from "./port.ts";
 
 // The `forge` family: one flavor-neutral op surface over several code-hosting APIs.
@@ -639,6 +640,7 @@ export function forgeConnector(opts: ForgeConnectorOptions): Connector {
         const port = ports.get(account.id);
         if (!port) continue;
         await port.currentUser();
+        await port.validate?.();
       }
     },
   };
@@ -648,9 +650,11 @@ function buildPort(account: ForgeAccount): ForgePort {
   switch (account.flavor) {
     case "gitlab":
       return gitlabPort(new ForgeHttp(account));
+    case "forgejo":
+      return forgejoPort(new ForgeHttp(account));
     default:
       throw new Error(
-        `forge account '${account.id}': flavor '${account.flavor}' has no adapter yet (gitlab only for now)`,
+        `forge account '${account.id}': flavor '${account.flavor}' has no adapter yet (gitlab, forgejo)`,
       );
   }
 }

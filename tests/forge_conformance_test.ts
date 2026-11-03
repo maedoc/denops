@@ -8,6 +8,7 @@ import {
   normalizePull,
 } from "../src/connectors/forge/flavors/gitlab.ts";
 import type { ChangeSet } from "../src/connectors/forge/port.ts";
+import type { JsonValue } from "../src/harness/types.ts";
 
 // Conformance: recorded live payloads -> normalized objects with the documented keys.
 //
@@ -177,4 +178,102 @@ Deno.test("conformance: the neutral ChangeSet shape is what ops promise", () => 
     "path",
     "status",
   ]);
+});
+
+// --- forgejo: the same conformance contract, over payloads captured from git.ins-amu.fr ---
+// The assertions are deliberately identical to the gitlab ones: that equality is what
+// "one family" means. Differences the fixtures encode (an {ok,data} envelope on search,
+// bare arrays elsewhere, `user.login` instead of `author.username`, merged inferred from
+// `merged_at`) are the adapter's business, not the caller's.
+
+const FJ_DIR = new URL("./fixtures/forge/forgejo/", import.meta.url);
+
+function fj<T>(name: string): T {
+  return JSON.parse(Deno.readTextFileSync(new URL(name, FJ_DIR))) as T;
+}
+
+Deno.test("conformance/forgejo: search envelopes unwrap and projects normalize", async () => {
+  const { normalizeProject, unwrapData } = await import(
+    "../src/connectors/forge/flavors/forgejo.ts"
+  );
+  const env = fj<{ ok: boolean; data: Array<Record<string, unknown>> }>("projects_page.json");
+  assertEquals(env.ok, true);
+  const rows = unwrapData(env as unknown as JsonValue) as Array<Record<string, unknown>>;
+  assert(rows.length > 0);
+  for (const row of rows) {
+    const p = normalizeProject(row);
+    assertEquals(Object.keys(p).sort(), KEYS.project);
+    assertEquals(`${p.owner}/${p.name}`, p.fullName);
+    assert(["private", "public", null].includes(p.visibility as string | null));
+  }
+  const one = normalizeProject(fj<Record<string, unknown>>("project.json"));
+  assertEquals(one.fullName, "marmaduke/forge-probe");
+});
+
+Deno.test("conformance/forgejo: issues carry a number, an author login and label names", async () => {
+  const { normalizeIssue } = await import("../src/connectors/forge/flavors/forgejo.ts");
+  const i = normalizeIssue(fj<Record<string, unknown>>("issue.json"));
+  assertEquals(Object.keys(i).sort(), KEYS.issue);
+  assert(Number.isInteger(i.number) && i.number > 0);
+  assert(["open", "closed", "merged"].includes(i.state));
+  // labels arrive as objects upstream; the neutral shape is names
+  for (const l of i.labels) assertEquals(typeof l, "string");
+});
+
+Deno.test("conformance/forgejo: comments normalize like GitLab notes", async () => {
+  const { normalizeNote } = await import("../src/connectors/forge/flavors/forgejo.ts");
+  const rows = fj<Array<Record<string, unknown>>>("notes_page.json");
+  assert(rows.length >= 4, "expected the four probe comments");
+  for (const row of rows) {
+    const n = normalizeNote(row);
+    assertEquals(Object.keys(n).sort(), KEYS.note);
+    assert(n.id.length > 0);
+    assertEquals(typeof n.body, "string");
+  }
+});
+
+Deno.test("conformance/forgejo: a merged pull is reported as merged, not closed", async () => {
+  const { normalizePull } = await import("../src/connectors/forge/flavors/forgejo.ts");
+  const p = normalizePull(fj<Record<string, unknown>>("pull.json"));
+  assertEquals(Object.keys(p).sort(), KEYS.pull);
+  assertEquals(p.merged, true);
+  assertEquals(p.state, "merged"); // upstream says "closed" + merged_at
+  assertEquals(p.sourceBranch, "probe/denops-111726");
+  assertEquals(p.targetBranch, "main");
+});
+
+Deno.test("conformance/forgejo: commits keep sha, first line of the message, author date", async () => {
+  const { normalizeCommit } = await import("../src/connectors/forge/flavors/forgejo.ts");
+  for (const row of fj<Array<Record<string, unknown>>>("commits_page.json")) {
+    const c = normalizeCommit(row);
+    assertEquals(Object.keys(c).sort(), KEYS.commit);
+    assert(c.id.length >= 7);
+    assert(c.title.length > 0);
+    assertEquals(c.title.includes("\n"), false);
+  }
+});
+
+Deno.test("conformance/forgejo: tree entries map file/dir onto the neutral types", async () => {
+  const { unwrapData } = await import("../src/connectors/forge/flavors/forgejo.ts");
+  const rows = unwrapData(fj<JsonValue>("tree_page.json")) as Array<Record<string, unknown>>;
+  assert(rows.length > 0);
+  for (const row of rows) {
+    assert(["file", "dir", "symlink", "submodule"].includes(String(row.type)), String(row.type));
+    assert(typeof row.path === "string" && row.path.length > 0);
+  }
+  // /raw is what the adapter reads; the fixture is the exact file, not base64
+  const text = Deno.readTextFileSync(new URL("raw_readme.txt", FJ_DIR));
+  assert(text.startsWith("# forge-probe"));
+  assert(!text.includes("\u0000"));
+});
+
+Deno.test("conformance/forgejo: users and orgs normalize", async () => {
+  const { unwrapData } = await import("../src/connectors/forge/flavors/forgejo.ts");
+  const users = unwrapData(fj<JsonValue>("users_page.json")) as Array<Record<string, unknown>>;
+  assert(users.length > 0);
+  for (const u of users) assert(typeof u.login === "string");
+  const me = fj<Record<string, unknown>>("current_user.json");
+  assertEquals(me.login, "marmaduke");
+  const orgs = fj<Array<Record<string, unknown>>>("orgs_page.json");
+  for (const o of orgs) assert(typeof o.username === "string");
 });

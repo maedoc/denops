@@ -1,0 +1,38 @@
+[
+  {
+    "commit": {
+      "added": null,
+      "author": {
+        "email": "marmaduke.woodman@univ-amu.fr",
+        "name": "TVB Dev",
+        "username": "marmaduke"
+      },
+      "committer": {
+        "email": "marmaduke.woodman@univ-amu.fr",
+        "name": "TVB Dev",
+        "username": "marmaduke"
+      },
+      "id": "0c74769e6823169704c9220331c1c72c95cd09dd",
+      "message": "probe merge 111726\n",
+      "modified": null,
+      "removed": null,
+      "timestamp": "2026-11-03T12:17:29+01:00",
+      "url": "https://git.ins-amu.fr/marmaduke/forge-probe/commit/0c74769e6823169704c9220331c1c72c95cd09dd",
+      "verification": {
+        "payload": "",
+        "reason": "gpg.error.not_signed_commit",
+        "signature": "",
+        "signer": null,
+        "verified": false
+      }
+    },
+    "effective_branch_protection_name": "",
+    "enable_status_check": false,
+    "name": "main",
+    "protected": false,
+    "required_approvals": 0,
+    "status_check_contexts": [],
+    "user_can_merge": true,
+    "user_can_push": true
+  }
+]

@@ -53,23 +53,25 @@ call always tells you what exists. `denops.version` says what is actually deploy
 
 ## 4. Connector crib sheet
 
-**forge** (26 ops) — one family over several code hosts. `forge.accounts` lists `{id, flavor:
- gitlab|forgejo|github, origin}`; **every op takes `account`**. Neutral vocabulary: `projects.*`,
-`issues.*` + `issues.notes.*`, `pulls.*` (merge requests; also `.changes.get`, `.comment`,
-`.merge`), `repository.branches/commits/tree/files`, `users.*`, `orgs.list` (groups on GitLab).
-Results are normalized, not upstream JSON (`number` not iid; `state: open|closed|merged`;
-`merged`/`draft` booleans), so one call shape works on every account; writes are approval-tier.
-Long tail: `forge.api.get({account, path, query?})` (open, raw upstream JSON, pinned to that
-account's API root). Forgejo's `q` matches repo names only — use `projects.get({repo:"o/r"})` for
-exact lookups.
+**forge** (26 ops) — one family over several code hosts. `forge.accounts` lists
+`{id, flavor:
+ gitlab|forgejo|github, origin}`; **every op takes `account`**. Neutral vocabulary:
+`projects.*`, `issues.*` + `issues.notes.*`, `pulls.*` (merge requests; also `.changes.get`,
+`.comment`, `.merge`), `repository.branches/commits/tree/files`, `users.*`, `orgs.list` (groups on
+GitLab). Results are normalized, not upstream JSON (`number` not iid; `state: open|closed|merged`;
+`merged`/`draft` booleans), so one call shape works on every account; writes are approval-tier. Long
+tail: `forge.api.get({account, path, query?})` (open, raw upstream JSON, pinned to that account's
+API root). Forgejo's `q` matches repo names only — use `projects.get({repo:"o/r"})` for exact
+lookups. Adapters: **gitlab**, **forgejo** (a `github` flavor is refused at startup).
 
-**gitlab** (27 ops) — legacy single-account connector, superseded by **forge** (kept until that
-alias drops): `projects.*`, `issues.*`, `mergeRequests.*`, `repository.*`, `users.*`,
-`groups.list`. Issue writes accept `assignee_ids`, `due_date` (`YYYY-MM-DD`), `labels`,
-`milestone_id`; for assignees use `users.get({username})` (exact — `users.search` is a substring
-match). `issues.list` defaults to `state: "opened"`. Long tail: `gitlab.get` (open) and
-`gitlab.mutate` (approval) reach the rest of `/api/v4`, pinned to the origin, with
-credential-bearing reads (`variables`, `*_tokens`, `secure_files`) refused.
+**gitlab** (27 ops) — compatibility family over the same client as **forge** (kept until the alias
+drops; upstream field names, not normalized): `projects.*`, `issues.*`, `mergeRequests.*`,
+`repository.*`, `users.*`, `groups.list`. Issue writes accept `assignee_ids`, `due_date`
+(`YYYY-MM-DD`), `labels`, `milestone_id`; for assignees use `users.get({username})` (exact —
+`users.search` is a substring match). `issues.list` defaults to `state: "opened"`. Long tail:
+`gitlab.get` (open) and `gitlab.mutate` (approval; POST/PUT/**PATCH**/DELETE) reach the rest of
+`/api/v4`, pinned to the origin, with credential-bearing reads (`variables`, `*_tokens`,
+`secure_files`) refused.
 
 **mail** (10 ops) — `mailboxes.list`, `messages.list`, `messages.search` (server-side IMAP;
 `mailboxes: string[]` searches a folder tree in one call, each hit carrying its `mailbox`),
@@ -80,17 +82,16 @@ without the raw source. `drafts.save({account, body, replyTo:{mailbox,uid}, …}
 reply** — `Message-ID`/`In-Reply-To`/`References`/`Date`, `Re: <subject>`, quoted parent, APPEND
 with `\Draft`; never compose those headers yourself.
 
-**mistral** (17 ops) — libraries and documents,
-metadata first: `libraries.list` → `documents.list` (rows carry `size`, `mime_type`,
-`process_status`) → then `documents.read` for small text (inline, else `truncated: true`),
-`documents.get({fields:["summary"]})` for the extracted summary, or `documents.stage` (→
-`{root, path, absPath, bytes, mime, sha256}`) to hand `root`+`path` to `fs.grep`/`fs.read`. Writing
-is text-first: `documents.put` creates, `documents.replace` replaces by name (refuses if several
-share it — pass `documentId`), `documents.upload` takes base64, `staging.clear({olderThanHours?})`
-prunes. Writes/deletes are approval-tier for libraries that already existed; one created in the same
-run can be written and cleaned up freely. **fs** (10 ops) — named roots only (`fs.roots` lists
-them): `glob`, `list`, `read` (line windows with `hasMore`), `grep` (regex, capped), `write`,
-`edit`/`editRegex`, `rm`, `exec`.
+**mistral** (17 ops) — libraries and documents, metadata first: `libraries.list` → `documents.list`
+(rows carry `size`, `mime_type`, `process_status`) → then `documents.read` for small text (inline,
+else `truncated: true`), `documents.get({fields:["summary"]})` for the extracted summary, or
+`documents.stage` (→ `{root, path, absPath, bytes, mime, sha256}`) to hand `root`+`path` to
+`fs.grep`/`fs.read`. Writing is text-first: `documents.put` creates, `documents.replace` replaces by
+name (refuses if several share it — pass `documentId`), `documents.upload` takes base64,
+`staging.clear({olderThanHours?})` prunes. Writes/deletes are approval-tier for libraries that
+already existed; one created in the same run can be written and cleaned up freely. **fs** (10 ops) —
+named roots only (`fs.roots` lists them): `glob`, `list`, `read` (line windows with `hasMore`),
+`grep` (regex, capped), `write`, `edit`/`editRegex`, `rm`, `exec`.
 
 - **Capabilities are enforced before approval**: a write to a `write: false` root (or exec on
   `exec: false`) fails `capability_denied` and creates **no** pending; paths are confined to the
