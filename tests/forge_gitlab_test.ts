@@ -242,6 +242,11 @@ Deno.test("forge: the client refuses to leave the pinned origin or API root", as
 
 Deno.test("forge/gitlab: getFile decodes base64, flags binary and truncates", async () => {
   const m = mockGitLab((key) => {
+    if (key === "GET /api/v4/projects/o%2Fr") {
+      return new Response(JSON.stringify({ path_with_namespace: "o/r", default_branch: "main" }), {
+        headers: { "content-type": "application/json" },
+      });
+    }
     if (key === "GET /api/v4/projects/o%2Fr/repository/files/README.md") {
       return new Response(
         JSON.stringify({
@@ -346,4 +351,33 @@ Deno.test("forge: `limit` is clamped per flavor, not just forwarded", () => {
   // auth header differs per flavor: the gitlab one must never be used for forgejo
   const gh = new ForgeHttp(account("http://127.0.0.1:1", { flavor: "github", apiPath: "" }));
   assert(gh.clampLimit(10) === 10);
+});
+
+Deno.test("forge/gitlab: a file read without `ref` resolves the default branch (GitLab demands one)", async () => {
+  const m = mockGitLab((key) => {
+    if (key === "GET /api/v4/projects/o%2Fr") {
+      return new Response(JSON.stringify({ path_with_namespace: "o/r", default_branch: "trunk" }), {
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (key === "GET /api/v4/projects/o%2Fr/repository/files/README.md") {
+      return new Response(
+        JSON.stringify({ file_path: "README.md", ref: "trunk", size: 2, content: btoa("hi") }),
+        { headers: { "content-type": "application/json" } },
+      );
+    }
+    return null;
+  });
+  try {
+    const port = gitlabPort(new ForgeHttp(account(m.base)));
+    const f = await port.getFile({ owner: "o", name: "r" }, { path: "README.md" });
+    assertEquals(f.text, "hi");
+    assertEquals(f.ref, "trunk");
+    // the resolved ref is used for the read, and the project lookup is cached
+    assertEquals(m.recorded[1].query.ref, "trunk");
+    await port.getFile({ owner: "o", name: "r" }, { path: "README.md" });
+    assertEquals(m.recorded.filter((r) => r.path === "/api/v4/projects/o%2Fr").length, 1);
+  } finally {
+    m.stop();
+  }
 });

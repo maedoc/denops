@@ -187,6 +187,20 @@ export function decodeFile(
 }
 
 export function gitlabPort(http: ForgeHttp): ForgePort {
+  // GitLab demands an explicit `ref` on file reads (Forgejo and GitHub default to the
+  // default branch), so the neutral "no ref" case is resolved once per repo and cached:
+  // a stale default branch only costs a fallback when the caller named no ref at all.
+  const defaultRefs = new Map<string, string>();
+  const defaultRef = async (ref: RepoRef): Promise<string> => {
+    const key = repoRefString(ref);
+    const hit = defaultRefs.get(key);
+    if (hit !== undefined) return hit;
+    const project = (await http.get(projectPath(ref))) as Record<string, unknown>;
+    const branch = str(project.default_branch) ?? "HEAD";
+    defaultRefs.set(key, branch);
+    return branch;
+  };
+
   return {
     flavor: "gitlab",
 
@@ -393,8 +407,8 @@ export function gitlabPort(http: ForgeHttp): ForgePort {
       const raw = (await http.get(`${projectPath(ref)}/repository/tree`, {
         page: q.page ?? 1,
         per_page: limit,
+        ref: q.ref ?? (await defaultRef(ref)),
         ...(q.path ? { path: q.path } : {}),
-        ...(q.ref ? { ref: q.ref } : {}),
       })) as unknown;
       const items: TreeEntry[] = Array.isArray(raw)
         ? raw.map((e) => {
@@ -412,8 +426,9 @@ export function gitlabPort(http: ForgeHttp): ForgePort {
     },
 
     async getFile(ref: RepoRef, q: { path: string; ref?: string }) {
+      const refName = q.ref ?? (await defaultRef(ref));
       const raw = (await http.get(`${projectPath(ref)}/repository/files/${enc(q.path)}`, {
-        ...(q.ref ? { ref: q.ref } : {}),
+        ref: refName,
       })) as Record<string, unknown>;
       const b64 = typeof raw.content === "string" ? raw.content : "";
       const size = num(raw.size);
@@ -428,6 +443,7 @@ export function gitlabPort(http: ForgeHttp): ForgePort {
     },
 
     async writeFile(ref: RepoRef, w: FileWrite) {
+      if (w.branch === "") throw new Error("writeFile: branch is required on GitLab");
       const body: Record<string, JsonValue> = {
         branch: w.branch,
         content: w.content,

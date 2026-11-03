@@ -8,6 +8,13 @@ actually talking to instead of probing behaviour.
 Format: `## <version> — <YYYY-MM-DD>`, newest first, then a short bullet list. Keep bullets about
 the API surface; implementation notes belong in the commit message.
 
+## 0.9.1 — 2026-11-03
+
+- **`forge.repository.files.get` and `repository.tree.list` behave the same on all three flavors when
+  `ref` is omitted.** GitLab's file API rejects a missing `ref` ("ref is missing, ref is empty") while
+  Forgejo and GitHub default to the default branch, so the gitlab adapter now resolves the default
+  branch itself (once per repo, cached). Found by calling the same op against every account and
+  comparing results, which is the check the family exists for.
 ## 0.9.0 — 2026-11-03
 
 - **`forge` gains a GitHub adapter** — the third flavor, so one account set spans git.ins-amu.fr,
