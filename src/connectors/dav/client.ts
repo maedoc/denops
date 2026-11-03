@@ -1359,14 +1359,15 @@ class DavAccount {
         path: `${path.rel} (version ${version})`,
       });
     } catch (err) {
-      // Nextcloud lists the live revision among the versions but serves it only as the
-      // file itself, so its node answers 404. Say which versions *are* retrievable
-      // rather than passing on a bare 404 — measured on 33/34.
+      // A version node can answer 404 even though dav.versions.list just listed it:
+      // observed on Nextcloud 34 for the revision written seconds earlier, and served
+      // fine minutes later — a lag in the versions backend, not a rule. Either way a
+      // bare Sabre 404 is useless to the caller, so name what *is* retrievable.
       if (!/\(404\)/.test((err as Error).message)) throw err;
       throw new Error(
-        `dav.versions.restore: version ${version} is not retrievable for ` +
-          `${JSON.stringify(path.rel)} — Nextcloud lists the live revision among the versions ` +
-          `but serves it only as the file, and rolling back to it is a no-op anyway. ` +
+        `dav.versions.restore: version ${version} of ${JSON.stringify(path.rel)} answered 404 ` +
+          `when read back — Nextcloud sometimes lags behind its own version listing right after ` +
+          `a write (observed; it answers after a minute or so). Nothing was written. ` +
           `${await this.retrievableHint(path, version)}`,
       );
     }

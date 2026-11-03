@@ -899,8 +899,9 @@ export function davConnector(deps: DavConnectorDeps): Connector {
       tier: "open",
       doc: "Version history of one file, newest first. args: { account, path, limit? }. Returns " +
         "{ path, fileid, count, total, current?, versions: [{ version, modified, size? }] } — `current` " +
-        "is the live content (Nextcloud lists it under the file id, and rolling back to it is a " +
-        "no-op) rather than one of the `versions`. Nextcloud keeps a " +
+        "is the live content (Nextcloud lists it under the file id; rolling back to it is a no-op) " +
+        "rather than one of the `versions`, and a version written seconds ago may 404 when read " +
+        "back until the versions backend catches up. Nextcloud keeps a " +
         "version per overwrite, so this is how you get the bytes back that a `dav.put({overwrite: " +
         "true})` replaced — dashboard `replaced` in that op's result tells you it happened." + HINT,
       argSchema: compose(rejectUnknown(), acc, str("path"), optNum("limit"), pathArg("path")),

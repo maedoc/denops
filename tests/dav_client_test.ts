@@ -1413,7 +1413,7 @@ Deno.test("dav: the Nextcloud trees are absent, not broken, on a plain WebDAV se
   }
 });
 
-Deno.test("dav: restoring the live revision says so, and names what is retrievable", async () => {
+Deno.test("dav: a version that 404s on read is explained, not relayed, and nothing is written", async () => {
   const h = await harness();
   try {
     await h.call("put", { path: "docs/roll.md", text: "one\n" });
@@ -1421,15 +1421,16 @@ Deno.test("dav: restoring the live revision says so, and names what is retrievab
     const listed = await h.call("versions.list", { path: "docs/roll.md" }) as {
       versions: Array<{ version: string; size?: number }>;
     };
-    // the newest entry is the live content (Nextcloud lists it, serves only the file)
+    // the mock serves the live revision as 404 on read, which the real server does for a
+    // moment after a write — the point is what the op says about it
     const live = listed.versions[0];
     assertEquals(live.size, 4, "the live revision is in the list");
 
     const err = await assertRejects(() =>
       h.call("versions.restore", { path: "docs/roll.md", version: live.version })
     ) as Error;
-    assertStringIncludes(err.message, "not retrievable");
-    assertStringIncludes(err.message, "only as the file");
+    assertStringIncludes(err.message, "answered 404");
+    assertStringIncludes(err.message, "Nothing was written");
     assertStringIncludes(err.message, "Retrievable versions", err.message);
 
     // and one of those named versions actually works
