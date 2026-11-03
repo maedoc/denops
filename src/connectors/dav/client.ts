@@ -1280,10 +1280,23 @@ class DavAccount {
     });
     const parsed = parseMultiStatus(this.decode(reply.bytes));
     const versions: JsonValue[] = [];
+    let current: JsonValue | undefined;
     for (const r of parsed.responses) {
       const href = new URL(r.href, this.origin.origin).pathname.replace(/\/$/, "");
       const version = href.split("/").pop() ?? "";
       if (!/^\d+$/.test(version)) continue; // the collection itself
+      if (version === fileid) {
+        // Nextcloud also lists the live content under the file id. It is not a version
+        // you can roll back to (restoring it is a no-op), so it is surfaced separately.
+        const size = okProp(r, "getcontentlength")?.text.trim();
+        const modified = isoDate(okProp(r, "getlastmodified")?.text.trim());
+        current = {
+          version,
+          ...(modified === undefined ? {} : { modified }),
+          ...(size === undefined || size === "" ? {} : { size: Number(size) }),
+        } as JsonValue;
+        continue;
+      }
       const size = okProp(r, "getcontentlength")?.text.trim();
       const modified = isoDate(okProp(r, "getlastmodified")?.text.trim());
       versions.push({
@@ -1303,14 +1316,11 @@ class DavAccount {
       count: Math.min(versions.length, limit),
       total: versions.length,
       versions: versions.slice(0, limit),
+      ...(current === undefined ? {} : { current }),
     } as unknown as JsonValue;
   }
 
-  async versionsRestore(
-    path: DavPath,
-    version: string,
-    overwrite: boolean,
-  ): Promise<JsonValue> {
+  async versionsRestore(path: DavPath, version: string): Promise<JsonValue> {
     this.requireWritable("dav.versions.restore");
     if (!/^\d+$/.test(version)) {
       throw new Error(
@@ -1322,7 +1332,10 @@ class DavAccount {
     const reply = await this.send("MOVE", this.ncUrl("versions", [fileid, version]), {
       headers: {
         destination: this.urlOf(path).href,
-        overwrite: overwrite ? "T" : "F",
+        // Always T: the destination is the file being rolled back, so it always exists.
+        // Nextcloud answers 412 ("The destination node already exists") otherwise —
+        // measured, not assumed.
+        overwrite: "T",
       },
     });
     if (![201, 204].includes(reply.status)) {

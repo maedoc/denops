@@ -344,13 +344,7 @@ export function davConnector(deps: DavConnectorDeps): Connector {
         account: string;
         path: string;
         version: string;
-        overwrite?: boolean;
-      }) =>
-        await host.get(a.account).versionsRestore(
-          normalizePath(a.path),
-          a.version,
-          a.overwrite === true,
-        )),
+      }) => await host.get(a.account).versionsRestore(normalizePath(a.path), a.version)),
 
       "delete": wrap("delete", async (a: {
         account: string;
@@ -904,7 +898,9 @@ export function davConnector(deps: DavConnectorDeps): Connector {
       name: "dav.versions.list",
       tier: "open",
       doc: "Version history of one file, newest first. args: { account, path, limit? }. Returns " +
-        "{ path, fileid, count, total, versions: [{ version, modified, size? }] }. Nextcloud keeps a " +
+        "{ path, fileid, count, total, current?, versions: [{ version, modified, size? }] } — `current` " +
+        "is the live content (Nextcloud lists it under the file id, and rolling back to it is a " +
+        "no-op) rather than one of the `versions`. Nextcloud keeps a " +
         "version per overwrite, so this is how you get the bytes back that a `dav.put({overwrite: " +
         "true})` replaced — dashboard `replaced` in that op's result tells you it happened." + HINT,
       argSchema: compose(rejectUnknown(), acc, str("path"), optNum("limit"), pathArg("path")),
@@ -918,15 +914,14 @@ export function davConnector(deps: DavConnectorDeps): Connector {
           `another version (nothing is destroyed), so this is reversible.`;
       },
       doc:
-        "Roll one file back to a version from dav.versions.list. args: { account, path, version, " +
-        "overwrite? }. Restoring keeps the current content as a new version, so it is reversible. " +
-        "Returns { path, restored, etag }.",
+        "Roll one file back to a version from dav.versions.list. args: { account, path, version }. " +
+        "It writes over the file by design (that is what a rollback is), and keeps the current " +
+        "content as a new version, so it is reversible. Returns { path, restored, etag }.",
       argSchema: compose(
         rejectUnknown(),
         acc,
         str("path"),
         str("version"),
-        optBool("overwrite"),
         pathArg("path"),
         writable("dav.versions.restore"),
         (a) =>

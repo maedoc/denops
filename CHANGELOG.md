@@ -8,6 +8,23 @@ actually talking to instead of probing behaviour.
 Format: `## <version> — <YYYY-MM-DD>`, newest first, then a short bullet list. Keep bullets about
 the API surface; implementation notes belong in the commit message.
 
+## 0.13.1 — 2026-11-03
+
+Found by running the first live smoke test on `insbox` (mkdir → put → edit → copy → overwrite → version
+restore → delete → trash restore) minutes after 0.13.0 went live.
+
+- **`dav.versions.restore` always overwrites its destination.** A rollback's destination *is* the file
+  being rolled back, so it always exists; the op was sending `Overwrite: F` by default and Nextcloud
+  answered `412 The destination node already exists, and the overwrite header is set to false`. The
+  `overwrite` argument is gone rather than defaulted the other way — it never had a meaning.
+- **`dav.versions.list` reports the live content as `current`, not as a version.** Nextcloud also
+  lists the current file under an entry named after the file id; rolling back to it is a no-op, and
+  offering it as a choice invites exactly the wrong pick ("restore the newest", which is what you
+  already have).
+- The trash paths were exercised end to end for the first time: `delete` → `trash.list` (original
+  location and deletion time as the server recorded them) → `trash.restore` back to that location,
+  and `trash.purge` to clear the test artifacts.
+
 ## 0.13.0 — 2026-11-03
 
 The dav surface could destroy things with no way back. Both targets turned out to be Nextcloud, which

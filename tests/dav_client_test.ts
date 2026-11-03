@@ -149,12 +149,19 @@ function mockDav(
       if (!file) return new Response("no such file id", { status: 404 });
       if (req.method === "PROPFIND") {
         const versions = versionHistory.get(fileid) ?? [];
-        const rows = versions.map((v) =>
-          `<d:response><d:href>/remote.php/dav/versions/alice/versions/${fileid}/${v.version}` +
-          `</d:href><d:propstat><d:prop><d:getcontentlength>${v.bytes.byteLength}` +
-          `</d:getcontentlength><d:getlastmodified>${v.mtime}</d:getlastmodified></d:prop>` +
-          `<d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>`
-        ).join("");
+        const cur = nodes.get(file[0]);
+        const currentRow = cur === undefined
+          ? ""
+          : `<d:response><d:href>/remote.php/dav/versions/alice/versions/${fileid}/${fileid}` +
+            `</d:href><d:propstat><d:prop><d:getcontentlength>${cur.bytes.byteLength}` +
+            `</d:getcontentlength></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>`;
+        const rows = currentRow +
+          versions.map((v) =>
+            `<d:response><d:href>/remote.php/dav/versions/alice/versions/${fileid}/${v.version}` +
+            `</d:href><d:propstat><d:prop><d:getcontentlength>${v.bytes.byteLength}` +
+            `</d:getcontentlength><d:getlastmodified>${v.mtime}</d:getlastmodified></d:prop>` +
+            `<d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>`
+          ).join("");
         return new Response(
           `<?xml version="1.0"?><d:multistatus xmlns:d="DAV:">${rows}</d:multistatus>`,
           { status: 207 },
@@ -1325,17 +1332,26 @@ Deno.test("dav: versions lists history and restoring is reversible", async () =>
       fileid: number;
       count: number;
       total: number;
+      current?: { version: string; size?: number };
       versions: Array<{ version: string; size?: number; modified?: string }>;
     };
     assertEquals(out.total, 2, "two overwrites, two versions");
     assertEquals(out.versions[0].size, 3, "newest first");
     assert(out.fileid > 0);
+    // the live content is listed by Nextcloud under the file id; it is not a choice
+    assertEquals(out.current?.version, String(out.fileid));
+    assertEquals(out.versions.some((v) => v.version === String(out.fileid)), false);
 
     const version = out.versions[0].version;
     const restored = await h.call("versions.restore", {
       path: "docs/draft.md",
       version,
     }) as { restored: string; etag: string };
+    assertEquals(
+      h.recorded.filter((r) => r.method === "MOVE").at(-1)!.headers.get("overwrite"),
+      "T",
+      "a rollback always overwrites the file it rolls back",
+    );
     assertEquals(restored.restored, version);
     assertEquals(
       new TextDecoder().decode(h.nodes.get(`${SHARE}/docs/draft.md`)!.bytes),
