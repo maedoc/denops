@@ -9,20 +9,25 @@ async function main(): Promise<void> {
   const enabled = (n: string) => config.connectors[n]?.enabled === true;
   const results: Record<string, string> = {};
 
-  if (enabled("gitlab")) {
-    const { ForgeHttp } = await import("../src/connectors/forge/client.ts");
-    const g = config.connectors.gitlab;
-    const c = new ForgeHttp({
-      id: "gitlab",
-      flavor: "gitlab",
-      token: String((secrets.gitlab as Record<string, unknown> | undefined)?.token ?? ""),
-      origin: String(g.origin ?? "https://gitlab.ebrains.eu"),
-      apiPath: String(g.apiPath ?? "/api/v4"),
-      maxLimit: 100,
-    });
-    const user = await c.get("/user") as { username?: string };
-    const projects = await c.get("/projects", { per_page: 1 }) as unknown[];
-    results.gitlab = `ok: user=${user.username ?? "?"}, projects>=${projects.length}`;
+  if (enabled("forge")) {
+    const { ForgeHttp, defaultMaxLimit } = await import("../src/connectors/forge/client.ts");
+    const f = config.connectors.forge;
+    const forgeSecrets = (secrets.forge ?? {}) as Record<string, Record<string, unknown> | undefined>;
+    const legacy = String((secrets.gitlab as Record<string, unknown> | undefined)?.token ?? "");
+    for (const a of ((f.accounts ?? []) as Array<Record<string, unknown>>)) {
+      const id = String(a.id);
+      const flavor = String(a.flavor ?? "gitlab") as "gitlab" | "forgejo" | "github";
+      const c = new ForgeHttp({
+        id,
+        flavor,
+        origin: String(a.origin),
+        apiPath: String(a.apiPath ?? (flavor === "gitlab" ? "/api/v4" : "/api/v1")),
+        token: String((forgeSecrets[id] ?? {}).token ?? (flavor === "gitlab" ? legacy : "")),
+        maxLimit: Number(a.maxLimit ?? defaultMaxLimit(flavor)),
+      });
+      const me = await c.get("/user") as { username?: string; login?: string };
+      results[`forge:${id}`] = `ok: ${flavor} user=${me.username ?? me.login ?? "?"}`;
+    }
   }
 
   if (enabled("mistral")) {

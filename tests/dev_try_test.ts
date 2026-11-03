@@ -269,12 +269,12 @@ Deno.test("dev.try: a live-approval op is refused host-side, even if the checkou
   const f = await makeFixture();
   try {
     const c = client(f.connect({
-      liveTier: (op) => op === "gitlab.mutate" ? "approval" : "open",
+      liveTier: (op) => op === "forge.mutate" ? "approval" : "open",
     }));
     await c["run"]({ root: "dev", task: "check" });
     let msg = "";
     try {
-      await c["try"]({ root: "dev", op: "gitlab.mutate", args: { path: "/x", method: "POST" } });
+      await c["try"]({ root: "dev", op: "forge.mutate", args: { path: "/x", method: "POST" } });
     } catch (e) {
       msg = (e as Error).message;
     }

@@ -22,7 +22,6 @@ import { defaultBanPolicy } from "./security/ban.ts";
 import { grantSatisfies, RootGrants } from "./harness/grants.ts";
 import { fsConnector, fsGrantKey } from "./connectors/fs/manifest.ts";
 import { debugConnector } from "./connectors/debug/manifest.ts";
-import { gitlabConnector } from "./connectors/gitlab/manifest.ts";
 import { forgeConnector } from "./connectors/forge/manifest.ts";
 import { defaultMaxLimit } from "./connectors/forge/client.ts";
 import type { ForgeAccount, ForgeFlavor } from "./connectors/forge/port.ts";
@@ -205,19 +204,6 @@ export async function buildApp(configPath: string, secretsPath: string): Promise
     registry.register(forgeConnector({ accounts }));
   }
 
-  if (enabled("gitlab")) {
-    const g = config.connectors.gitlab;
-    const token = ((secrets.gitlab as Record<string, unknown> | undefined)?.token ?? "") as string;
-    if (!token) throw new Error("gitlab enabled but secrets.gitlab.token missing");
-    registry.register(
-      gitlabConnector({
-        token,
-        origin: String(g.origin ?? "https://gitlab.ebrains.eu"),
-        apiPath: String(g.apiPath ?? "/api/v4"),
-      }),
-    );
-  }
-
   if (enabled("mistral")) {
     const m = config.connectors.mistral;
     const apiKey =
@@ -310,7 +296,7 @@ export async function buildApp(configPath: string, secretsPath: string): Promise
       skillPath: "SKILL.md",
       // Keep in step with deno.json and the CHANGELOG head; tests/version_test.ts fails
       // when they drift, because denops.version is how a run learns what it is talking to.
-      version: "0.7.0",
+      version: "0.8.0",
       // the supervisor exports the commit it checked out
       // The env-reading child (dev_try) runs with no --allow-env; the commit is
       // informational, so an inaccessible DENOPS_COMMIT is just "unknown" there.

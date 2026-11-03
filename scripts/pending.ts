@@ -27,7 +27,6 @@ async function resume(
   const { search, describe } = await import("../src/harness/discover.ts");
   const { loadConfig, loadSecrets } = await import("../src/config.ts");
   const { debugConnector } = await import("../src/connectors/debug/manifest.ts");
-  const { gitlabConnector } = await import("../src/connectors/gitlab/manifest.ts");
   const { mistralConnector } = await import("../src/connectors/mistral/manifest.ts");
   const { imapConnector } = await import("../src/connectors/imap/manifest.ts");
   const { fsConnector, fsGrantKey } = await import("../src/connectors/fs/manifest.ts");
@@ -48,13 +47,26 @@ async function resume(
     clients.set(c.id, c.client(hostCtx));
   };
   if (enabled("debug")) reg(debugConnector);
-  if (enabled("gitlab")) {
-    const g = config.connectors.gitlab;
-    reg(gitlabConnector({
-      token: String((secrets.gitlab as Record<string, unknown> | undefined)?.token ?? ""),
-      origin: String(g.origin ?? "https://gitlab.ebrains.eu"),
-      apiPath: String(g.apiPath ?? "/api/v4"),
-    }));
+  if (enabled("forge")) {
+    const { forgeConnector } = await import("../src/connectors/forge/manifest.ts");
+    const { defaultMaxLimit } = await import("../src/connectors/forge/client.ts");
+    const f = config.connectors.forge;
+    const forgeSecrets = (secrets.forge ?? {}) as Record<string, Record<string, unknown> | undefined>;
+    const legacy = String((secrets.gitlab as Record<string, unknown> | undefined)?.token ?? "");
+    const accounts = ((f.accounts ?? []) as Array<Record<string, unknown>>).map((a) => {
+      const flavor = String(a.flavor ?? "gitlab") as "gitlab" | "forgejo" | "github";
+      const id = String(a.id);
+      const token = String((forgeSecrets[id] ?? {}).token ?? (flavor === "gitlab" ? legacy : ""));
+      return {
+        id,
+        flavor,
+        origin: String(a.origin),
+        apiPath: String(a.apiPath ?? (flavor === "gitlab" ? "/api/v4" : "/api/v1")),
+        token,
+        maxLimit: Number(a.maxLimit ?? defaultMaxLimit(flavor)),
+      };
+    });
+    reg(forgeConnector({ accounts }));
   }
   if (enabled("mistral")) {
     const m = config.connectors.mistral;

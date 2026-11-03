@@ -1,5 +1,5 @@
 import type { JsonValue } from "../../harness/types.ts";
-import { type ForgeAccount, ForgeError, type ForgeFlavor } from "./port.ts";
+import { type ForgeAccount, ForgeError, type ForgeFlavor, type QueryObject } from "./port.ts";
 
 // One pinned HTTP client per account. Pinning is the point: the origin and the API
 // root come from configuration, never from an op argument, so `forge.api.get` cannot
@@ -149,11 +149,7 @@ export class ForgeHttp {
   }
 }
 
-/**
- * Query values are coerced with String() and arrays are repeated, so callers may pass the
- * loosely-typed query object an op received (the argSchema is what constrains the shape).
- */
-export type QueryObject = Record<string, unknown>;
+
 
 function scopeHint(status: number): string {
   if (status === 401) return "the token was rejected (check secrets.forge.<account>.token)";

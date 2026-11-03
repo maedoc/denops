@@ -5,7 +5,8 @@ import { PendingStore } from "../src/harness/pendingStore.ts";
 import { Registry } from "../src/harness/registry.ts";
 import type { Budgets, JsonValue } from "../src/harness/types.ts";
 import { Harness, summarizeOp } from "../src/harness/worker.ts";
-import { gitlabConnector } from "../src/connectors/gitlab/manifest.ts";
+import { forgeConnector } from "../src/connectors/forge/manifest.ts";
+import { stubPort } from "./forge_stub.ts";
 import { imapConnector } from "../src/connectors/imap/manifest.ts";
 import { mistralConnector } from "../src/connectors/mistral/manifest.ts";
 
@@ -17,32 +18,45 @@ const budgets: Budgets = {
   maxLogBytes: 10_485_760,
 };
 
-Deno.test("gitlab manifest: approval-tier write ops present, deletes/merge absent from index", () => {
+Deno.test("forge manifest: approval-tier write ops present, no delete/merge.merge surface", () => {
   const registry = new Registry();
   registry.register(
-    gitlabConnector({ token: "t", origin: "https://gitlab.example", apiPath: "/api/v4" }),
+    forgeConnector({
+      accounts: [{
+        id: "ebrains",
+        flavor: "gitlab",
+        origin: "https://gitlab.example",
+        apiPath: "/api/v4",
+        token: "t",
+        maxLimit: 100,
+      }],
+      buildPort: () => stubPort(),
+    }),
   );
   const idx = registry.index().map((e) => e.name);
   for (
     const op of [
-      "gitlab.issues.create",
-      "gitlab.issues.update",
-      "gitlab.issues.notes.create",
-      "gitlab.mergeRequests.create",
-      "gitlab.mergeRequests.comment",
-      "gitlab.repository.files.create",
-      "gitlab.projects.update",
+      "forge.issues.create",
+      "forge.issues.update",
+      "forge.issues.notes.create",
+      "forge.pulls.create",
+      "forge.pulls.comment",
+      "forge.pulls.merge",
+      "forge.repository.files.create",
+      "forge.mutate",
     ]
   ) {
     assert(idx.includes(op), `missing ${op}`);
+    assertEquals(registry.tierOf(op), "approval", `${op} must need approval`);
   }
+  // No delete op, and merge is a curated approval op rather than a generic verb.
   for (const op of idx) {
     assert(!op.includes("delete") && !op.includes("merge.merge"), `forbidden op exposed: ${op}`);
   }
   const gated = search(registry, "create issue");
   assertStringIncludes(gated, "[approval]");
   const reads = search(registry, "list issues");
-  assertStringIncludes(reads, "gitlab.issues.list");
+  assertStringIncludes(reads, "forge.issues.list");
 });
 
 Deno.test("imap manifest: read ops + drafts open, raw approval, no send op", () => {

@@ -8,6 +8,23 @@ actually talking to instead of probing behaviour.
 Format: `## <version> — <YYYY-MM-DD>`, newest first, then a short bullet list. Keep bullets about
 the API surface; implementation notes belong in the commit message.
 
+## 0.8.0 — 2026-11-03
+
+**Breaking: the `gitlab.*` family is removed.** Use `forge.*` with `account: "ebrains"` (a `forge`
+account with `flavor: gitlab` on gitlab.ebrains.eu). Consequences a caller will notice:
+
+- op names and arguments change with the family (`forge.issues.get({account, repo, number})` instead
+  of `gitlab.issues.get({projectId, issueIid})`), and `perPage` becomes `limit`.
+- results are the family's normalized objects, so `path_with_namespace` → `fullName`, `iid` →
+  `number`, `source_branch` → `sourceBranch`; lists return `{items, page, nextPage}` instead of a
+  bare array. `fields`/`full` still work.
+- `gitlab.get` → `forge.api.get({account, path, query})`; `gitlab.mutate` → `forge.mutate({account,
+  method, path, body})` (approval, POST/PUT/PATCH/DELETE). Both are pinned to the account's API root,
+  and credential-bearing paths (`variables`, `*_tokens`, `secure_files`) are now refused for writes
+  as well as reads — writing CI variables is a credential write.
+- the `gitlab:` connector config block is no longer read; `secrets.gitlab.token` is still used as the
+  fallback for a `gitlab`-flavored account when `secrets.forge.<id>.token` is absent.
+
 ## 0.7.0 — 2026-11-03
 
 - **`forge` gains a Forgejo adapter**, so one account set addresses both git.ins-amu.fr (Forgejo

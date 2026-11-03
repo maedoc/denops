@@ -38,6 +38,7 @@ Deno.test("forge: reads are open, writes are approval, and the set is flavour-bl
     "forge.issues.create",
     "forge.issues.notes.create",
     "forge.issues.update",
+    "forge.mutate",
     "forge.pulls.comment",
     "forge.pulls.create",
     "forge.pulls.merge",
@@ -51,8 +52,9 @@ Deno.test("forge: reads are open, writes are approval, and the set is flavour-bl
   for (const name of tiers.keys()) {
     assertEquals(/mergeRequests|groups|iid|projectId|mrIid/.test(name), false, name);
   }
-  // 26 ops: parity with gitlab's 27 minus groups/mutate, plus accounts + merge
-  assertEquals(conn.ops.length, 26);
+  // 27 ops: the gitlab family's 27 with groups -> orgs, minus `get` (api.get) and
+  // `mutate` (forge.mutate), plus accounts, merge and pulls.comment
+  assertEquals(conn.ops.length, 27);
 });
 
 Deno.test("forge: argument checks reject bad refs before any request", () => {

@@ -83,5 +83,7 @@ export function stubPort(_account?: ForgeAccount): ForgePort {
     currentUser: () => Promise.resolve({ id: "1", username: "duke", name: null, url: null }),
     listOrgs: () => Promise.resolve(emptyPage()),
     apiGet: (path) => Promise.resolve({ path } as unknown as JsonValue),
+    apiMutate: (method, path, opts) =>
+      Promise.resolve({ method, path, body: opts?.body ?? null } as unknown as JsonValue),
   };
 }

@@ -135,6 +135,9 @@ export interface OrgSummary {
   url: string | null;
 }
 
+/** Query values are coerced with String(); arrays are repeated. */
+export type QueryObject = Record<string, unknown>;
+
 export interface Page<T> {
   items: T[];
   page: number;
@@ -216,8 +219,14 @@ export interface ForgePort {
   listOrgs(q: ListQuery): Promise<Page<OrgSummary>>;
   /** Connector-specific startup check (instance limits), optional. */
   validate?(): Promise<void>;
-  /** Raw GET under the account's pinned API root; the long-tail escape hatch. */
-  apiGet(path: string, query?: Record<string, string | number | boolean>): Promise<JsonValue>;
+  /** Raw GET under the account's pinned API root; the long-tail read escape hatch. */
+  apiGet(path: string, query?: QueryObject): Promise<JsonValue>;
+  /** Raw write (POST/PUT/PATCH/DELETE) under the pinned root; approval tier at the op. */
+  apiMutate(
+    method: "POST" | "PUT" | "PATCH" | "DELETE",
+    path: string,
+    opts?: { query?: QueryObject; body?: JsonValue },
+  ): Promise<JsonValue>;
 }
 
 /** A failure that carries the upstream status so prechecks and errors stay useful. */

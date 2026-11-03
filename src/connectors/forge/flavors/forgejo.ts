@@ -18,6 +18,7 @@ import {
   type OrgSummary,
   type Page,
   type ProjectSummary,
+  type QueryObject,
   type PullQuery,
   type PullSummary,
   type PullWrite,
@@ -554,8 +555,16 @@ export function forgejoPort(http: ForgeHttp): ForgePort {
       return page(items, q.page ?? 1, limit);
     },
 
-    async apiGet(path: string, query?: Record<string, string | number | boolean>) {
+    async apiGet(path: string, query?: QueryObject) {
       return await http.get(path, query);
+    },
+
+    async apiMutate(
+      method: "POST" | "PUT" | "PATCH" | "DELETE",
+      path: string,
+      opts?: { query?: QueryObject; body?: JsonValue },
+    ) {
+      return await http.request(method, path, opts ?? {});
     },
 
     // Startup check: the page cap this account was configured with must be the instance's,

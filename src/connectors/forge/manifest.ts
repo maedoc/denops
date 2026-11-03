@@ -1,4 +1,4 @@
-import { compose, optOneOf, optStr, rejectUnknown, str, strMax } from "../../harness/args.ts";
+import { compose, oneOf, optOneOf, optStr, rejectUnknown, str, strMax } from "../../harness/args.ts";
 import type { Connector, HostContext, JsonValue, OpSpec } from "../../harness/types.ts";
 import { checkShapeArgs, wrapClient } from "../shape.ts";
 import { ForgeHttp } from "./client.ts";
@@ -318,6 +318,20 @@ export function forgeConnector(opts: ForgeConnectorOptions): Connector {
         page: r.page,
       })) as unknown as JsonValue;
     },
+    "mutate": async (a) => {
+      const r = a as unknown as {
+        account: string;
+        method: "POST" | "PUT" | "PATCH" | "DELETE";
+        path: string;
+        query?: Record<string, unknown>;
+        body?: JsonValue;
+      };
+      return await resolve(r.account).apiMutate(r.method, r.path, {
+        ...(r.query === undefined ? {} : { query: r.query }),
+        ...(r.body === undefined ? {} : { body: r.body }),
+      });
+    },
+
     "api.get": async (a) => {
       const r = a as unknown as {
         account: string;
@@ -614,6 +628,28 @@ export function forgeConnector(opts: ForgeConnectorOptions): Connector {
       argSchema: compose(rejectUnknown(), accountArg, optStr("search", 200), optLimit, optPage),
     },
     {
+      name: "forge.mutate",
+      tier: "approval" as const,
+      doc:
+        "Generic write: POST/PUT/PATCH/DELETE any path under the account's pinned API root, e.g. " +
+        "{ account, method: 'POST', path: '/projects/1/releases', body: { tag_name: 'v1' } }. " +
+        "For endpoints without a curated op (releases, labels, milestones, actions, ...). " +
+        "Returns raw upstream JSON; credential-bearing paths are refused before approval.",
+      argSchema: compose(
+        rejectUnknown(),
+        accountArg,
+        oneOf("method", ["POST", "PUT", "PATCH", "DELETE"]),
+        strMax("path", 1000),
+        apiPathArg,
+        checkQueryObject,
+        checkBodyObject,
+      ),
+      summarize: (a) => {
+        const r = a as { method?: string; path?: string };
+        return `${r.method} ${r.path} on ${target(a as Record<string, unknown>)}`;
+      },
+    },
+    {
       name: "forge.api.get",
       tier: "open" as const,
       doc:
@@ -735,6 +771,13 @@ const apiPathArg = (args: unknown): string | null => {
   }
   return null;
 };
+
+function checkBodyObject(args: unknown): string | null {
+  const body = (args as { body?: unknown }).body;
+  if (body === undefined) return null;
+  if (!body || typeof body !== "object" || Array.isArray(body)) return "body: expected object";
+  return null;
+}
 
 function checkQueryObject(args: unknown): string | null {
   const query = (args as { query?: unknown }).query;

@@ -16,22 +16,22 @@ root is configured). Everything else is an **op** you call from JavaScript insid
 
 ```js
 // execute() runs the BODY of an async function; return JSON-serializable data
-const projects = await gitlab.projects.list({ perPage: 5 });
-return projects.map((p) => p.path_with_namespace); // → ["group/project", …]
+const projects = await forge.projects.list({ account: "ebrains", limit: 5 });
+return projects.items.map((p) => p.fullName); // → ["group/project", …]
 ```
 
-Ops are namespaced globals (`forge.*`, `gitlab.*`, `mail.*`, `mistral.*`, `fs.*`, `web.*`, `dev.*`,
-`deploy.*`); there is no `tools` object. Credentials never enter the sandbox: ops are the only
-egress, and there is no `fetch`, `WebSocket`, filesystem or `Deno` API (use `web.fetch` for URLs).
+Ops are namespaced globals (`forge.*`, `mail.*`, `mistral.*`, `fs.*`, `web.*`, `dev.*`, `deploy.*`);
+there is no `tools` object. Credentials never enter the sandbox: ops are the only egress, and there
+is no `fetch`, `WebSocket`, filesystem or `Deno` API (use `web.fetch` for URLs).
 
 ## 2. Discovery (do this first, cheaply)
 
-| call                                   | gives you                                       |
-| -------------------------------------- | ----------------------------------------------- |
-| `api.search("")`                       | the whole registry with per-connector counts    |
-| `api.search("query", "gitlab")`        | ranked matches; wildcards (`*`) list everything |
-| `api.describe("gitlab.issues.create")` | full doc: args **and** return shape             |
-| `denops.skill({})`                     | this document                                   |
+| call                                  | gives you                                       |
+| ------------------------------------- | ----------------------------------------------- |
+| `api.search("")`                      | the whole registry with per-connector counts    |
+| `api.search("query", "forge")`        | ranked matches; wildcards (`*`) list everything |
+| `api.describe("forge.issues.create")` | full doc: args **and** return shape             |
+| `denops.skill({})`                    | this document                                   |
 
 `search`/`describe` are also MCP tools; a query that matches nothing returns the inventory, so one
 call always tells you what exists. `denops.version` says what is actually deployed.
@@ -53,7 +53,7 @@ call always tells you what exists. `denops.version` says what is actually deploy
 
 ## 4. Connector crib sheet
 
-**forge** (26 ops) — one family over several code hosts. `forge.accounts` lists
+**forge** (27 ops) — one family over several code hosts. `forge.accounts` lists
 `{id, flavor:
  gitlab|forgejo|github, origin}`; **every op takes `account`**. Neutral vocabulary:
 `projects.*`, `issues.*` + `issues.notes.*`, `pulls.*` (merge requests; also `.changes.get`,
@@ -62,16 +62,12 @@ GitLab). Results are normalized, not upstream JSON (`number` not iid; `state: op
 `merged`/`draft` booleans), so one call shape works on every account; writes are approval-tier. Long
 tail: `forge.api.get({account, path, query?})` (open, raw upstream JSON, pinned to that account's
 API root). Forgejo's `q` matches repo names only — use `projects.get({repo:"o/r"})` for exact
-lookups. Adapters: **gitlab**, **forgejo** (a `github` flavor is refused at startup).
-
-**gitlab** (27 ops) — compatibility family over the same client as **forge** (kept until the alias
-drops; upstream field names, not normalized): `projects.*`, `issues.*`, `mergeRequests.*`,
-`repository.*`, `users.*`, `groups.list`. Issue writes accept `assignee_ids`, `due_date`
-(`YYYY-MM-DD`), `labels`, `milestone_id`; for assignees use `users.get({username})` (exact —
-`users.search` is a substring match). `issues.list` defaults to `state: "opened"`. Long tail:
-`gitlab.get` (open) and `gitlab.mutate` (approval; POST/PUT/**PATCH**/DELETE) reach the rest of
-`/api/v4`, pinned to the origin, with credential-bearing reads (`variables`, `*_tokens`,
-`secure_files`) refused.
+lookups. Adapters: **gitlab**, **forgejo** (a `github` flavor is refused at startup). The old
+`gitlab.*` family is **gone** as of 0.8.0 — `forge.*` with `account: "ebrains"` is its replacement,
+and results are now normalized, so `p.fullName` replaces `p.path_with_namespace`. Long tail:
+`forge.api.get` (open, raw) and `forge.mutate` (approval; POST/PUT/**PATCH**/DELETE) reach any
+endpoint under that account's API root; credential-bearing paths (`variables`, `*_tokens`,
+`secure_files`) are refused before an approval is created.
 
 **mail** (10 ops) — `mailboxes.list`, `messages.list`, `messages.search` (server-side IMAP;
 `mailboxes: string[]` searches a folder tree in one call, each hit carrying its `mailbox`),

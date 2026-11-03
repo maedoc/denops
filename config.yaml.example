@@ -42,10 +42,6 @@ connectors:
   # surface in production (dev.try exercises the same paths against real code).
   debug:
     enabled: false
-  gitlab:
-    enabled: false
-    origin: https://gitlab.ebrains.eu
-    apiPath: /api/v4
   mistral:
     enabled: false
     origin: https://api.mistral.ai
@@ -123,6 +119,7 @@ connectors:
 #          needs no new secret). Reads are open, writes need approval, and the long tail is
 #          reached with forge.api.get({account, path}) against that account's pinned root.
 #          Only flavors with an adapter are accepted at startup (gitlab, forgejo today).
+#          This replaced the old `gitlab:` connector in 0.8.0.
 #
 #   forge:
 #     enabled: true

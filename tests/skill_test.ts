@@ -3,7 +3,6 @@ import { deployConfigFrom, deployConnector } from "../src/connectors/deploy/mani
 import { denopsConnector } from "../src/connectors/denops/manifest.ts";
 import { devConnector, devRootsFromConfig } from "../src/connectors/dev/manifest.ts";
 import { fsConnector } from "../src/connectors/fs/manifest.ts";
-import { gitlabConnector } from "../src/connectors/gitlab/manifest.ts";
 import { forgeConnector } from "../src/connectors/forge/manifest.ts";
 import { stubPort } from "./forge_stub.ts";
 import { imapConnector } from "../src/connectors/imap/manifest.ts";
@@ -31,7 +30,6 @@ async function allConnectors(): Promise<Connector[]> {
     tmp,
   );
   return [
-    gitlabConnector({ token: "t", origin: "https://gitlab.example", apiPath: "/api/v4" }),
     forgeConnector({
       accounts: [{
         id: "ebrains",
