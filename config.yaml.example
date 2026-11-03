@@ -116,6 +116,29 @@ connectors:
 #         # password lives in secrets.json as calendar.icloud.password
 #         # (bearer tokens: calendar.<id>.token)
 
+#   forge: one family over several code hosts (gitlab, forgejo, github) — same op names,
+#          same normalized results, one account argument. Each account pins scheme+host and
+#          an API root; the token is host-side in secrets.json as forge.<id>.token (the
+#          gitlab flavor falls back to secrets.gitlab.token, so an existing deployment
+#          needs no new secret). Reads are open, writes need approval, and the long tail is
+#          reached with forge.api.get({account, path}) against that account's pinned root.
+#          Only flavors with an adapter are accepted at startup (gitlab today).
+#
+#   forge:
+#     enabled: true
+#     accounts:
+#       - id: ebrains
+#         flavor: gitlab
+#         origin: https://gitlab.ebrains.eu
+#         apiPath: /api/v4
+#         # token: secrets.forge.ebrains.token (falls back to secrets.gitlab.token)
+#       - id: amu
+#         flavor: forgejo
+#         origin: https://git.ins-amu.fr
+#         apiPath: /api/v1
+#         maxLimit: 50          # instance cap (GET /api/v1/settings/api -> max_response_items)
+#         # token: secrets.forge.amu.token
+#
 startup:
   # full: probe reachability of every enabled connector at startup (a chatty, credential-
   # checking connector logs what it found). none: skip probing (dev only).

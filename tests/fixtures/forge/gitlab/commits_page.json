@@ -1,0 +1,19 @@
+[
+  {
+    "author_email": "marmaduke.woodman@univ-amu.fr",
+    "author_name": "Marmaduke Woodman",
+    "authored_date": "2026-11-02T12:24:11.000+01:00",
+    "committed_date": "2026-11-02T12:24:11.000+01:00",
+    "committer_email": "marmaduke.woodman@univ-amu.fr",
+    "committer_name": "Marmaduke Woodman",
+    "created_at": "2026-11-02T12:24:11.000+01:00",
+    "extended_trailers": {},
+    "id": "398de98caab3674317ced83b64f650c67b2ec0c3",
+    "message": "Initial commit",
+    "parent_ids": [],
+    "short_id": "398de98c",
+    "title": "Initial commit",
+    "trailers": {},
+    "web_url": "https://gitlab.ebrains.eu/woodman/mymcp/-/commit/398de98caab3674317ced83b64f650c67b2ec0c3"
+  }
+]

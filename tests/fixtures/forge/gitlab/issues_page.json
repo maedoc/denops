@@ -1,0 +1,137 @@
+[
+  {
+    "_links": {
+      "award_emoji": "https://gitlab.ebrains.eu/api/v4/projects/1935/issues/16/award_emoji",
+      "closed_as_duplicate_of": null,
+      "notes": "https://gitlab.ebrains.eu/api/v4/projects/1935/issues/16/notes",
+      "project": "https://gitlab.ebrains.eu/api/v4/projects/1935",
+      "self": "https://gitlab.ebrains.eu/api/v4/projects/1935/issues/16"
+    },
+    "assignee": null,
+    "assignees": [],
+    "author": {
+      "avatar_url": "https://gitlab.ebrains.eu/uploads/-/system/user/avatar/13/avatar.png?v=1793703891",
+      "id": 13,
+      "locked": false,
+      "name": "Marmaduke Woodman",
+      "public_email": "",
+      "state": "active",
+      "username": "woodman",
+      "web_url": "https://gitlab.ebrains.eu/woodman"
+    },
+    "closed_at": null,
+    "closed_by": null,
+    "confidential": false,
+    "created_at": "2026-11-03T12:06:11.247+01:00",
+    "description": "An agent printed `~/.pi/agent/mcp.json` while investigating why MCP tools were missing, which\nwrote the denops bearer token into the session transcript (`~/.pi/agent/sessions/\u2026jsonl`) as well\nas the terminal scrollback. Reported by the agent, 2026-11-03.\n\nBlast radius is small \u2014 loopback behind Caddy on a private domain, and the token already lived in\nplaintext in `mcp.json` and `secrets.json` on the same machine \u2014 but it is now in one more place,\nincluding a conversation log that may be shared or synced.\n\n## Rotation\n\n- [ ] generate a new token (e.g. `openssl rand -base64 48 | tr -d '\\n'`)\n- [ ] set it as `serverToken` in `/home/freebox/denops/secrets.json` (mode 600, gitignored)\n- [ ] restart denops (`data/restart-request`, or the supervisor restart; a promote is not needed)\n- [ ] update `~/.pi/agent/mcp.json` \u2192 `headers.Authorization`\n- [ ] update every external client that holds it: the Mistral Vibe connector (OAuth\n      `client_credentials`), other MCP clients, and any script with the token baked in\n- [ ] verify: unauthenticated `/mcp` \u2192 401 **with** the RFC 9728 challenge; authenticated \u2192 200;\n      `POST /oauth/token` (`grant_type=client_credentials`, `client_id=mistral`, secret = new\n      token) \u2192 200 and the access token equals it\n\n## Note\n\nThe OAuth client secret **is** the bearer token (`server.oauth.clientId: mistral` in config), so\nrotation invalidates any cached access token at its next use, and the `ttlSec: 3600` window means\na client can keep working for up to an hour on the old value. Rotate both sides together.\n\n## Prevent the recurrence\n\n- [ ] do not `cat` credential files into a prompt; grep for the key name and its length instead\n- [ ] consider `server.tokenFile` (supported by config) so the token is never inlined in client\n      config files",
+    "discussion_locked": null,
+    "downvotes": 0,
+    "due_date": null,
+    "has_tasks": false,
+    "id": 61305,
+    "iid": 16,
+    "imported": false,
+    "imported_from": "none",
+    "issue_type": "issue",
+    "labels": [
+      "security"
+    ],
+    "merge_requests_count": 0,
+    "milestone": null,
+    "moved_to_id": null,
+    "project_id": 1935,
+    "references": {
+      "full": "woodman/mymcp#16",
+      "relative": "#16",
+      "short": "#16"
+    },
+    "service_desk_reply_to": null,
+    "severity": "UNKNOWN",
+    "start_date": null,
+    "state": "opened",
+    "task_completion_status": {
+      "completed_count": 0,
+      "count": 8
+    },
+    "time_stats": {
+      "human_time_estimate": null,
+      "human_total_time_spent": null,
+      "time_estimate": 0,
+      "total_time_spent": 0
+    },
+    "title": "security: rotate the denops bearer token (exposed in a session transcript, 2026-11-03)",
+    "type": "ISSUE",
+    "updated_at": "2026-11-03T12:06:11.247+01:00",
+    "upvotes": 0,
+    "user_notes_count": 0,
+    "web_url": "https://gitlab.ebrains.eu/woodman/mymcp/-/work_items/16"
+  },
+  {
+    "_links": {
+      "award_emoji": "https://gitlab.ebrains.eu/api/v4/projects/1935/issues/15/award_emoji",
+      "closed_as_duplicate_of": null,
+      "notes": "https://gitlab.ebrains.eu/api/v4/projects/1935/issues/15/notes",
+      "project": "https://gitlab.ebrains.eu/api/v4/projects/1935",
+      "self": "https://gitlab.ebrains.eu/api/v4/projects/1935/issues/15"
+    },
+    "assignee": null,
+    "assignees": [],
+    "author": {
+      "avatar_url": "https://gitlab.ebrains.eu/uploads/-/system/user/avatar/13/avatar.png?v=1793703891",
+      "id": 13,
+      "locked": false,
+      "name": "Marmaduke Woodman",
+      "public_email": "",
+      "state": "active",
+      "username": "woodman",
+      "web_url": "https://gitlab.ebrains.eu/woodman"
+    },
+    "closed_at": null,
+    "closed_by": null,
+    "confidential": false,
+    "created_at": "2026-11-03T12:06:10.909+01:00",
+    "description": "Everything a *new* session needs that is not in `SKILL.md` (which describes the served\nsurface) nor in `AGENTS.md` (which describes the repo). Learned the hard way on 2026-11-03.\n\n## Tool registration is decided when the session starts\n\n`~/.pi/agent/mcp.json` points at `https://wdmn.hd.free.fr/mcp`. pi registers an MCP server's\ntools at session open, and **never again**. On 2026-11-03 a session opened at 09:14 while the\nserver was 502ing (crash loop 09:10:53 \u2192 09:20). Consequence: `mcp__denops` was absent for the\nwhole session even after the server came back \u2014 `ALL_TOOLS` had 11 entries and\n`searchTools()` returned `[]`, so every denops call was made by hand:\n\n```\nssh homelab \u2192 read serverToken from secrets.json \u2192 curl the JSON-RPC endpoint\n```\n\n**If a session opens while denops is unreachable, restart the session after fixing it.**\n\nAlso: denops exposes four MCP tools (`search`, `execute`, `approve`, `grants`); the 74 ops are\ncode inside `execute`. Without a declared `approve`, an approval-tier op can only reach\n`awaiting_approval` \u2014 that is why 0.4.0\u20260.5.1 were promoted by writing the state files (see !10)\nand issues were filed through the GitLab API directly.\n\n## State as of 2026-11-03T11:00Z\n\n- live `0.5.1` @ `5682416`; `main` == `origin/main` == the laptop checkout; `denops.service` active.\n- `/health` \u2192 `{\"ok\":true,\"degraded\":[\"mail\"]}`: `amu`'s IMAP backend is down upstream\n  (`No DC server listening`), `free` is healthy. Tracking + fixes in !12.\n- `proton` is commented out of the live `config.yaml` (no Proton Bridge on that host, and the\n  startup probe for it is what took the whole server down before 0.4.0 \u2014 see CHANGELOG).\n- `caldav` is enabled with one account, `icloud` / `mmwoodman@icloud.com`, Basic + app password\n  from `secrets.calendar.icloud.password`. Event writes are approval-tier; reminders are live.\n- no tmux on that host (stale socket only); logs are `data/server.log` + journald. See !11.\n\n## Client-side credentials\n\n`~/.pi/agent/mcp.json` holds the bearer token in plaintext; it is the same value as\n`secrets.serverToken`. They have to be rotated together \u2014 tracked as a `security` issue.\n\n## Checklist\n\n- [ ] bring `AGENTS.md` up to date with the layout, the promote path and this session-start rule,\n      so the next agent does not need GitLab to find its bearings\n- [ ] consider making `mcp.json` read the token from an env var or file instead of inlining it\n- [ ] decide whether the iCloud app password stays provisioned (revoke at appleid.apple.com if\n      caldav is not going to stay in use)",
+    "discussion_locked": null,
+    "downvotes": 0,
+    "due_date": null,
+    "has_tasks": false,
+    "id": 61304,
+    "iid": 15,
+    "imported": false,
+    "imported_from": "none",
+    "issue_type": "issue",
+    "labels": [
+      "ops",
+      "spec"
+    ],
+    "merge_requests_count": 0,
+    "milestone": null,
+    "moved_to_id": null,
+    "project_id": 1935,
+    "references": {
+      "full": "woodman/mymcp#15",
+      "relative": "#15",
+      "short": "#15"
+    },
+    "service_desk_reply_to": null,
+    "severity": "UNKNOWN",
+    "start_date": null,
+    "state": "opened",
+    "task_completion_status": {
+      "completed_count": 0,
+      "count": 3
+    },
+    "time_stats": {
+      "human_time_estimate": null,
+      "human_total_time_spent": null,
+      "time_estimate": 0,
+      "total_time_spent": 0
+    },
+    "title": "ops: what a fresh session needs to know \u2014 tool registration, live state snapshot, client credentials",
+    "type": "ISSUE",
+    "updated_at": "2026-11-03T12:06:10.909+01:00",
+    "upvotes": 0,
+    "user_notes_count": 0,
+    "web_url": "https://gitlab.ebrains.eu/woodman/mymcp/-/work_items/15"
+  }
+]

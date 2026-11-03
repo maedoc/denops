@@ -8,6 +8,31 @@ actually talking to instead of probing behaviour.
 Format: `## <version> — <YYYY-MM-DD>`, newest first, then a short bullet list. Keep bullets about
 the API surface; implementation notes belong in the commit message.
 
+## 0.6.0 — 2026-11-03
+
+- **`forge.*` (26 ops): one family over several code hosts.** A `forge` account is a
+  `{id, flavor, origin, apiPath}` pair with its credential in `secrets.forge.<id>.token`, so the
+  same op names address GitLab, Forgejo and (once its adapter lands) GitHub: `forge.accounts`,
+  `projects.*`, `issues.*` (+`issues.notes.*`), `pulls.*` (+`changes.get`, `comment`, `merge`),
+  `repository.branches/commits/tree/files`, `users.*`, `orgs.list` (GitLab's groups).
+- **Results are normalized, not upstream JSON**: `number` for the per-repo short id (GitLab
+  calls it `iid`), `state: "open"|"closed"|"merged"`, `merged`/`draft` booleans, `{items, page, nextPage}`
+  for every list, `{files, truncated}` for a change set. `fields`/`full` still apply; raw upstream
+  payloads stay reachable through `forge.api.get`, which is pinned to the account's API root and
+  refuses credential-bearing paths.
+- **Page sizes are clamped per flavor** (GitLab/GitHub 100, Forgejo the instance's
+  `max_response_items`), because forwarding `limit: 500` makes Forgejo answer 50 while the caller
+  believes it has everything.
+- **Errors carry status, flavor and a hint**, extracted per upstream: GitLab `{message}`, Forgejo
+  `{message, errors[]}` where `message` can be empty or an internal function name, GitHub
+  `{message, documentation_url}`. 401/403 hint at the token/scope, 404 at visibility, 405 at
+  "already merged" (Forgejo's answer for re-merging).
+- `pulls.create` rejects a pull request whose source and target branch are equal in **precheck**,
+  before an approval exists.
+- The existing `gitlab.*` family is unchanged and does not go through `forge` yet: this release adds
+  the family alongside it, and the alias flip is a separate change. Conformance fixtures recorded
+  from gitlab.ebrains.eu pin the normalized shapes (`tests/fixtures/forge/gitlab/`).
+
 ## 0.5.1 — 2026-11-03
 
 - **Reminders on `calendar.events.create` / `calendar.events.update`.** Both take

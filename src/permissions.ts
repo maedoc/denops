@@ -74,6 +74,20 @@ export function derivePermissions(
         }
       }
     }
+    if (name === "forge") {
+      // One family, several accounts, each on its own origin; the pinned client is only
+      // as narrow as the sandbox lets it be, so every account host has to be here.
+      for (const a of (c.accounts ?? []) as Array<Record<string, unknown>>) {
+        try {
+          const origin = new URL(String(a.origin));
+          net.add(
+            `${origin.hostname}:${origin.port || (origin.protocol === "http:" ? "80" : "443")}`,
+          );
+        } catch {
+          continue; // a bad origin is reported by the connector's own config check
+        }
+      }
+    }
     if (name === "web") {
       // A list that the YAML reader handed back as a scalar must not be iterated
       // character by character into --allow-net (it once produced "[:53", "1:53"…).

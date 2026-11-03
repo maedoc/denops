@@ -23,8 +23,18 @@ import { grantSatisfies, RootGrants } from "./harness/grants.ts";
 import { fsConnector, fsGrantKey } from "./connectors/fs/manifest.ts";
 import { debugConnector } from "./connectors/debug/manifest.ts";
 import { gitlabConnector } from "./connectors/gitlab/manifest.ts";
+import { forgeConnector } from "./connectors/forge/manifest.ts";
+import { defaultMaxLimit } from "./connectors/forge/client.ts";
+import type { ForgeAccount, ForgeFlavor } from "./connectors/forge/port.ts";
 import { mistralConnector } from "./connectors/mistral/manifest.ts";
 import { caldavConnector } from "./connectors/caldav/manifest.ts";
+
+/** Default API root per flavor; `origin` + this is the pinned base for an account. */
+function defaultApiPath(flavor: ForgeFlavor): string {
+  if (flavor === "gitlab") return "/api/v4";
+  if (flavor === "forgejo") return "/api/v1";
+  return ""; // GitHub's REST root is the origin itself
+}
 
 const configPath = Deno.args[0] ?? "config.yaml";
 const secretsPath = Deno.args[1] ?? "secrets.json";
@@ -147,6 +157,53 @@ export async function buildApp(configPath: string, secretsPath: string): Promise
   const enabled = (name: string) => config.connectors[name]?.enabled === true;
 
   if (enabled("debug")) registry.register(debugConnector);
+
+  // Forge: one family, several accounts, each with its own flavor and credential. The
+  // account id is the secret key (secrets.forge.<id>.token); the gitlab flavor falls
+  // back to secrets.gitlab.token so the existing deployment needs no new secret.
+  if (enabled("forge")) {
+    const f = config.connectors.forge;
+    const configured = Array.isArray(f.accounts)
+      ? (f.accounts as Array<Record<string, unknown>>)
+      : [];
+    if (configured.length === 0) throw new Error("forge enabled but no accounts configured");
+    const forgeSecrets = (secrets.forge ?? {}) as Record<
+      string,
+      Record<string, unknown> | undefined
+    >;
+    const legacyGitlab =
+      ((secrets.gitlab as Record<string, unknown> | undefined)?.token ?? "") as string;
+    const accounts: ForgeAccount[] = configured.map((a) => {
+      const id = String(a.id ?? "");
+      if (!/^[a-z0-9][a-z0-9_-]{0,31}$/.test(id)) {
+        throw new Error(`forge account id '${id}': expected lowercase letters, digits, - or _`);
+      }
+      const flavor = String(a.flavor ?? "") as ForgeFlavor;
+      if (flavor !== "gitlab" && flavor !== "forgejo" && flavor !== "github") {
+        throw new Error(`forge account ${id}: flavor must be gitlab, forgejo or github`);
+      }
+      const origin = String(a.origin ?? "");
+      if (origin === "") throw new Error(`forge account ${id}: origin is required`);
+      const apiPath = String(a.apiPath ?? defaultApiPath(flavor));
+      if (!apiPath.startsWith("/")) {
+        throw new Error(`forge account ${id}: apiPath must start with '/' (got '${apiPath}')`);
+      }
+      const fromSecrets = (forgeSecrets[id] ?? {}) as Record<string, unknown>;
+      const token = String(fromSecrets.token ?? (flavor === "gitlab" ? legacyGitlab : ""));
+      if (token === "") throw new Error(`forge account ${id}: missing secrets.forge.${id}.token`);
+      return {
+        id,
+        flavor,
+        origin,
+        apiPath,
+        token,
+        maxLimit: Number(a.maxLimit ?? defaultMaxLimit(flavor)) || defaultMaxLimit(flavor),
+      };
+    });
+    const ids = new Set(accounts.map((a) => a.id));
+    if (ids.size !== accounts.length) throw new Error("forge: duplicate account ids");
+    registry.register(forgeConnector({ accounts }));
+  }
 
   if (enabled("gitlab")) {
     const g = config.connectors.gitlab;

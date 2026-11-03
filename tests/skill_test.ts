@@ -4,6 +4,8 @@ import { denopsConnector } from "../src/connectors/denops/manifest.ts";
 import { devConnector, devRootsFromConfig } from "../src/connectors/dev/manifest.ts";
 import { fsConnector } from "../src/connectors/fs/manifest.ts";
 import { gitlabConnector } from "../src/connectors/gitlab/manifest.ts";
+import { forgeConnector } from "../src/connectors/forge/manifest.ts";
+import { stubPort } from "./forge_stub.ts";
 import { imapConnector } from "../src/connectors/imap/manifest.ts";
 import { mistralConnector } from "../src/connectors/mistral/manifest.ts";
 import { webConnector } from "../src/connectors/web/manifest.ts";
@@ -30,6 +32,17 @@ async function allConnectors(): Promise<Connector[]> {
   );
   return [
     gitlabConnector({ token: "t", origin: "https://gitlab.example", apiPath: "/api/v4" }),
+    forgeConnector({
+      accounts: [{
+        id: "ebrains",
+        flavor: "gitlab",
+        origin: "https://gitlab.example",
+        apiPath: "/api/v4",
+        token: "t",
+        maxLimit: 100,
+      }],
+      buildPort: () => stubPort(),
+    }),
     mistralConnector({ apiKey: "k", origin: "https://api.mistral.ai", apiPath: "/v1" }),
     imapConnector({
       accounts: [{

@@ -20,7 +20,7 @@ const projects = await gitlab.projects.list({ perPage: 5 });
 return projects.map((p) => p.path_with_namespace); // → ["group/project", …]
 ```
 
-Ops are namespaced globals (`gitlab.*`, `mail.*`, `mistral.*`, `fs.*`, `web.*`, `dev.*`,
+Ops are namespaced globals (`forge.*`, `gitlab.*`, `mail.*`, `mistral.*`, `fs.*`, `web.*`, `dev.*`,
 `deploy.*`); there is no `tools` object. Credentials never enter the sandbox: ops are the only
 egress, and there is no `fetch`, `WebSocket`, filesystem or `Deno` API (use `web.fetch` for URLs).
 
@@ -53,25 +53,34 @@ call always tells you what exists. `denops.version` says what is actually deploy
 
 ## 4. Connector crib sheet
 
-**gitlab** (27 ops) — `projects.*`, `issues.*`, `mergeRequests.*`, `repository.*`, `users.*`,
-`groups.list`. Writes are approval-tier. `issues.list` defaults to `state: "opened"`; issue writes
-accept `assignee_ids`, `due_date` (`YYYY-MM-DD`), `labels`, `milestone_id`. For assignees use
-`users.get({ username })` (exact) — `users.search` is a substring match and returns near-matches.
-Anything without a curated op: `gitlab.get({ path, query? })` (open) and
-`gitlab.mutate({ method, path, body? })` (approval) reach the rest of `/api/v4`; paths are relative
-to the pinned origin, and credential-bearing reads (`variables`, `*_tokens`, `secure_files`) are
-refused.
+**forge** (26 ops) — one family over several code hosts. `forge.accounts` lists `{id, flavor:
+ gitlab|forgejo|github, origin}`; **every op takes `account`**. Neutral vocabulary: `projects.*`,
+`issues.*` + `issues.notes.*`, `pulls.*` (merge requests; also `.changes.get`, `.comment`,
+`.merge`), `repository.branches/commits/tree/files`, `users.*`, `orgs.list` (groups on GitLab).
+Results are normalized, not upstream JSON (`number` not iid; `state: open|closed|merged`;
+`merged`/`draft` booleans), so one call shape works on every account; writes are approval-tier.
+Long tail: `forge.api.get({account, path, query?})` (open, raw upstream JSON, pinned to that
+account's API root). Forgejo's `q` matches repo names only — use `projects.get({repo:"o/r"})` for
+exact lookups.
+
+**gitlab** (27 ops) — legacy single-account connector, superseded by **forge** (kept until that
+alias drops): `projects.*`, `issues.*`, `mergeRequests.*`, `repository.*`, `users.*`,
+`groups.list`. Issue writes accept `assignee_ids`, `due_date` (`YYYY-MM-DD`), `labels`,
+`milestone_id`; for assignees use `users.get({username})` (exact — `users.search` is a substring
+match). `issues.list` defaults to `state: "opened"`. Long tail: `gitlab.get` (open) and
+`gitlab.mutate` (approval) reach the rest of `/api/v4`, pinned to the origin, with
+credential-bearing reads (`variables`, `*_tokens`, `secure_files`) refused.
 
 **mail** (10 ops) — `mailboxes.list`, `messages.list`, `messages.search` (server-side IMAP;
-`mailboxes: string[]` searches a folder tree in one call and each hit carries its `mailbox`),
-`messages.get`/`getPart`/`flags.get`, `drafts.save` (open — draft, never send), `messages.raw` and
-`messages.move` (approval). No SMTP. `messages.get` splits headers from body: `body` is the body
-only, plus `messageId`, `inReplyTo`, `references[]`, `contentType`, `headers` — inspect threading
-without the raw source.
-`drafts.save({account, body, replyTo:{mailbox,uid}, includeQuote?, subject?, to?})` makes the draft
-a **threaded reply**: the server writes `Message-ID`/`In-Reply-To`/`References`/`Date`/
-`MIME-Version`, defaults `Re: <parent subject>` + parent `From`, quotes the parent, APPENDs with
-`\Draft`. Never compose those headers yourself. **mistral** (17 ops) — libraries and documents,
+`mailboxes: string[]` searches a folder tree in one call, each hit carrying its `mailbox`),
+`messages.get`/`getPart`/`flags.get`, `drafts.save` (open — a draft, never a send), `messages.raw`
+and `messages.move` (approval). No SMTP. `messages.get` splits headers from body (`body` only, plus
+`messageId`, `inReplyTo`, `references[]`, `contentType`, `headers`), so threading is inspectable
+without the raw source. `drafts.save({account, body, replyTo:{mailbox,uid}, …})` writes a **threaded
+reply** — `Message-ID`/`In-Reply-To`/`References`/`Date`, `Re: <subject>`, quoted parent, APPEND
+with `\Draft`; never compose those headers yourself.
+
+**mistral** (17 ops) — libraries and documents,
 metadata first: `libraries.list` → `documents.list` (rows carry `size`, `mime_type`,
 `process_status`) → then `documents.read` for small text (inline, else `truncated: true`),
 `documents.get({fields:["summary"]})` for the extracted summary, or `documents.stage` (→
@@ -104,8 +113,7 @@ recurrence — `calendar.events.get` (by uid; keep the returned `etag`), `calend
 Writes are approval-tier: `calendar.events.create` (`If-None-Match: *`), `calendar.events.update`
 and `calendar.events.delete` (both need the current `etag`; a stale one is refused, never
 overwritten; update is read-modify-write so `VALARM`/vendor props survive).
-`reminders: [{ minutesBefore,
-  description? }]` sets DISPLAY alarms on create/update (positive =
+`reminders: [{ minutesBefore, description? }]` sets DISPLAY alarms on create/update (positive =
 before the start; `events.get` returns them; an update replaces DISPLAY alarms only).
 **ATTENDEE/ORGANIZER and EMAIL alarms are refused**: iCloud auto-schedules and would send real mail.
 

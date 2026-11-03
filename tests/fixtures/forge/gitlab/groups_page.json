@@ -1,0 +1,52 @@
+[
+  {
+    "archived": false,
+    "auto_devops_enabled": null,
+    "avatar_url": null,
+    "created_at": "2024-02-16T17:27:44.485+01:00",
+    "crm_enabled": true,
+    "default_branch": null,
+    "default_branch_protection": 2,
+    "default_branch_protection_defaults": {
+      "allow_force_push": false,
+      "allowed_to_merge": [
+        {
+          "access_level": 40
+        }
+      ],
+      "allowed_to_push": [
+        {
+          "access_level": 40
+        }
+      ]
+    },
+    "description": "",
+    "emails_disabled": false,
+    "emails_enabled": true,
+    "full_name": "EBRAINS RI / Tech Hub / Apps",
+    "full_path": "ri/tech-hub/apps",
+    "id": 1685,
+    "lfs_enabled": true,
+    "lock_math_rendering_limits_enabled": false,
+    "lock_resource_access_token_notify_inherited": false,
+    "marked_for_deletion_on": null,
+    "math_rendering_limits_enabled": true,
+    "max_artifacts_size": null,
+    "mentions_disabled": null,
+    "name": "Apps",
+    "organization_id": 1,
+    "parent_id": 1449,
+    "path": "apps",
+    "project_creation_level": "developer",
+    "request_access_enabled": true,
+    "require_two_factor_authentication": false,
+    "resource_access_token_notify_inherited": false,
+    "share_with_group_lock": false,
+    "shared_runners_setting": "enabled",
+    "show_diff_preview_in_email": true,
+    "subgroup_creation_level": "maintainer",
+    "two_factor_grace_period": 48,
+    "visibility": "public",
+    "web_url": "https://gitlab.ebrains.eu/groups/ri/tech-hub/apps"
+  }
+]
