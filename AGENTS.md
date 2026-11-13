@@ -1,9 +1,9 @@
 # Working on denops (instructions for agents)
 
-This repo is edited both by humans and by LLM agents running through `denops` itself (the `dev`
-connector: `fs.*` on a worktree, `dev.run` for tests, `dev.git` for commits, `deploy.promote` to
-ship). Read `SKILL.md` before touching anything — it is the contract the served MCP surface is
-documented by.
+This repo is edited both by humans and by LLM agents: development happens on the laptop checkout,
+and a running denops server operates on the homelab only through its served surface
+(`denops.*`, `deploy.*` to ship). Read `SKILL.md` before touching anything — it is the contract the
+served MCP surface is documented by.
 
 ## Keep SKILL.md current (required)
 
@@ -36,40 +36,41 @@ can observe: an op, an argument, a return shape, a tier, an error contract, the 
 deno task check && deno task test    # tests/skill_test.ts is part of this
 ```
 
-Then `dev.git commit` → `deploy.promote` (a human approves; the supervisor soaks and can
+Then commit to `main`, `git push origin main`, and `deploy.promote` (a human approves; the op
+fetches `origin/main` and re-runs the test suite on the host; the supervisor soaks and can
 auto-revert). `deploy.status` tells you what is live, what is last-good, and whether a promotion is
 pending.
 
 ## Where this runs (the homelab)
 
-`ssh homelab` → 192.168.1.196, user `freebox`. Two checkouts of this repository:
+`ssh homelab` → 192.168.1.196, user `freebox`. One checkout of this repository, on the server:
 
 - **live** `/home/freebox/denops` — detached, owned by the supervisor (`scripts/live-supervisor.sh`,
   unit `deploy/denops.service`). Never edit tracked files here. The supervisor checks out the
   promoted commit, restarts the **child** (the unit stays up, so its uptime says nothing about what
   is running — use `denops.version`), probes `/health`, soaks 60 s and only then advances `main`;
   a failure reverts to the last good commit.
-- **dev** `/home/freebox/denops-dev` — worktree of the same repo on branch `agent/dev`; what `dev.*`
-  operates on and what a promote ships.
+
+There is no dev checkout and no agent-writable code on the server: **the dev machine is the
+laptop** (this checkout on `main`). Edit here, run the gate (`deno fmt --check src/ tests/ && deno
+lint && deno task check && deno task test`), commit to `main`, `git push origin main`, then promote
+via MCP. Production code reaches the server only through `deploy.promote`, which fetches
+`origin/main` — a pull in `~/denops` bypasses the gate, so never do it.
 
 `config.yaml` and `secrets.json` are host-side and gitignored (`secrets.json` is mode 600). Editor
 swap files are ignored too: a `.secrets.json.swp` holds fragments of that file and must never be
 committed. Logs are `data/server.log` (child) plus journald (supervisor); there is no tmux there.
-
-Without `fs`/`dev` MCP access the loop is: edit, `scp` into `denops-dev`, gate on the host
-(`deno fmt --check src/ tests/ && deno lint && deno task check && deno task test`), commit **there**
-with an explicit identity (`git -c user.name="…" -c user.email="…" commit -F` — none is configured),
-promote, then `git push origin main` and fast-forward the laptop.
 
 ## Where the work is tracked
 
 Runbook and feature issues live in the GitLab project **`woodman/mymcp`** (gitlab.ebrains.eu), not
 in this repo — read the open issues before re-deriving environment facts:
 
-- `ops:` — how this deployment is laid out (live vs dev worktree, systemd, no tmux), how to promote
-  when `deploy.promote` cannot be used, and what a fresh session needs to know. That last one
-  matters: MCP tool registration is fixed when a session opens, so if denops is unreachable then,
-  the `mcp__denops` tools are absent for the entire session even after the server comes back.
+- `ops:` — how this deployment is laid out (dev on the laptop, live-only on the server, systemd,
+  no tmux), how to promote when `deploy.promote` cannot be used, and what a fresh session needs to
+  know. That last one matters: MCP tool registration is fixed when a session opens, so if denops is
+  unreachable then, the `mcp__denops` tools are absent for the entire session even after the server
+  comes back.
 - `mail:` / `caldav:` / `forgejo:` — remaining work and the reasoning behind decisions already
   made (so they are not re-litigated).
 

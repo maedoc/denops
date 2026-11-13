@@ -20,7 +20,7 @@ const projects = await forge.projects.list({ account: "ebrains", limit: 5 });
 return projects.items.map((p) => p.fullName); // → ["group/project", …]
 ```
 
-Ops are namespaced globals (`forge.*`, `mail.*`, `mistral.*`, `fs.*`, `web.*`, `dev.*`, `deploy.*`);
+Ops are namespaced globals (`forge.*`, `mail.*`, `mistral.*`, `fs.*`, `web.*`, `deploy.*`);
 there is no `tools` object. Credentials never enter the sandbox: ops are the only egress, and there
 is no `fetch`, `WebSocket`, filesystem or `Deno` API (use `web.fetch` for URLs).
 
@@ -140,20 +140,15 @@ replaced. Read-only accounts are refused before approval.
 are reachable; private/loopback/link-local addresses are refused (SSRF guard) and redirects are
 re-validated. A refused host is a config question for the operator, not something to work around.
 
-**dev** (5 ops) / **deploy** (3 ops) — work on this server's own code without a shell: `dev.roots`,
-`dev.run({root, task})` (`check`/`test`/`fmt`/`lint`… argv from config, no shell; returns
-`{code, stdout, stderr, sha, dirty}`; recorded against the current **tree** by exit code and tree
-identity, never by output), `dev.git({root, action, message?})`, `dev.try({root, op, args})` (one op
-from the dev checkout's registry that is **open-tier on the live server** — a checkout cannot reopen
-an approval op — against the real APIs),
-`deploy.status`, `deploy.promote` (approval: runs the test task, records intent),
-`deploy.rollback({commit?})`. `dev.try` runs **committed, checked code only** (a dirty tracked tree
-is refused; the root's `check` must have passed for this tree) inside a pinned child — read =
-checkout, write = its `dataDir`, net = the **live** config's hosts, no subprocess — so `NotCapable`
-means the op left that envelope. Returns `{code, stdout, stderr, commit, subject, dirty, check}`. Flow: edit → `dev.run("check")`/`("test")`
-→ `dev.git commit` → `dev.try` → `deploy.promote` (human approves) → supervisor restarts, probes
-`/health`, soaks 60 s, advances `main`; failure auto-reverts. `deploy.status` shows live/main/dev
-shas, ahead/behind and dirty flags (untracked files never block).
+**deploy** (3 ops) — ship this server's own code. Development happens on the laptop, never on the
+server: edit there, run the gate (`deno task check && deno task test`), push `origin main`. Then
+`deploy.status` (open: live commit, desired, last-good, origin/main, pending commits,
+restart-pending), `deploy.promote` (approval: fetches origin/main, refuses a non-fast-forward,
+runs the test suite in a throwaway worktree under the service's data dir, records intent),
+`deploy.rollback({commit?})` (approval: last-good or an explicit sha). The supervisor — not the
+op — checks out the commit, probes `/health`, soaks 60 s, advances `main`, and auto-reverts on
+failure. There is no agent-writable code checkout on the server and no op that runs arbitrary
+argv.
 
 ## 5. Error and approval semantics worth remembering
 

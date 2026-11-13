@@ -8,6 +8,23 @@ actually talking to instead of probing behaviour.
 Format: `## <version> — <YYYY-MM-DD>`, newest first, then a short bullet list. Keep bullets about
 the API surface; implementation notes belong in the commit message.
 
+## 0.13.7 — 2026-11-13
+
+- **The `dev` connector is removed** (was `dev.roots`, `dev.run`, `dev.git`, `dev.sync`, `dev.try`).
+  Development moves off the server: the canonical dev checkout is the laptop, and an agent-writable
+  code tree on the prod host — writable through `fs.*` on `denops-dev` and executable through
+  `dev.*` — was a footgun waiting for a session nobody was watching. The dev/deploy worktree and
+  the `agent/dev` branch are gone; `main` is the only line of development.
+- **`deploy.promote` ships `origin/main`, not a local dev branch.** It fetches, refuses a
+  non-fast-forward, and runs the test suite itself in a throwaway worktree under the data dir
+  (removed after the run, not a served `fs` root) — the supervisor, soak and auto-revert contract
+  is unchanged. New optional key `connectors.deploy.testArgv` (default `["deno", "task", "test"]`).
+- **`deploy.status`** drops the `dev*` fields (`devCommit`, `devAhead`, `devBehind`, `devDirty`,
+  `devUntracked`) and reports `originMain` + `pendingCommits` after that same best-effort fetch;
+  a fetch failure surfaces as `originMain: null` with an empty list.
+- `fs.*` keeps its 10 ops; the served roots are host-config (`denops-stage` remains, the
+  `denops-dev` root is gone with the worktree).
+
 ## 0.13.6 — 2026-11-13
 
 - **DCR registrations survive restarts.** Clients issued by `/register` (the authorization_code +

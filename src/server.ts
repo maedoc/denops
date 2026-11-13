@@ -13,7 +13,6 @@ import { createHandler, DEFAULT_MAX_BODY_BYTES, serveWithTimeouts } from "./secu
 import { agentGuide } from "./guide.ts";
 import { davConnector } from "./connectors/dav/manifest.ts";
 import { deployConfigFrom, deployConnector } from "./connectors/deploy/manifest.ts";
-import { devConnector, devRootsFromConfig } from "./connectors/dev/manifest.ts";
 import { webConnector, webOptionsFromConfig } from "./connectors/web/manifest.ts";
 import { derivePermissions, serverPlan } from "./permissions.ts";
 import { mistralTierOverride } from "./connectors/mistral/tiers.ts";
@@ -257,39 +256,13 @@ export async function buildApp(configPath: string, secretsPath: string): Promise
     registry.register(webConnector(web));
   }
 
-  // dev / deploy: work on code without a shell. `dev` runs the argv tables declared
-  // in config.yaml, `deploy` records intent for the supervisor (which owns
-  // restart, health-probe, soak and auto-revert).
-  const devRoots = devRootsFromConfig(config.connectors.dev?.roots);
-  if (enabled("dev")) {
-    if (devRoots.length === 0) {
-      throw new Error("connectors.dev enabled but no dev.roots configured");
-    }
-    // dev.try's child runs agent-written code, so its network envelope comes from THIS
-    // config (operator-owned), never from the dev checkout's own config.yaml — that one
-    // is writable by the agent and would let it redirect a credentialed op's origin.
-    const livePlan = derivePermissions({
-      server: config.server as unknown as Record<string, unknown>,
-      connectors: config.connectors,
-    });
-    const tryExtraHosts = Array.isArray(config.connectors.dev?.tryExtraHosts)
-      ? (config.connectors.dev.tryExtraHosts as unknown[]).map((h) => String(h))
-      : [];
-    registry.register(
-      devConnector({
-        roots: devRoots,
-        timeoutMs: config.connectors.dev?.timeoutMs
-          ? Number(config.connectors.dev.timeoutMs)
-          : undefined,
-        tryNet: [...livePlan.net, ...tryExtraHosts],
-        // The live registry decides tier: a dev checkout that flips an approval op
-        // to open must not be able to run it via dev.try without a human.
-        liveTier: (op) => registry.tierOf(op),
-      }),
-    );
-  }
+  // deploy: ship code without a shell — and without an agent-writable checkout
+  // on this host. Development happens on the laptop and reaches origin via push;
+  // `deploy` fetches origin/main, tests it in a throwaway worktree, and records
+  // intent for the supervisor (which owns restart, health-probe, soak and
+  // auto-revert).
   if (enabled("deploy")) {
-    const deployCfg = deployConfigFrom(config.connectors.deploy ?? {}, devRoots, config.dataDir);
+    const deployCfg = deployConfigFrom(config.connectors.deploy ?? {}, config.dataDir);
     if (deployCfg) registry.register(deployConnector(deployCfg));
   }
 
@@ -300,7 +273,7 @@ export async function buildApp(configPath: string, secretsPath: string): Promise
       skillPath: "SKILL.md",
       // Keep in step with deno.json and the CHANGELOG head; tests/version_test.ts fails
       // when they drift, because denops.version is how a run learns what it is talking to.
-      version: "0.13.6",
+      version: "0.13.7",
       // the supervisor exports the commit it checked out
       // The env-reading child (dev_try) runs with no --allow-env; the commit is
       // informational, so an inaccessible DENOPS_COMMIT is just "unknown" there.

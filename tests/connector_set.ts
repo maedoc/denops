@@ -1,7 +1,6 @@
 import { caldavConnector } from "../src/connectors/caldav/manifest.ts";
 import { davConnector } from "../src/connectors/dav/manifest.ts";
 import { deployConfigFrom, deployConnector } from "../src/connectors/deploy/manifest.ts";
-import { devConnector, devRootsFromConfig } from "../src/connectors/dev/manifest.ts";
 import { denopsConnector } from "../src/connectors/denops/manifest.ts";
 import { forgeConnector } from "../src/connectors/forge/manifest.ts";
 import { fsConnector } from "../src/connectors/fs/manifest.ts";
@@ -21,14 +20,8 @@ import { stubPort } from "./forge_stub.ts";
  */
 export async function allConnectors(): Promise<Connector[]> {
   const tmp = await Deno.makeTempDir();
-  const devRoots = devRootsFromConfig([{
-    name: "devroot",
-    path: tmp,
-    tasks: { test: ["/usr/bin/true"] },
-  }]);
   const deploy = deployConfigFrom(
-    { enabled: true, liveDir: tmp, devBranch: "main" },
-    devRoots,
+    { enabled: true, liveDir: tmp },
     tmp,
   );
   const skillPath = new URL("../SKILL.md", import.meta.url).pathname;
@@ -63,7 +56,6 @@ export async function allConnectors(): Promise<Connector[]> {
       execTimeoutSec: 5,
       maxConcurrentExec: 1,
     }),
-    devConnector({ roots: devRoots }),
     webConnector({ allowedHosts: ["example.org"] }),
     davConnector({
       accounts: [{

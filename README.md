@@ -22,7 +22,7 @@ Host (main isolate)                            MCP endpoint /mcp (streamable HTT
   connector clients hold ALL credentials       JSONL op log under data/runs/<runId>.jsonl
         │ postMessage { op, args, callId }
 Guest (worker, deno permissions: "none")       fetch/WebSocket/Deno.* stubbed
-  model-written JS + handles: gitlab.* mail.* mistral.* fs.* web.* dev.* deploy.* denops.*
+  model-written JS + handles: forge.* mail.* mistral.* fs.* web.* deploy.* denops.*
 ```
 
 Security invariants:
@@ -168,7 +168,7 @@ const p = await gitlab.projects.list({ perPage: 5 });
 return p.map((x) => x.path_with_namespace);
 ```
 
-- Ops are namespaced globals (`gitlab.*`, `mail.*`, `mistral.*`, `fs.*`, `dev.*`, `deploy.*`), plus
+- Ops are namespaced globals (`forge.*`, `mail.*`, `mistral.*`, `fs.*`, `deploy.*`), plus
   `api.search(query, connector)` and `api.describe(op)` **inside** the sandbox. There is no `tools`
   object; `Object.keys(globalThis)` is not the registry.
 - No `fetch`, `WebSocket`, `XMLHttpRequest`, filesystem or `Deno` APIs in the sandbox. Inert Deno
@@ -233,9 +233,9 @@ commit as any observable change (ops, args, return shapes, tiers, error contract
 `debug.echo`, `debug.boom`, `debug.gated` (approval-tier: exercises the approval round trip). The
 module is kept because the harness/approval tests drive it directly, but
 **`connectors.debug.enabled` is `false` in the shipped config**: a family whose stated purpose is
-testing does not belong in the permanent registry of a production server, and `dev.try` exercises
-the same code paths against real code. Enable it in a dev config when you want the plumbing probes
-(and remember to update `SKILL.md` — the drift test only knows what a config registers).
+testing does not belong in the permanent registry of a production server. Enable it in a dev
+config when you want the plumbing probes (and remember to update `SKILL.md` — the drift test only
+knows what a config registers).
 
 ### forge (27 ops) — read + write, one family over three flavors
 
@@ -407,7 +407,7 @@ text is flagged (`encodingIssue`) instead of being silently mangled, and `edit` 
 ### fs (10 ops) — local filesystem, root-allowlisted
 
 Read/write/glob/exec against **named, allowlisted root directories**. The model addresses roots by
-name (`root: "denops-dev"`), never by absolute path; every path is resolved with symlink resolution
+name (`root: "denops-stage"`), never by absolute path; every path is resolved with symlink resolution
 and rejected if it escapes the root (`..`, absolute paths, symlink escapes — a `secrets.json`
 symlink inside a root is refused).
 
@@ -416,8 +416,8 @@ connectors:
   fs:
     enabled: true
     roots:
-      - name: denops-dev
-        path: /home/freebox/denops-dev
+      - name: denops-stage
+        path: /srv/denops-stage
         write: true # enables fs.write / fs.edit / fs.editRegex
         exec: false # see "no shell" below
 ```
@@ -431,10 +431,10 @@ whole-process-group kill on timeout, concurrency limit).
 **Grant model:** the first `fs.*` op on a root is approval-tier; approving it records a persistent
 root grant (`data/root_grants.json`, atomic, survives restarts) and later ops on that root run open.
 `write`/`exec` also require the root to be configured accordingly, so a grant never exceeds the
-root's capabilities. Manage with `grants({action:"list"|"revoke", key:"fs:denops-dev"})`.
+root's capabilities. Manage with `grants({action:"list"|"revoke", key:"fs:denops-stage"})`.
 
 **No shell by default.** `fs.exec` is off in this deployment: it runs with the service user's full
-authority, so it can read secrets regardless of the root. Instead, code work goes through `dev`.
+authority, so it can read secrets regardless of the root.
 
 ### web (1 op) — fetch a document into a run
 
@@ -454,55 +454,19 @@ The guard is the point, in three fail-closed layers:
 3. **Redirects** are followed manually (max 3) and re-validated at every hop; bodies are capped and
    only textual content-types are returned (a PDF is refused, not silently truncated into mojibake).
 
-### dev (5 ops) — work on code without a shell
+### deploy (3 ops) — ship origin/main, gated
 
-```yaml
-connectors:
-  dev:
-    enabled: true
-    roots:
-      - name: denops-dev
-        path: /home/freebox/denops-dev
-        tasks: # argv tables, never a shell
-          check: [deno, check, src/server.ts, tests/]
-          test: [deno, task, test]
-          fmt: [deno, fmt, src/, tests/, scripts/]
-        # checkTask: check   # which task gates dev.try (default: check)
-    # hosts dev.try's child may reach, in addition to the ones this config declares
-    # tryExtraHosts: [api.example.org]
-```
+Development happens on the laptop, not on the server: edit there, run the local gate
+(`deno task check && deno task test`), push `origin main`. There is no agent-writable code checkout
+on the server and no op that runs arbitrary argv; the promote op is the only path to production.
 
-| op                                  | tier                          | does                                                                       |
-| ----------------------------------- | ----------------------------- | -------------------------------------------------------------------------- |
-| `dev.roots`                         | open                          | configured roots, task names, and which task gates `dev.try`               |
-| `dev.run({root, task})`             | open                          | runs one declared task; returns `{code, stdout, stderr, sha, dirty}`       |
-| `dev.git({root, action, message?})` | `commit` = approval           | `status`, `diff`, `log`, `commit -am "<msg>"` — no model-supplied flags    |
-| `dev.sync({root})`                  | approval                      | `git fetch --prune origin` + `merge --ff-only @{u}` — never a reset        |
-| `dev.try({root, op, args})`         | open (open-tier targets only) | runs one op from the **dev checkout's own registry** against the real APIs |
+| op                           | tier     | does                                                                                                        |
+| ---------------------------- | -------- | ----------------------------------------------------------------------------------------------------------- |
+| `deploy.status`              | open     | live/desired/last-good shas, `origin/main` after a best-effort fetch, pending commits, restart pending, recent audit |
+| `deploy.promote`             | approval | fetches `origin/main`, refuses a non-fast-forward, runs the test suite in a throwaway worktree under the data dir, records `desired-commit`, requests a restart |
+| `deploy.rollback({commit?})` | approval | same, to `last-good` or an explicit sha from the audit log                                                  |
 
-`dev.try` refuses approval-tier ops: those are exercised by promoting. It runs **committed, checked
-code only**, and its child gets a **pinned permission envelope**. Enforced in `src/permissions.ts` +
-`src/connectors/dev/manifest.ts`:
-
-- **Clean tracked tree.** Modified/staged tracked files are refused (`--untracked-files=no`, so
-  scratch files are fine): what ran has to be a commit a reviewer sees in the promotion diff.
-- **Green `check` for that exact tree.** Every `dev.run` records `{task, code, tree}` — the exit
-  code and the git tree object, never the output (`deno check` prints nothing on a cache hit and is
-  still a pass). Checking before committing the same content counts, because the tree is the
-  content.
-- **Pinned envelope, not derived from the checkout's config.** The child runs with
-  `--allow-read=<checkout>,<resolved secrets/config>`, `--allow-write=<checkout>/<dataDir>`,
-  `--allow-net=<hosts the LIVE config declares>`, `--allow-env --allow-sys`, and **no
-  `--allow-run`**. The dev `config.yaml` is agent-writable, so deriving from it would let an agent
-  grant itself the live tree, an arbitrary origin (credential exfiltration) or a shell. A new
-  connector whose origin the live config does not know yet needs `connectors.dev.tryExtraHosts`.
-- **Provenance in the result and the log.** `{code, stdout, stderr, commit, subject, dirty, check}`
-  plus a `dev.try` run-log entry naming root, op, commit and dirty flag.
-
-Residual, accepted: the child holds the credentials in the checkout's `secrets.json` (a symlink to
-`~/denops/secrets.json`) and can reach the APIs the live config already declares — the same
-authority the server has, and the promotion approval still reviews the diff. `scripts/dev_try.ts` is
-tracked, so a modified runner shows up there too.
+`deploy` never runs the server; the supervisor does.
 
 ### deploy (3 ops) — intent for the supervisor
 
@@ -537,8 +501,8 @@ commit with backoff; too many consecutive failures exit so systemd backs off.
 
 `main` is advanced to a commit **only after it passes the soak** (and only if it descends from
 `main`), so a failed promotion never lands on the branch a later promotion fast-forwards from.
-Because the live checkout runs detached, updating the live tree is done through the dev branch and
-`deploy.promote`, not `git pull` in `~/denops`.
+The live checkout runs detached and is never pulled or edited by hand: production code arrives
+exclusively through `deploy.promote`, which fetches `origin/main`.
 
 Rehearsed on the live deployment: healthy promote (soak → last-good → main advanced), a commit that
 passed 92 tests but threw at startup (auto-revert in ~2 s, main untouched), recovery by reverting
@@ -551,20 +515,23 @@ instead of trusting bash to reload it cleanly.
 
 ---
 
-## Agent workflow (dev loop)
+## Agent workflow (dev on laptop, prod on homelab)
 
-1. `dev.roots` / `deploy.status` — see the worktree, tasks, and what is live.
-2. `fs.glob` / `fs.read` — read code in `~/denops-dev`.
-3. `fs.write` / `fs.edit` / `fs.editRegex` — add an op (e.g. a new `gitlab.*`), with a test.
-4. `dev.run({task:"check"})`, `dev.run({task:"test"})` — iterate until green.
-5. `dev.git({action:"commit", message:"…"})` — approval. `dev.try` runs committed code, so the
-   commit comes before the try (checking the same content beforehand still counts).
-6. `dev.try({op:"gitlab.x.y", args:{…}})` — exercise the new op against the real API.
-7. `deploy.promote` — approval; the supervisor restarts, probes, soaks, and either promotes
-   (`last-good`, `main` advanced) or auto-reverts. `deploy.status` shows what happened.
+1. On the laptop checkout: edit code + tests, then the gate: `deno fmt --check src/ tests/ && deno
+   lint && deno task check && deno task test`.
+2. Commit to `main` and `git push origin main`.
+3. Via the denops MCP (whose session predates the push is fine): `deploy.status` to see
+   `pendingCommits`, then `deploy.promote` — a human approves; the op fetches `origin/main`, runs
+   the test suite again in a throwaway worktree, and records intent.
+4. The supervisor restarts into the commit, probes `/health`, soaks 60 s, advances `main` and
+   records `last-good`; a failure auto-reverts. `deploy.status` shows what happened.
 
-Secrets live outside the agent's root (`~/denops/secrets.json`), and the dev worktree's
-`secrets.json` is a symlink to it — refused by `fs.read` as a root escape.
+If denops is unreachable when a session starts, the MCP tools are absent for that whole session —
+the operator path (write `desired-commit` + `restart-request` plus the audit lines) is the GitLab
+`ops:` runbook, issue !10.
+
+Secrets never leave the server (`~/denops/secrets.json`); nothing an agent writes is executable on
+the host.
 
 ---
 

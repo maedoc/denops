@@ -2,10 +2,9 @@ import { parseYaml } from "../src/config.ts";
 import { permissionFlags, serverPlan } from "../src/permissions.ts";
 
 // Launcher: reads config.yaml (the only file it may read besides the secrets JSON at
-// startup), derives the permission envelope for src/server.ts, and starts it. The
-// derivation itself lives in src/permissions.ts so that `dev.try`'s child gets its
-// envelope from the same code — see tryPermissions() there for why the child's plan
-// is pinned instead of derived.
+// startup), derives the permission envelope for src/server.ts, and starts it.
+// The derivation itself lives in src/permissions.ts, one place for the flags that
+// bound every connector.
 const configPath = Deno.args[0] ?? "config.yaml";
 
 const configText = await Deno.readTextFile(configPath);

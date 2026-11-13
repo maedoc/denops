@@ -60,7 +60,6 @@ Deno.test("SKILL.md states the invariants the server enforces", () => {
       "api.search",
       "api.describe",
       "denops.skill",
-      "dev.try",
       "deploy.promote",
       "staging.clear",
       "fields:",

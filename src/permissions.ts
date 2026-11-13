@@ -1,11 +1,10 @@
 import { resolve, sep } from "node:path";
 
-// Deno permission derivation, shared by the live launcher (scripts/start.ts) and by
-// `dev.try`'s child process. One place, on purpose: a hand-copied flag list drifts,
-// and the child that executes agent-written code must never end up with a wider
-// envelope than the server. `derivePermissions` is for the server (it trusts the
-// config it was started with); `tryPermissions` is for the child and is *pinned*
-// rather than derived, because the dev checkout's config.yaml is agent-writable.
+// Deno permission derivation for the live launcher (scripts/start.ts). One place,
+// on purpose: a hand-copied flag list drifts, and the server's --allow-* flags are
+// the outer boundary of every connector. `derivePermissions` derives from the
+// config the server was started with; `serverPlan` is the typed projection the
+// launcher and denops.permissions consume.
 export interface PermissionPlan {
   net: string[];
   read: string[];
@@ -24,7 +23,7 @@ export interface DeriveOptions {
   read?: string[];
   /** paths always writable (runtime state) */
   write?: string[];
-  /** derive --allow-run from connector config (fs.exec, dev/deploy tasks) */
+  /** derive --allow-run from connector config (fs.exec, deploy's git/test gate) */
   connectorRun?: boolean;
 }
 
@@ -158,9 +157,9 @@ export function derivePermissions(
     if (execRoots.size > 0) {
       run.push("/bin/sh", ...(Deno.build.os === "linux" ? ["/usr/bin/setsid", "/bin/kill"] : []));
     }
-    // dev runs a project's declared argv tables (deno/git/…); deploy runs git and the
-    // dev root's test task. Both are explicit connector opt-ins, never defaults.
-    if (truthy(connectors.dev?.enabled) || truthy(connectors.deploy?.enabled)) {
+    // deploy runs git (fetch/merge-base) and the promotion test gate (deno).
+    // An explicit connector opt-in, never a default.
+    if (truthy(connectors.deploy?.enabled)) {
       run.push("deno", "git");
     }
   }
@@ -171,55 +170,6 @@ export function derivePermissions(
     write: [...write],
     run: [...new Set(run)],
   };
-}
-
-export interface TryPermissionOptions {
-  /** the checkout whose (agent-written) code the child will import */
-  devRoot: string;
-  /**
-   * runtime state directory named by the dev config; confined to devRoot. Anything
-   * absolute or containing `..` is refused, not silently accepted.
-   */
-  dataDir?: string;
-  /**
-   * resolved paths the child may also read — the real targets of the checkout's
-   * config.yaml / secrets.json. The dev secrets file is usually a symlink to the
-   * live one, and Deno resolves symlinks before checking, so the target must be
-   * listed explicitly.
-   */
-  readExtra?: string[];
-  /** hosts the child may reach, taken from the LIVE config (see SKILL.md) */
-  net: string[];
-}
-
-/**
- * The envelope for `dev.try`'s child. Deliberately *not* derived from the dev
- * config: that file lives in the agent's worktree, so deriving from it would let an
- * agent grant itself the live tree (`fs.roots`), arbitrary origins (credential
- * exfiltration) or `--allow-run`. Pinned to: its own checkout (read), its own data
- * dir (write), live-configured hosts (net), no subprocesses at all.
- */
-export function tryPermissions(opts: TryPermissionOptions): PermissionPlan {
-  const root = resolve(opts.devRoot);
-  const dataDir = confine(root, opts.dataDir ?? "data-dev");
-  const read = new Set<string>([root]);
-  for (const p of opts.readExtra ?? []) read.add(resolve(p));
-  return {
-    net: [...new Set(opts.net.filter((h) => h.length > 0))],
-    read: [...read],
-    write: [dataDir],
-    run: [],
-  };
-}
-
-/** Resolve `rel` against `root`, refusing anything that escapes it. */
-export function confine(root: string, rel: string): string {
-  const base = resolve(root);
-  const target = resolve(base, rel);
-  if (target !== base && !target.startsWith(`${base}${sep}`)) {
-    throw new Error(`dev.try: dataDir ${JSON.stringify(rel)} escapes the dev root ${base}`);
-  }
-  return target;
 }
 
 /**
