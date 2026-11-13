@@ -44,7 +44,9 @@ call always tells you what exists. `denops.version` says what is actually deploy
   `fields: ["id", "namespace.full_path"]` (dotted paths, arrays shaped per element) or ask for the
   raw upstream object with `full: true`. Width matters: five raw GitLab projects ≈ 130 KB.
 - Errors come back as `{ status: "failed", error }` with the message only (no stack). Invalid JS is
-  reported as `SyntaxError` before a sandbox starts. Upstream HTTP error bodies are propagated
+  reported as `SyntaxError` before a sandbox starts, with the received code's length and head/tail
+  excerpt — if that is not the code you sent, the string was truncated in transit; retry the call.
+  Upstream HTTP error bodies are propagated
   verbatim — read them, they usually name the offending field.
 - Approval-tier ops return `{ status: "awaiting_approval", pendingId, op, seq, summary, args }`.
   Show `summary` to the user, then call `approve(pendingId, "approve")`. A run that contains several
@@ -60,14 +62,16 @@ call always tells you what exists. `denops.version` says what is actually deploy
 `.comment`, `.merge`), `repository.branches/commits/tree/files`, `users.*`, `orgs.list` (groups on
 GitLab). Results are normalized, not upstream JSON (`number` not iid; `state: open|closed|merged`;
 `merged`/`draft` booleans), so one call shape works on every account; writes are approval-tier. Long
-tail: `forge.api.get({account, path, query?})` (open, raw upstream JSON, pinned to that account's
-API root). Forgejo's `q` matches repo names only — use `projects.get({repo:"o/r"})` for exact
+tail: `forge.api.get({account, path, query?})` (open, pinned to that account's API root) is
+content-type aware: parsed JSON for `application/json`, otherwise `{text, contentType, bytes,
+truncated?}` — e.g. Forgejo Actions job logs, `GET /repos/o/r/actions/jobs/<id>/logs`, are
+`text/plain` (text capped at 256 KiB, `bytes` is the full size). Forgejo's `q` matches repo names only — use `projects.get({repo:"o/r"})` for exact
 lookups. Adapters: **gitlab**, **forgejo**, **github** (paging is a `Link` cursor there, file reads
 use the raw media type, and search has its own smaller rate limit). The old
 `gitlab.*` family is **gone** as of 0.8.0 — `forge.*` with `account: "ebrains"` is its replacement,
 and results are now normalized, so `p.fullName` replaces `p.path_with_namespace`. Long tail:
-`forge.api.get` (open, raw) and `forge.mutate` (approval; POST/PUT/**PATCH**/DELETE) reach any
-endpoint under that account's API root; credential-bearing paths (`variables`, `*_tokens`,
+`forge.api.get` (open) and `forge.mutate` (approval; POST/PUT/**PATCH**/DELETE) reach any
+endpoint under that account's API root (both content-type aware); credential-bearing paths (`variables`, `*_tokens`,
 `secure_files`) are refused before an approval is created.
 
 **mail** (10 ops) — `mailboxes.list`, `messages.list`, `messages.search` (server-side IMAP;
@@ -99,7 +103,8 @@ named roots only (`fs.roots` lists them): `glob`, `list`, `read` (line windows w
   filters), `denops.about` (version, skill freshness, connector families, `degraded` + why),
   `denops.version` (version, commit, CHANGELOG head — check this, do not probe whether a fix
   deployed), `denops.budget` (wall clock and ops left in THIS run — call it before a long loop),
-  `denops.oplog` (redacted run log: statuses and counts, no args or bodies). A non-empty
+  `denops.oplog` (redacted run log: statuses and counts plus each run's `codeBytes` — the received
+  code's byte size — no args or bodies). A non-empty
   `about().degraded` means that family failed its startup probe: only its ops fail, the server is up.
 
 **calendar** (8 ops) — CalDAV (iCloud, Nextcloud). `calendar.accounts`, `calendar.calendars.list`

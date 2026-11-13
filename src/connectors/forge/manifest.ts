@@ -19,7 +19,8 @@ import { type ForgeAccount, type ForgePort, parseRepoRef, repoRefString } from "
 //
 // Design rules that the rest of this file follows:
 //  - Ops speak the normalized vocabulary from port.ts. Flavor-specific richness is
-//    reached through forge.api.get (raw JSON) rather than by widening the curated set.
+//    reached through forge.api.get (raw upstream response, content-type aware) rather
+//    than by widening the curated set.
 //  - Every op names an account; the account carries flavor, origin and credential, so
 //    nothing about *where* a request goes ever comes from an argument.
 //  - Reads are open, writes are approval with a summarize() that names account, flavor,
@@ -650,7 +651,8 @@ export function forgeConnector(opts: ForgeConnectorOptions): Connector {
         "Generic write: POST/PUT/PATCH/DELETE any path under the account's pinned API root, e.g. " +
         "{ account, method: 'POST', path: '/projects/1/releases', body: { tag_name: 'v1' } }. " +
         "For endpoints without a curated op (releases, labels, milestones, actions, ...). " +
-        "Returns raw upstream JSON; credential-bearing paths are refused before approval.",
+        "Content-type aware like forge.api.get: parsed JSON, or { text, contentType, bytes, truncated? } " +
+        "for non-JSON bodies; credential-bearing paths are refused before approval.",
       argSchema: compose(
         rejectUnknown(),
         accountArg,
@@ -670,7 +672,11 @@ export function forgeConnector(opts: ForgeConnectorOptions): Connector {
       tier: "open" as const,
       doc:
         "Raw GET under an account's pinned API root, for endpoints without a curated op (releases, labels, " +
-        "milestones, actions, compare, ...). args: { account, path, query? }. Returns raw upstream JSON.",
+        "milestones, actions, compare, ...). args: { account, path, query? }. Content-type aware: an " +
+        "application/json body is returned parsed; any other body (Forgejo Actions job logs, " +
+        "GET /repos/o/r/actions/jobs/<id>/logs, are text/plain) is returned as " +
+        "{ text, contentType, bytes, truncated? } with text capped at 256 KiB and bytes the full size. " +
+        "Redirects are followed; the final response's content-type decides.",
       argSchema: compose(
         rejectUnknown(),
         accountArg,

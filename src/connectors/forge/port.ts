@@ -219,7 +219,10 @@ export interface ForgePort {
   listOrgs(q: ListQuery): Promise<Page<OrgSummary>>;
   /** Connector-specific startup check (instance limits), optional. */
   validate?(): Promise<void>;
-  /** Raw GET under the account's pinned API root; the long-tail read escape hatch. */
+  /** Raw GET under the account's pinned API root; the long-tail read escape hatch.
+   * Content-type aware: parsed JSON for JSON bodies, `{ text, contentType, bytes, truncated? }`
+   * for non-JSON bodies (Forgejo Actions job logs are `text/plain`; text is capped at
+   * MAX_TEXT_BYTES, `bytes` is the full size). */
   apiGet(path: string, query?: QueryObject): Promise<JsonValue>;
   /** Raw write (POST/PUT/PATCH/DELETE) under the pinned root; approval tier at the op. */
   apiMutate(

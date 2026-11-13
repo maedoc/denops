@@ -7,7 +7,7 @@ import {
   toBase64,
   unwrapData,
 } from "../src/connectors/forge/flavors/forgejo.ts";
-import type { ForgeAccount } from "../src/connectors/forge/port.ts";
+import { type ForgeAccount, MAX_TEXT_BYTES } from "../src/connectors/forge/port.ts";
 
 // The Forgejo quirks these pin were all observed on git.ins-amu.fr, not inferred:
 //  - search wraps results in {ok,data}; other endpoints do not
@@ -396,6 +396,84 @@ Deno.test("forgejo: tree.list pages by slicing, because /contents has no paging"
     assertEquals(p2.nextPage, 3);
     assertEquals(p3.items.map((e) => e.name), ["f4.txt"]);
     assertEquals(p3.nextPage, null);
+  } finally {
+    m.stop();
+  }
+});
+
+// Forgejo serves Actions job logs as text/plain (routers/api/v1/repo/action.go,
+// GetActionJobLogs pins `Content-Type: text/plain; charset=utf-8` and serves via
+// http.ServeContent — no redirect, Range supported upstream). api.get must hand
+// that back as text, not die in JSON.parse.
+Deno.test("forgejo: api.get is content-type aware (job logs are text/plain)", async () => {
+  const log = "2026-11-13T10:00:00Z [step 1] checkout\n2026-11-13T10:00:01Z [step 2] run\n";
+  const m = mockForgejo((key) => {
+    if (key === "GET /api/v1/repos/it/r/actions/jobs/814/logs") {
+      return new Response(log, {
+        status: 200,
+        headers: { "content-type": "text/plain; charset=utf-8" },
+      });
+    }
+    if (key === "GET /api/v1/version") return json({ version: "16.0.4+gitea-1.22.0" });
+    return null;
+  });
+  try {
+    const port = forgejoPort(new ForgeHttp(ACCOUNT(m.base)));
+    const logs = await port.apiGet("/repos/it/r/actions/jobs/814/logs") as Record<string, unknown>;
+    assertEquals(logs.text, log);
+    assertEquals(logs.contentType, "text/plain; charset=utf-8");
+    assertEquals(logs.bytes, new TextEncoder().encode(log).length);
+    assertEquals(logs.truncated, undefined);
+    // JSON bodies still parse
+    const ver = await port.apiGet("/version");
+    assertEquals(ver, { version: "16.0.4+gitea-1.22.0" });
+  } finally {
+    m.stop();
+  }
+});
+
+Deno.test("forgejo: api.get follows redirects and keeps the final content-type", async () => {
+  const m = mockForgejo((key) => {
+    if (key === "GET /api/v1/repos/o/r/actions/jobs/9/logs") {
+      // like GitHub's job-logs 302 to a signed storage URL
+      return new Response(null, {
+        status: 302,
+        headers: { location: `${m.base}/storage/signed?sig=abc` },
+      });
+    }
+    if (key === "GET /storage/signed") {
+      return new Response("raw log line\n", {
+        status: 200,
+        headers: { "content-type": "text/plain" },
+      });
+    }
+    return null;
+  });
+  try {
+    const port = forgejoPort(new ForgeHttp(ACCOUNT(m.base)));
+    const out = await port.apiGet("/repos/o/r/actions/jobs/9/logs") as Record<string, unknown>;
+    assertEquals(out.text, "raw log line\n");
+    assertEquals(out.contentType, "text/plain");
+    assertEquals(out.bytes, 13);
+  } finally {
+    m.stop();
+  }
+});
+
+Deno.test("forgejo: api.get caps non-JSON text at MAX_TEXT_BYTES and reports the size", async () => {
+  const big = "x".repeat(MAX_TEXT_BYTES + 40 * 1024);
+  const m = mockForgejo((key) => {
+    if (key === "GET /api/v1/repos/o/r/actions/jobs/10/logs") {
+      return new Response(big, { status: 200, headers: { "content-type": "text/plain" } });
+    }
+    return null;
+  });
+  try {
+    const port = forgejoPort(new ForgeHttp(ACCOUNT(m.base)));
+    const out = await port.apiGet("/repos/o/r/actions/jobs/10/logs") as Record<string, unknown>;
+    assertEquals(out.truncated, true);
+    assertEquals(out.bytes, MAX_TEXT_BYTES + 40 * 1024);
+    assertEquals((out.text as string).length, MAX_TEXT_BYTES);
   } finally {
     m.stop();
   }

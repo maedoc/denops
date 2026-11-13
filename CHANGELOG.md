@@ -8,6 +8,24 @@ actually talking to instead of probing behaviour.
 Format: `## <version> — <YYYY-MM-DD>`, newest first, then a short bullet list. Keep bullets about
 the API surface; implementation notes belong in the commit message.
 
+## 0.13.5 — 2026-11-13
+
+- **`forge.api.get` and `forge.mutate` are content-type aware.** JSON bodies (`application/json`,
+  or no content-type at all) parse exactly as before; an explicit non-JSON content-type now comes
+  back as `{ text, contentType, bytes, truncated? }` instead of dying in `JSON.parse`. That is what
+  Forgejo's Actions job-logs endpoint needs: `GET /repos/{owner}/{repo}/actions/jobs/{job_id}/logs`
+  serves the plaintext log with `Content-Type: text/plain; charset=utf-8` (pinned in
+  `routers/api/v1/repo/action.go`, `GetActionJobLogs`; no redirect, `Accept-Ranges: bytes`/206
+  upstream). Text is capped at 256 KiB with `truncated: true`; `bytes` always carries the full size.
+  Redirects are followed by fetch, so the *final* response's content-type decides the shape.
+- **A `SyntaxError` from `execute` now says what code was actually received** (length plus head/tail
+  excerpt) and tells the caller to retry when it is not the code it sent. Runs where the `code` string
+  arrived truncated in transit (observed: the MCP client re-sending a recorded tool call with its first
+  chunk dropped) used to fail with a bare `SyntaxError: Unexpected token '}'` that looked like the
+  caller's own typo. The pre-flight compile is also strict now, matching the guest module, so
+  strict-only syntax is rejected up front instead of in the worker. `denops.oplog` runs carry
+  `codeBytes` (the received code's byte size) so truncation is visible after the fact.
+
 ## 0.13.4 — 2026-11-03
 
 - **Corrected the wording 0.13.3 shipped with.** It claimed Nextcloud never serves the live revision

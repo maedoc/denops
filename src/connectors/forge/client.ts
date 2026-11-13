@@ -1,5 +1,11 @@
 import type { JsonValue } from "../../harness/types.ts";
-import { type ForgeAccount, ForgeError, type ForgeFlavor, type QueryObject } from "./port.ts";
+import {
+  type ForgeAccount,
+  ForgeError,
+  type ForgeFlavor,
+  MAX_TEXT_BYTES,
+  type QueryObject,
+} from "./port.ts";
 
 // One pinned HTTP client per account. Pinning is the point: the origin and the API
 // root come from configuration, never from an op argument, so `forge.api.get` cannot
@@ -63,6 +69,20 @@ export class ForgeHttp {
     return await this.request("GET", path, { query });
   }
 
+  /**
+   * Raw GET with a neutral Accept header, for the `forge.api.get` escape hatch.
+   * Redirects are followed by fetch, so `res` is the final response and its
+   * content-type is what decides the body shape (a 302 to a storage URL keeps
+   * the final type, not the API's).
+   */
+  async getAny(path: string, query?: QueryObject): Promise<JsonValue> {
+    const url = this.resolve(path, query);
+    const res = await fetch(url, { headers: { Accept: "*/*", ...authHeaders(this.acct) } });
+    const buf = new Uint8Array(await res.arrayBuffer());
+    if (!res.ok) throw this.toError("GET", path, res, new TextDecoder().decode(buf));
+    return this.decodeBody(res, buf);
+  }
+
   /** GET with the response headers, for flavors that paginate by cursor (GitHub `Link`). */
   async getMeta(path: string, query?: QueryObject): Promise<{ body: JsonValue; headers: Headers }> {
     const url = this.resolve(path, query);
@@ -123,9 +143,29 @@ export class ForgeHttp {
       headers,
       body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
     });
-    const text = await res.text();
-    if (!res.ok) throw this.toError(method, path, res, text);
-    return text.trim() === "" ? {} : (JSON.parse(text) as JsonValue);
+    const buf = new Uint8Array(await res.arrayBuffer());
+    if (!res.ok) throw this.toError(method, path, res, new TextDecoder().decode(buf));
+    return this.decodeBody(res, buf);
+  }
+
+  /**
+   * Content-type-aware body decode. JSON bodies (and bodies with no content-type,
+   * which is how some proxies strip it) parse as before; an explicit non-JSON
+   * content-type — Forgejo serves Actions job logs as `text/plain; charset=utf-8`
+   * — comes back as `{ text, contentType, bytes, truncated? }` instead of dying
+   * in `JSON.parse`. Text is capped at MAX_TEXT_BYTES so a multi-MB log cannot
+   * blow the per-op result budget; `bytes` always carries the full size.
+   */
+  private decodeBody(res: Response, buf: Uint8Array): JsonValue {
+    const contentType = (res.headers.get("content-type") ?? "").trim();
+    if (contentType === "" || contentType.toLowerCase().includes("json")) {
+      const text = new TextDecoder().decode(buf);
+      return text.trim() === "" ? {} : (JSON.parse(text) as JsonValue);
+    }
+    const bytes = buf.byteLength;
+    const truncated = bytes > MAX_TEXT_BYTES;
+    const text = new TextDecoder().decode(truncated ? buf.slice(0, MAX_TEXT_BYTES) : buf);
+    return { text, contentType, bytes, ...(truncated ? { truncated: true } : {}) };
   }
 
   /** Raw byte read (used for file content where base64 JSON would inflate it). */

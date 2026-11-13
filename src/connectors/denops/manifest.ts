@@ -94,6 +94,12 @@ export function summarizeRun(runId: string, lines: LogLine[]): JsonValue {
   return {
     runId,
     started: manifest?.started ?? null,
+    // Byte size of the code string as received (never its contents): lets a caller
+    // spot a code string that arrived truncated in transit, which shows up as a
+    // pre-flight SyntaxError on a fragment.
+    ...(manifest?.code !== undefined
+      ? { codeBytes: new TextEncoder().encode(manifest.code).length }
+      : {}),
     ops,
     finalStatus: final?.status ?? null,
     ...(final?.error ? { finalError: redact(final.error) } : {}),
@@ -212,7 +218,7 @@ export function denopsConnector(opts: DenopsConnectorOptions): Connector {
         name: "denops.oplog",
         tier: "open",
         doc:
-          "Read-only, redacted view of the run log: recent runs with their ops, statuses, approval and error counts. No op arguments and no result bodies are returned (only their byte sizes); errors are truncated. args: { limit? (runs, default 5, max 50), runId? (one run), ops? (max op rows per run, default 50) }. Use it to answer 'what did the agent actually do?' after something went wrong.",
+          "Read-only, redacted view of the run log: recent runs with their ops, statuses, approval and error counts. No op arguments and no result bodies are returned (only their byte sizes); errors are truncated. Each run also carries codeBytes, the byte size of the code string as received. args: { limit? (runs, default 5, max 50), runId? (one run), ops? (max op rows per run, default 50) }. Use it to answer 'what did the agent actually do?' after something went wrong.",
         argSchema: compose(
           rejectUnknown(),
           optNum("limit"),

@@ -193,11 +193,30 @@ export class Harness {
     // unhandled rejection in this isolate ("Unhandled error in child worker"),
     // which is fatal for the whole process — one syntax error from a model would
     // take the server down. Compiling the same wrapper here costs nothing and
-    // turns it into a normal failed run.
+    // turns it into a normal failed run. The guest is a module, so it parses in
+    // strict mode: the pre-flight compiles the same IIFE behind a "use strict"
+    // directive, which rejects exactly the programs the worker would reject
+    // (with-statements, octal literals, ... used to slip past a sloppy-goal
+    // wrapper and die in the worker instead).
+    let parseError: string | null = null;
     try {
-      new Function(`return (async () => {\n${code}\n});`);
+      new Function(`"use strict";\n(async () => {\n${code}\n})();`);
     } catch (e) {
-      const msg = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+      parseError = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+    }
+    if (parseError !== null) {
+      // Echo what was actually received (length + head/tail excerpt). A code
+      // string truncated in transit — the MCP client re-sending a recorded tool
+      // call has been observed dropping its first chunk — often fails to parse
+      // with a confusing "Unexpected token '}'"; without the excerpt the caller
+      // cannot tell its own typo from transport corruption, and retrying the
+      // call is the fix for the latter.
+      const excerpt = (s: string) => JSON.stringify(s);
+      const msg =
+        `${parseError} — code as received: ${code.length} chars, starts ${
+          excerpt(code.slice(0, 60))
+        }, ends ${excerpt(code.slice(-60))}; if this is not the code you sent, the string was ` +
+        `corrupted in transit — retry the execute call`;
       await log.recordFinal({ status: "failed", error: msg });
       return { status: "failed", error: msg };
     }

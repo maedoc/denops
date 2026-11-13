@@ -149,6 +149,8 @@ Deno.test("denops.oplog summarises runs and never echoes args or results", async
     assertEquals(run.finalStatus, "completed");
     assertEquals(run.approvals, 1);
     assertEquals(run.errors, 1);
+    // the received code's byte size travels with the run (never its contents)
+    assertEquals(typeof (run as unknown as Record<string, unknown>).codeBytes, "number");
     assertEquals(run.ops.map((o) => o.op), [
       "mail.messages.get",
       "mail.drafts.save",
@@ -189,6 +191,17 @@ Deno.test("summarizeRun survives a truncated log (manifest only)", () => {
   ]) as unknown as Record<string, unknown>;
   assertEquals(summary.finalStatus, null);
   assertEquals(summary.ops, []);
+  assertEquals(summary.codeBytes, 0);
+  const coded = summarizeRun("r2", [
+    {
+      kind: "run",
+      runId: "r2",
+      started: "2026-11-01T00:00:00.000Z",
+      code: "return 1;",
+      connectors: [],
+    },
+  ]) as unknown as Record<string, unknown>;
+  assertEquals(coded.codeBytes, 9); // "return 1;"
 });
 
 Deno.test("denops.logs tails the server log, filtered and redacted", async () => {

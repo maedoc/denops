@@ -125,7 +125,18 @@ Deno.test("sandbox: unparsable guest code fails the run without killing the host
       assertEquals(out.status, "failed", `expected failure for ${JSON.stringify(bad)}`);
       assertStringIncludes(String(out.error), "SyntaxError");
       assert(!String(out.error).includes("blob:"), "no worker/internals in the error");
+      // the error echoes the code as received, so a string truncated in transit
+      // is distinguishable from the caller's own typo
+      assertStringIncludes(String(out.error), `code as received: ${bad.length} chars`);
+      assertStringIncludes(String(out.error), "retry the execute call");
     }
+    // the guest is a module (strict), so the pre-flight — compiled behind
+    // "use strict" — rejects strict-only syntax up front instead of dying in the
+    // worker with an unhandled rejection
+    const strictOnly = await harness.run("t-syntax", "with (Math) { return PI; }", log);
+    assertEquals(strictOnly.status, "failed");
+    assertStringIncludes(String(strictOnly.error), "SyntaxError");
+    assertStringIncludes(String(strictOnly.error), "Strict mode");
     // the harness is still usable afterwards
     const ok = await harness.run("t-syntax", `return await debug.echo({ n: 1 });`, log);
     assertEquals(ok.status, "completed");

@@ -504,7 +504,7 @@ export function githubPort(http: ForgeHttp): ForgePort {
     },
 
     async apiGet(path: string, query?: QueryObject) {
-      return await http.get(path, query);
+      return await http.getAny(path, query);
     },
 
     async apiMutate(
