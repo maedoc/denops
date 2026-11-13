@@ -8,6 +8,18 @@ actually talking to instead of probing behaviour.
 Format: `## <version> — <YYYY-MM-DD>`, newest first, then a short bullet list. Keep bullets about
 the API surface; implementation notes belong in the commit message.
 
+## 0.13.6 — 2026-11-13
+
+- **DCR registrations survive restarts.** Clients issued by `/register` (the authorization_code +
+  PKCE browser flow: ChatGPT, Gemini custom connectors) now persist to `data/oauth-clients.json`;
+  new optional `server.oauth.clientsFile` key overrides the path (default as above when
+  `server.oauth` is enabled). Previously the registry was memory-only, so a server restart left
+  any client caching its `dcr_` id stuck on `unknown client_id; register first or use
+  client_credentials` at `/authorize` — observed with ChatGPT's reconnect flow, 2026-11-13.
+  The store is loaded tolerantly (unshapable entries dropped, newest kept up to the existing
+  200-client cap) and written atomically via rename, best-effort. Authorization codes stay
+  in-memory by design: single-use and minute-lived.
+
 ## 0.13.5 — 2026-11-13
 
 - **`forge.api.get` and `forge.mutate` are content-type aware.** JSON bodies (`application/json`,

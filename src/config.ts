@@ -16,6 +16,11 @@ export interface ServerConfig {
     ttlSec?: number;
     /** Redirect hosts accepted for the pre-registered client id. */
     redirectHosts?: string[];
+    /**
+     * File DCR registrations persist to across restarts (default
+     * data/oauth-clients.json when oauth is enabled).
+     */
+    clientsFile?: string;
   };
   ban?: {
     file?: string;
@@ -90,6 +95,7 @@ export function normalize(parsed: Record<string, unknown>): Config {
           redirectHosts: Array.isArray(o.redirectHosts)
             ? (o.redirectHosts as unknown[]).map((h) => String(h))
             : undefined,
+          clientsFile: o.clientsFile ? String(o.clientsFile) : undefined,
         };
       })(),
       ban: (() => {

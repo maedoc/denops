@@ -300,7 +300,7 @@ export async function buildApp(configPath: string, secretsPath: string): Promise
       skillPath: "SKILL.md",
       // Keep in step with deno.json and the CHANGELOG head; tests/version_test.ts fails
       // when they drift, because denops.version is how a run learns what it is talking to.
-      version: "0.13.5",
+      version: "0.13.6",
       // the supervisor exports the commit it checked out
       // The env-reading child (dev_try) runs with no --allow-env; the commit is
       // informational, so an inaccessible DENOPS_COMMIT is just "unknown" there.
@@ -825,9 +825,13 @@ export function createHttpHandler(
   const publicUrlFor = (req: Request): string =>
     oauth?.publicUrl || `https://${req.headers.get("host") ?? new URL(req.url).host}`;
   const oauthFor = (req: Request): OAuthConfig => ({ ...oauth!, publicUrl: publicUrlFor(req) });
-  // Registered clients and one-time authorization codes live in memory: a
-  // restart just means clients re-register (DCR) or re-run client_credentials.
-  const oauthState = newOAuthState();
+  // DCR clients persist (default data/oauth-clients.json): ChatGPT and friends
+  // cache the dcr_ id they were issued and never re-register, so a memory-only
+  // registry leaves them stranded on "unknown client_id" after a restart.
+  // One-time authorization codes stay in memory — they exist for minutes.
+  const oauthState = oauth
+    ? newOAuthState({ clientsFile: s.oauth?.clientsFile ?? "data/oauth-clients.json" })
+    : newOAuthState();
   console.error(
     oauth
       ? `[denops] oauth: client_credentials enabled (client_id=${oauth.clientId}, secret=bearer token)`

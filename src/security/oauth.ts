@@ -67,10 +67,76 @@ export interface OAuthState {
   clients: Map<string, RegisteredClient>;
   codes: Map<string, AuthCode>;
   now: () => number;
+  /**
+   * Optional path DCR clients persist to across restarts. Without it the
+   * registry is memory-only — fine for clients that re-register, but ChatGPT
+   * and friends cache the dcr_ id they were issued and never re-register, so
+   * a restart strands them until this is set.
+   */
+  clientsFile?: string;
 }
 
-export function newOAuthState(now: () => number = () => Date.now()): OAuthState {
-  return { clients: new Map(), codes: new Map(), now };
+export function newOAuthState(
+  opts: { now?: () => number; clientsFile?: string } = {},
+): OAuthState {
+  const state: OAuthState = {
+    clients: new Map(),
+    codes: new Map(),
+    now: opts.now ?? (() => Date.now()),
+  };
+  if (opts.clientsFile) {
+    state.clientsFile = opts.clientsFile;
+    const loaded = loadClientsFile(opts.clientsFile);
+    for (const c of loaded) state.clients.set(c.clientId, c);
+  }
+  return state;
+}
+
+function loadClientsFile(path: string): RegisteredClient[] {
+  let clients: unknown;
+  try {
+    clients = JSON.parse(Deno.readTextFileSync(path));
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(clients)) return [];
+  const out: RegisteredClient[] = [];
+  for (const raw of clients) {
+    const c = raw as Partial<RegisteredClient>;
+    if (
+      typeof c.clientId !== "string" || !c.clientId.startsWith("dcr_") ||
+      typeof c.name !== "string" ||
+      !Array.isArray(c.redirectUris) || !c.redirectUris.every((u) => typeof u === "string") ||
+      typeof c.createdAt !== "number"
+    ) continue;
+    out.push({
+      clientId: c.clientId,
+      name: c.name,
+      redirectUris: c.redirectUris,
+      createdAt: c.createdAt,
+    });
+  }
+  // Newest last, so an oversized file keeps the most recent registrations.
+  out.sort((a, b) => a.createdAt - b.createdAt);
+  while (out.length > MAX_CLIENTS) out.shift();
+  return out;
+}
+
+function persistClients(state: OAuthState): void {
+  if (!state.clientsFile) return;
+  const clients = [...state.clients.values()].sort((a, b) => a.createdAt - b.createdAt);
+  const tmp = `${state.clientsFile}.tmp`;
+  try {
+    Deno.writeTextFileSync(tmp, JSON.stringify(clients, null, 2) + "\n");
+    Deno.renameSync(tmp, state.clientsFile);
+  } catch {
+    // Persistence is best-effort: a full data dir must not break DCR.
+    try {
+      Deno.removeSync(tmp);
+    } catch {
+      // ignore
+    }
+  }
 }
 
 // ---------------------------------------------------------------- metadata
@@ -247,7 +313,7 @@ export function registerClient(
     return oauthError(
       429,
       "temporarily_unavailable",
-      "too many registered clients; restart to reset",
+      "too many registered clients",
     );
   }
   const clientId = randomId("dcr_");
@@ -258,6 +324,7 @@ export function registerClient(
     redirectUris: uris as string[],
     createdAt: state.now(),
   });
+  persistClients(state);
   return new Response(
     JSON.stringify({
       client_id: clientId,

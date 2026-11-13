@@ -420,7 +420,7 @@ Deno.test("oauth: full authorization_code + PKCE flow issues a working token", a
 
 Deno.test("oauth: an expired code is rejected", async () => {
   let clock = 1_000_000;
-  const state = newOAuthState(() => clock);
+  const state = newOAuthState({ now: () => clock });
   const registered = await handleOAuthRoute(
     new Request("https://mcp.example.com/register", { method: "POST" }),
     new URL("https://mcp.example.com/register"),
@@ -590,4 +590,56 @@ Deno.test("oauth: token endpoint rejects oversized bodies", async () => {
     info,
   );
   assertEquals(res.status, 413);
+});
+
+// ------------------------------------------------------------------ client persistence
+
+Deno.test("oauth: DCR clients survive a restart via clientsFile", async () => {
+  const dir = await Deno.makeTempDir();
+  const file = `${dir}/oauth-clients.json`;
+  const first = newOAuthState({ clientsFile: file });
+  const registered = await handleOAuthRoute(
+    new Request("https://mcp.example.com/register", { method: "POST" }),
+    new URL("https://mcp.example.com/register"),
+    JSON.stringify({ redirect_uris: ["https://chatgpt.com/cb"], client_name: "chatgpt" }),
+    cfg,
+    first,
+  );
+  assertEquals(registered!.status, 201);
+  const { client_id: clientId } = await registered!.json() as { client_id: string };
+  assert(clientId.startsWith("dcr_"));
+
+  // A fresh state (a restart) must serve the consent page for the cached
+  // dcr_ id — not "unknown client_id; register first or use client_credentials".
+  const second = newOAuthState({ clientsFile: file });
+  const url = new URL("https://mcp.example.com/authorize");
+  for (
+    const [k, v] of Object.entries({
+      response_type: "code",
+      client_id: clientId,
+      redirect_uri: "https://chatgpt.com/cb",
+      state: "xyz",
+      code_challenge: await challengeFor(VERIFIER),
+      code_challenge_method: "S256",
+    })
+  ) url.searchParams.set(k, v);
+  const consent = await handleOAuthRoute(
+    new Request(url),
+    url,
+    "",
+    cfg,
+    second,
+  );
+  assertEquals(consent!.status, 200);
+  assertStringIncludes(await consent!.text(), "Authorize");
+});
+
+Deno.test("oauth: a corrupt clientsFile starts empty instead of throwing", () => {
+  const dir = Deno.makeTempDirSync();
+  const file = `${dir}/oauth-clients.json`;
+  Deno.writeTextFileSync(file, "{not json");
+  const state = newOAuthState({ clientsFile: file });
+  assertEquals(state.clients.size, 0);
+  assertEquals(state.clientsFile, file);
+  Deno.removeSync(dir, { recursive: true });
 });
