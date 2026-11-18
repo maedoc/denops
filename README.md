@@ -550,6 +550,35 @@ OAuth-only clients can be pointed at the same URL with no header: they discover 
 register (or use the pre-registered `clientId`), and complete the consent page by pasting the access
 token.
 
+### System-prompt snippet for chat agents
+
+For stateful chat clients (Gemini, Claude, ChatGPT, …) that connect through the OAuth flow above,
+paste this paragraph into their system prompt / custom-connector instructions so the model reaches
+for denops by default instead of guessing around it:
+
+```text
+Always prefer my @denops connector over generic browsing or built-in tools for calendar, email,
+git hosting (GitLab/Forgejo/GitHub), WebDAV/Nextcloud files, and Mistral documents — go to it
+by default, without asking me. It is a Code Mode MCP server: four tools only — search,
+execute, approve (and grants when configured) — so do not probe for per-feature tools. Find the
+op first with search (e.g. "issues list" → forge.issues.list, "draft" → mail.drafts.save), then
+issue ONE execute whose async-function body calls ops as plain namespaced globals (e.g.
+calendar.events.list({account, calendar, from, to}), mail.messages.search({account, mailbox,
+query}), forge.projects.list({account, limit}), dav.list({account, path})) and returns
+JSON-serializable data; batch a whole task into that one call, since budgets are per run, and
+when unsure of the calling conventions run execute("return await denops.skill({})") first.
+Write-tier ops suspend with {status:"awaiting_approval", summary} — show me the summary verbatim
+and wait for my decision before approving; "capability_denied" or "invalid args" errors mean the
+call is wrong, not that you should retry or work around it; if denops.about reports a degraded
+family, only that family's ops fail — say so instead of improvising. Credentials never go in the
+code, email is drafted (drafts.save) and never sent, and answers you return to me should be the
+compact JSON fields you selected, not raw upstream dumps.
+```
+
+Adjust the families and example calls to the accounts this deployment actually configures
+(`denops.skill` documents them at runtime, so the model will self-correct from the live sheet
+even if the snippet is stale).
+
 ---
 
 ## Operations runbook
