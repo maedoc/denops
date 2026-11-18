@@ -81,7 +81,9 @@ and `messages.move` (approval). No SMTP. `messages.get` splits headers from body
 `messageId`, `inReplyTo`, `references[]`, `contentType`, `headers`), so threading is inspectable
 without the raw source. `drafts.save({account, body, replyTo:{mailbox,uid}, …})` writes a **threaded
 reply** — `Message-ID`/`In-Reply-To`/`References`/`Date`, `Re: <subject>`, quoted parent, APPEND
-with `\Draft`; never compose those headers yourself.
+with `\Draft`; never compose those headers yourself. Optional `from` sets the draft's From:
+allow-listed to the account's own address (default) or a config `aliases` entry — anything else is
+an invalid-args error, and unknown arg names are errors too (not silently dropped).
 
 **mistral** (17 ops) — libraries and documents, metadata first: `libraries.list` → `documents.list`
 (rows carry `size`, `mime_type`, `process_status`) → then `documents.read` for small text (inline,

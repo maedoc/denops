@@ -8,6 +8,18 @@ actually talking to instead of probing behaviour.
 Format: `## <version> — <YYYY-MM-DD>`, newest first, then a short bullet list. Keep bullets about
 the API surface; implementation notes belong in the commit message.
 
+## 0.13.10 — 2026-11-18
+
+- **`mail.drafts.save` takes an optional `from`**: the draft's From is no longer pinned to the
+  account's IMAP login. The address must be the account's own address (still the default) or an
+  entry of the account's new config key `connectors.imap.accounts[].aliases` — anything else is a
+  clean invalid-args error before anything is appended. `aliases` is host-side config (plain
+  email addresses, not free-form text); comparisons are trimmed and case-insensitive, and no
+  other op or account identity is affected. The returned shape is unchanged.
+- **Unknown argument names on `mail.drafts.save` are now errors** (`unknown arg 'x'; allowed: …`)
+  instead of being silently dropped — previously a `from` typo was the silent bug this release
+  fixes; the key-count cap from `rejectUnknown` is unchanged.
+
 ## 0.13.9 — 2026-11-18
 
 - **The promotion gate is now `deno task gate`** (fmt --check + lint + check + test, the task

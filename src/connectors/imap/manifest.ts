@@ -10,8 +10,20 @@ import {
   str,
 } from "../../harness/args.ts";
 import type { Connector, HostContext, JsonValue } from "../../harness/types.ts";
-import { type ImapAccountConfig, ImapHost } from "./client.ts";
+import { draftFromAllowlist, type ImapAccountConfig, ImapHost } from "./client.ts";
 import { checkShapeArgs, wrapClient } from "../shape.ts";
+
+// drafts.save's accepted keys: unknown names are a caller bug worth an error, not
+// noise to drop. Its count is still capped by rejectUnknown's default.
+const DRAFTS_SAVE_KEYS = new Set([
+  "account",
+  "subject",
+  "to",
+  "body",
+  "from",
+  "replyTo",
+  "includeQuote",
+]);
 
 export interface ImapConnectorDeps {
   accounts: ImapAccountConfig[];
@@ -20,6 +32,8 @@ export interface ImapConnectorDeps {
 export function imapConnector(deps: ImapConnectorDeps): Connector {
   const host = new ImapHost(deps.accounts);
   const acc = str("account");
+  // Per-account From allowlists for drafts.save: the account identity plus `aliases`.
+  const fromAllow = new Map(deps.accounts.map((a) => [a.id, draftFromAllowlist(a)]));
 
   const client = (ctx: HostContext) => {
     const wrap = <A extends JsonValue>(
@@ -92,6 +106,7 @@ export function imapConnector(deps: ImapConnectorDeps): Connector {
           subject?: string;
           to?: string[];
           body: string;
+          from?: string;
           replyTo?: { mailbox: string; uid: number };
           includeQuote?: boolean;
         };
@@ -99,6 +114,7 @@ export function imapConnector(deps: ImapConnectorDeps): Connector {
           ...(r.subject === undefined ? {} : { subject: r.subject }),
           ...(r.to === undefined ? {} : { to: r.to }),
           body: r.body,
+          ...(r.from === undefined ? {} : { from: r.from }),
           ...(r.replyTo === undefined ? {} : { replyTo: r.replyTo }),
           ...(r.includeQuote === undefined ? {} : { includeQuote: r.includeQuote }),
         });
@@ -219,13 +235,35 @@ export function imapConnector(deps: ImapConnectorDeps): Connector {
         tier: "open",
         doc:
           "Save a draft (APPEND to the account's Drafts folder, flagged \\Draft so OWA/Outlook treat it as a draft). Deliberately open: there is no send op in v1. " +
-          "args: { account, body, subject?, to?: string[], replyTo?: { mailbox, uid }, includeQuote? }. " +
+          "args: { account, body, subject?, to?: string[], from?, replyTo?: { mailbox, uid }, includeQuote? }. " +
+          "`from` is allow-listed: the account's own address (the default) or one of the account's configured `aliases`; anything else is an invalid-args error, not a silently-ignored field. " +
           "With `replyTo` the server reads the parent and owns the threading: In-Reply-To = parent Message-ID, References = parent's chain + its Message-ID, " +
           "Subject defaults to a non-doubled \"Re: …\", To defaults to the parent's From, and the parent's text is quoted (includeQuote, default true). Every draft gets a fresh Message-ID. " +
           "Returns { saved, mailbox, uid, messageId, inReplyTo, references, subject, to, quoted, quoteSkipped? }: `mailbox` is the resolved folder — nothing is taken raw from the caller.",
         argSchema: compose(
           rejectUnknown(),
+          // names, not just the count: a typo'd key is a caller bug, not noise to drop
+          (a) => {
+            for (const k of Object.keys(a as Record<string, unknown>)) {
+              if (!DRAFTS_SAVE_KEYS.has(k)) {
+                return `unknown arg '${k}'; allowed: ${[...DRAFTS_SAVE_KEYS].join(", ")}`;
+              }
+            }
+            return null;
+          },
           acc,
+          (a) => {
+            const r = a as { account?: unknown; from?: unknown };
+            if (r.from === undefined) return null;
+            if (typeof r.from !== "string" || !r.from.includes("@")) {
+              return "from: expected an email address";
+            }
+            const allow = fromAllow.get(String(r.account));
+            if (allow && !allow.includes(r.from.trim().toLowerCase())) {
+              return `from: '${r.from}' is not the account's own address or one of its configured aliases`;
+            }
+            return null;
+          },
           optStr("subject", 998),
           optArr(
             "to",

@@ -26,8 +26,25 @@ export interface ImapAccountConfig {
   draftsMailbox: string;
   /** Domain for Message-IDs we mint; defaults to the domain of `user`. */
   messageIdDomain?: string;
+  /**
+   * Email addresses allowed as a draft's From in addition to the account's own
+   * address (e.g. a personal address the university account may send as). Empty
+   * by default: `from` then only ever matches the account identity.
+   */
+  aliases?: string[];
   /** Socket inactivity timeout; imapflow's default is 300000 (5 min). */
   socketTimeoutMs?: number;
+}
+
+/**
+ * The addresses a draft's From may carry for this account: the account's own
+ * identity first (it is also the default From), then the operator-configured
+ * `aliases`. Everything trimmed and lowercased: comparisons must not silently
+ * diverge on casing, but the caller's own spelling is what lands in the header.
+ */
+export function draftFromAllowlist(cfg: ImapAccountConfig): string[] {
+  const self = cfg.user.includes("@") ? cfg.user : `${cfg.user}@${cfg.messageIdDomain ?? cfg.host}`;
+  return [self, ...(cfg.aliases ?? [])].map((s) => s.trim().toLowerCase());
 }
 
 interface Queue {
@@ -330,6 +347,8 @@ export class ImapAccountClient {
     subject?: string;
     to?: string[];
     body: string;
+    /** Draft's From: must be the account's own address or one of its `aliases`. */
+    from?: string;
     /** Parent message on the same account: the draft becomes a threaded reply. */
     replyTo?: { mailbox: string; uid: number };
     /** Append the parent's text as a quoted block (default true when replyTo is set). */
@@ -370,10 +389,17 @@ export class ImapAccountClient {
 
     const messageId = newMessageId(this.messageIdDomain());
     const references = parsed ? referencesChain(parsed) : [];
+    // From is allow-listed, not caller-chosen freely: the account's identity is the
+    // default, and `aliases` in config adds the identities the operator trusts.
+    const allow = draftFromAllowlist(this.cfg);
+    if (opts.from !== undefined && !allow.includes(opts.from.trim().toLowerCase())) {
+      throw new Error(
+        `drafts.save: 'from' must be the account's own address or one of its configured aliases`,
+      );
+    }
+    const from = opts.from?.trim() ?? allow[0];
     const raw = composeDraft({
-      from: this.cfg.user.includes("@")
-        ? this.cfg.user
-        : `${this.cfg.user}@${this.messageIdDomain()}`,
+      from,
       to,
       subject,
       date: new Date(),

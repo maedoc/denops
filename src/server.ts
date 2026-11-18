@@ -295,7 +295,7 @@ export async function buildApp(configPath: string, secretsPath: string): Promise
       skillPath: "SKILL.md",
       // Keep in step with deno.json and the CHANGELOG head; tests/version_test.ts fails
       // when they drift, because denops.version is how a run learns what it is talking to.
-      version: "0.13.9",
+      version: "0.13.10",
       // the supervisor exports the commit it checked out
       // The commit is informational, so an inaccessible DENOPS_COMMIT ("unknown"
       // outside a supervisor run) is not an error.
@@ -344,6 +344,7 @@ export async function buildApp(configPath: string, secretsPath: string): Promise
       ),
       draftsMailbox: String(a.draftsMailbox ?? "auto"),
       ...(a.messageIdDomain === undefined ? {} : { messageIdDomain: String(a.messageIdDomain) }),
+      ...(Array.isArray(a.aliases) ? { aliases: (a.aliases as unknown[]).map(String) } : {}),
       ...(a.socketTimeoutMs === undefined ? {} : { socketTimeoutMs: Number(a.socketTimeoutMs) }),
     }));
     if (accounts.length === 0) throw new Error("imap enabled but no accounts configured");
