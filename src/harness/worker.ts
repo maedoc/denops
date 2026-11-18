@@ -25,34 +25,6 @@ export function summarizeOp(op: string, args: JsonValue): string {
       return `Move ${Array.isArray(a.uids) ? a.uids.length : 1} message(s) from ${
         brief(a.account)
       }/${brief(a.mailbox)} to ${brief(a.toAccount ?? a.account)}/${brief(a.toMailbox)}`;
-    case "gitlab.issues.create":
-      return `Create issue in project ${brief(a.projectId)}: "${brief(a.title, 200)}"`;
-    case "gitlab.issues.update":
-      return `Update issue #${a.issueIid} in project ${brief(a.projectId)}${
-        a.state ? ` → state=${a.state}` : ""
-      }${a.title ? ` title="${brief(a.title, 120)}"` : ""}`;
-    case "gitlab.issues.notes.create":
-      return `Comment on issue #${a.issueIid} in project ${brief(a.projectId)}: "${
-        brief(a.body, 200)
-      }"`;
-    case "gitlab.mergeRequests.create":
-      return `Create MR in project ${brief(a.projectId)}: ${brief(a.sourceBranch)} → ${
-        brief(a.targetBranch)
-      } "${brief(a.title, 200)}"`;
-    case "gitlab.mergeRequests.comment":
-      return `Comment on MR !${a.mrIid} in project ${brief(a.projectId)}: "${brief(a.body, 200)}"`;
-    case "gitlab.repository.files.create":
-      return `Commit file ${brief(a.filePath, 200)} on branch ${brief(a.branch)} in project ${
-        brief(a.projectId)
-      } (${typeof a.content === "string" ? (a.content as string).length : 0} bytes): "${
-        brief(a.commitMessage, 200)
-      }"`;
-    case "gitlab.projects.update":
-      return `Update project ${brief(a.id)}: ${
-        Object.entries(a).filter(([k]) => k !== "id").map(([k, v]) => `${k}=${brief(v, 100)}`).join(
-          ", ",
-        )
-      }`;
     case "mistral.libraries.delete":
       return `Delete Mistral library ${brief(a.id)}`;
     case "mistral.documents.delete":

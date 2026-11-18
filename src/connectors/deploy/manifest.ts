@@ -284,7 +284,7 @@ export function deployConfigFrom(
   if (!liveDir) throw new Error("connectors.deploy.liveDir is required");
   const testArgv = Array.isArray(raw.testArgv) && raw.testArgv.every((a) => typeof a === "string")
     ? (raw.testArgv as string[])
-    : ["deno", "task", "test"];
+    : ["deno", "task", "gate"];
   return {
     liveDir,
     testArgv,

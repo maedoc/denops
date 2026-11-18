@@ -8,6 +8,21 @@ actually talking to instead of probing behaviour.
 Format: `## <version> — <YYYY-MM-DD>`, newest first, then a short bullet list. Keep bullets about
 the API surface; implementation notes belong in the commit message.
 
+## 0.13.9 — 2026-11-18
+
+- **The promotion gate is now `deno task gate`** (fmt --check + lint + check + test, the task
+  added to `deno.json`), and `connectors.deploy.testArgv` **defaults to `[deno, task, gate]`** —
+  until 0.13.8 the promote op only ran `deno task test`, while the documented gate also promised
+  fmt and lint (which is how a red lint shipped in 0.13.7). A deployment that still pins
+  `testArgv` to `[deno, task, test]` in config.yaml keeps the old narrower gate until the pin is
+  edited host-side — the default only applies when the key is absent.
+- Dead code from the 0.13.7 `dev` removal: `scripts/dev_try.ts` (unreferenced since the `dev`
+  connector went away), the `dev`/roots branches and the `noEnv`/`envAllow`/`sysAllow` options in
+  `permissions.ts` (written for `dev.try`'s pinned child, no caller since), and `summarizeOp`'s
+  `gitlab.*` cases (the family has been `forge` since 0.8.0; ops with their own `summarize` always
+  took precedence). No op, argument, return shape, tier or permission the served surface exposes
+  has changed: the launcher's envelope emits byte-identical flags.
+
 ## 0.13.8 — 2026-11-18
 
 - **Startup validation can no longer hang the boot.** Every startup probe now carries a

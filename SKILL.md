@@ -141,7 +141,7 @@ are reachable; private/loopback/link-local addresses are refused (SSRF guard) an
 re-validated. A refused host is a config question for the operator, not something to work around.
 
 **deploy** (3 ops) — ship this server's own code. Development happens on the laptop, never on the
-server: edit there, run the gate (`deno task check && deno task test`), push `origin main`. Then
+server: edit there, run the gate (`deno task gate`), push `origin main`. Then
 `deploy.status` (open: live commit, desired, last-good, origin/main, pending commits,
 restart-pending), `deploy.promote` (approval: fetches origin/main, refuses a non-fast-forward,
 runs the test suite in a throwaway worktree under the service's data dir, records intent),

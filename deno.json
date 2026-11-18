@@ -1,10 +1,11 @@
 {
   "name": "denops",
-  "version": "0.13.8",
+  "version": "0.13.9",
   "tasks": {
     "start": "deno run --unstable-worker-options --allow-read=config.yaml,secrets.json --allow-run=deno scripts/start.ts",
     "test": "DENOPS_ALLOW_MOCK_ORIGIN=1 deno test --unstable-worker-options --allow-all tests/",
     "check": "deno check src/server.ts tests/",
+    "gate": "deno fmt --check src/ tests/ scripts/ && deno lint && deno task check && deno task test",
     "fmt": "deno fmt",
     "lint": "deno lint",
     "pending": "deno run --unstable-worker-options --allow-all scripts/pending.ts",

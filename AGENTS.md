@@ -33,7 +33,7 @@ can observe: an op, an argument, a return shape, a tier, an error contract, the 
 ## Before promoting
 
 ```bash
-deno task check && deno task test    # tests/skill_test.ts is part of this
+deno task gate    # fmt --check + lint + check + test; tests/skill_test.ts is part of this
 ```
 
 Then commit to `main`, `git push origin main`, and `deploy.promote` (a human approves; the op
@@ -52,8 +52,8 @@ pending.
   a failure reverts to the last good commit.
 
 There is no dev checkout and no agent-writable code on the server: **the dev machine is the
-laptop** (this checkout on `main`). Edit here, run the gate (`deno fmt --check src/ tests/ && deno
-lint && deno task check && deno task test`), commit to `main`, `git push origin main`, then promote
+laptop** (this checkout on `main`). Edit here, run the gate (`deno task gate`), commit to `main`,
+`git push origin main`, then promote
 via MCP. Production code reaches the server only through `deploy.promote`, which fetches
 `origin/main` — a pull in `~/denops` bypasses the gate, so never do it.
 
@@ -75,9 +75,9 @@ in this repo — read the open issues before re-deriving environment facts:
   made (so they are not re-litigated).
 
 `deploy.promote` is approval-tier on purpose: a human clicks. If their client is not in the loop,
-the operator path is `ops:` issue !10 — gate on the host, commit on `agent/dev`, then write
-`desired-commit` + `restart-request` **and the `promote-test`/`promote` audit lines**. Do not
-improvise it, and do not self-approve the op.
+the operator path is `ops:` issue !10 — gate on the host (fetch `origin/main`, fast-forward check,
+`deno task gate` in a throwaway worktree), then write `desired-commit` + `restart-request` **and
+the `promote-test`/`promote` audit lines**. Do not improvise it, and do not self-approve the op.
 
 ## Conventions
 

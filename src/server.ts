@@ -295,10 +295,10 @@ export async function buildApp(configPath: string, secretsPath: string): Promise
       skillPath: "SKILL.md",
       // Keep in step with deno.json and the CHANGELOG head; tests/version_test.ts fails
       // when they drift, because denops.version is how a run learns what it is talking to.
-      version: "0.13.8",
+      version: "0.13.9",
       // the supervisor exports the commit it checked out
-      // The env-reading child (dev_try) runs with no --allow-env; the commit is
-      // informational, so an inaccessible DENOPS_COMMIT is just "unknown" there.
+      // The commit is informational, so an inaccessible DENOPS_COMMIT ("unknown"
+      // outside a supervisor run) is not an error.
       commit: (() => {
         try {
           return Deno.env.get("DENOPS_COMMIT") ?? undefined;

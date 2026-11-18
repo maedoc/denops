@@ -251,20 +251,9 @@ Deno.test("replay after restart: log-driven resume serves prior ops and runs app
 });
 
 Deno.test("summarizeOp produces human-readable approval text", () => {
-  assertEquals(
-    summarizeOp("gitlab.issues.create", { projectId: "42", title: "Fix login bug" }),
-    'Create issue in project 42: "Fix login bug"',
-  );
-  assertEquals(
-    summarizeOp("gitlab.repository.files.create", {
-      projectId: "g/p",
-      filePath: "src/a.ts",
-      branch: "main",
-      content: "x".repeat(500),
-      commitMessage: "add a",
-    }),
-    'Commit file src/a.ts on branch main in project g/p (500 bytes): "add a"',
-  );
+  // forge ops carry their own manifest summarize() (which names account, flavor, host and
+  // repo); summarizeOp only fronts the ops that predate that convention and the
+  // name-dump fallback. The gitlab.* cases were dead since the family became forge.
   assertEquals(
     summarizeOp("mistral.libraries.share", {
       id: "lib-1",
@@ -277,6 +266,15 @@ Deno.test("summarizeOp produces human-readable approval text", () => {
   assertEquals(
     summarizeOp("mail.messages.raw", { account: "work", mailbox: "INBOX", uid: 123 }),
     "Fetch full raw source of message uid 123 in INBOX (account work)",
+  );
+  assertEquals(
+    summarizeOp("mail.messages.move", {
+      account: "work",
+      mailbox: "INBOX",
+      uids: [1, 2],
+      toMailbox: "Archive",
+    }),
+    "Move 2 message(s) from work/INBOX to work/Archive",
   );
   assertStringIncludes(summarizeOp("debug.gated", { reason: "x" }), "debug.gated");
 });
