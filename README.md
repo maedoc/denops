@@ -6,11 +6,11 @@ Mode** pattern: instead of enumerating every API operation as an MCP tool, the s
 writes JavaScript that runs in a sandboxed worker against pre-authenticated, host-side API clients.
 
 It ships with connectors for code hosts (GitLab, Forgejo, GitHub — one `forge` family, same op
-names), IMAP mail (threaded reply drafts included), WebDAV/Nextcloud files (`dav`), CalDAV
-calendars, Mistral libraries, the local filesystem, a guarded `web.fetch`, and — for this deployment
-— a narrow "dev/deploy" surface that lets an agent improve the server's own code without a shell,
-with an approval-gated, auto-reverting deployment pipeline. `CHANGELOG.md` records what each running
-version can do; `denops.version` serves it from inside a run.
+names), IMAP mail (threaded reply drafts included), WebDAV/Nextcloud files (`dav`), CalDAV calendars,
+Mistral libraries, the local filesystem, a guarded `web.fetch`, and — for this deployment — a narrow
+"dev/deploy" surface that lets an agent improve the server's own code without a shell, with an
+approval-gated, auto-reverting deployment pipeline. `CHANGELOG.md` records what each running version can do;
+`denops.version` serves it from inside a run.
 
 ---
 
@@ -233,9 +233,9 @@ commit as any observable change (ops, args, return shapes, tiers, error contract
 `debug.echo`, `debug.boom`, `debug.gated` (approval-tier: exercises the approval round trip). The
 module is kept because the harness/approval tests drive it directly, but
 **`connectors.debug.enabled` is `false` in the shipped config**: a family whose stated purpose is
-testing does not belong in the permanent registry of a production server. Enable it in a dev config
-when you want the plumbing probes (and remember to update `SKILL.md` — the drift test only knows
-what a config registers).
+testing does not belong in the permanent registry of a production server. Enable it in a dev
+config when you want the plumbing probes (and remember to update `SKILL.md` — the drift test only
+knows what a config registers).
 
 ### forge (27 ops) — read + write, one family over three flavors
 
@@ -243,20 +243,20 @@ what a config registers).
 takes `account`, so the same call works against GitLab, Forgejo and GitHub. Normalized vocabulary:
 `pulls` are merge requests on GitLab, `orgs` are groups.
 
-| group       | ops                                                                                                                                                |
-| ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| projects    | `projects.list`, `projects.get`, `projects.search`                                                                                                 |
-| issues      | `issues.list`, `issues.get`, `issues.notes.list`, `issues.create` _(approval)_, `issues.update` _(approval)_, `issues.notes.create` _(approval)_   |
-| PRs         | `pulls.list`, `pulls.get`, `pulls.changes.get`, `pulls.create` _(approval)_, `pulls.comment` _(approval)_, `pulls.merge` _(approval)_              |
-| repo        | `repository.files.get`, `repository.files.create` _(approval)_, `repository.tree.list`, `repository.commits.list`, `repository.branches.list`      |
-| people/orgs | `users.current`, `users.get` (exact username), `users.search` (fuzzy), `orgs.list`                                                                 |
-| generic     | `api.get({account, path, query?})` (open, any GET under that account's pinned root), `mutate({account, method, path, query?, body?})` _(approval)_ |
+| group         | ops                                                                                                                                                                            |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| projects      | `projects.list`, `projects.get`, `projects.search`                                                                                                                             |
+| issues        | `issues.list`, `issues.get`, `issues.notes.list`, `issues.create` _(approval)_, `issues.update` _(approval)_, `issues.notes.create` _(approval)_                               |
+| PRs           | `pulls.list`, `pulls.get`, `pulls.changes.get`, `pulls.create` _(approval)_, `pulls.comment` _(approval)_, `pulls.merge` _(approval)_                                          |
+| repo          | `repository.files.get`, `repository.files.create` _(approval)_, `repository.tree.list`, `repository.commits.list`, `repository.branches.list`                                  |
+| people/orgs   | `users.current`, `users.get` (exact username), `users.search` (fuzzy), `orgs.list`                                                                                             |
+| generic       | `api.get({account, path, query?})` (open, any GET under that account's pinned root), `mutate({account, method, path, query?, body?})` _(approval)_                             |
 
 Generic ops resolve against the account's pinned origin and API root (no scheme/host/`..`/`//`/
 whitespace), validate `query`/`body`, and refuse credential-bearing reads (`variables`, `*_tokens`,
 `secure_files`, `identities`, …). Flavor differences that matter are normalized in the adapters
-rather than exposed: `tree.list` at the repository root asks GitHub for `/contents` (its edge 503s
-on `/contents/`), and a missing `ref` resolves to the default branch on all three.
+rather than exposed: `tree.list` at the repository root asks GitHub for `/contents` (its edge 503s on
+`/contents/`), and a missing `ref` resolves to the default branch on all three.
 
 ### mail (10 ops) — IMAP, read-only plus drafts
 
@@ -344,8 +344,8 @@ ops are VEVENT-only and refuse a VTODO calendar rather than report it empty),
 calendar can serialise to over 1 MB and the server expands recurrence), `calendar.events.get` (by
 uid), `calendar.events.search` (substring, client-side — CalDAV text-match support varies too much).
 
-Writes are approval-tier: `calendar.events.create` (sends `If-None-Match: *`, so an existing UID is
-a conflict), and `calendar.events.update` / `calendar.events.delete`, both of which need the current
+Writes are approval-tier: `calendar.events.create` (sends `If-None-Match: *`, so an existing UID is a
+conflict), and `calendar.events.update` / `calendar.events.delete`, both of which need the current
 `etag` (a stale one is a 412, never a lost change). Updates are read-modify-write, so `VALARM`,
 `VTIMEZONE` and vendor properties survive. `reminders: [{ minutesBefore, description? }]` becomes a
 DISPLAY `VALARM`.
@@ -353,8 +353,7 @@ DISPLAY `VALARM`.
 **`ATTENDEE`/`ORGANIZER` and `EMAIL` alarms are refused** in `argSchema`: iCloud advertises
 calendar-auto-schedule, so a write carrying attendees can email real people. Discovery PROPFINDs the
 account origin and follows `current-user-principal` → `calendar-home-set`; iCloud's per-partition
-`pNN-caldav.icloud.com` host is granted automatically. A Nextcloud account needs its
-`/remote.php/
+`pNN-caldav.icloud.com` host is granted automatically. A Nextcloud account needs its `/remote.php/
 dav/` root, because Nextcloud answers PROPFIND on `/` with 405.
 
 ### dav (21 ops) — WebDAV / Nextcloud files, shaped for a model with a byte budget
@@ -365,32 +364,32 @@ round-trip. Root and credentials live in config, never in an argument — that i
 structural rather than filtered (`src/connectors/dav/paths.ts` splits the path, refuses `..`,
 absolute, backslash and control characters, and percent-encodes each segment on its own).
 
-| group     | ops                                                                                                                                                  |
-| --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| read      | `list` (depth 1; `offset`/`nextOffset` page it, `sort`, `kind`, `exclude` globs), `stat` (the etag writes need), `find` (bounded parallel name walk) |
-| read      | `get` (`maxBytes` + `offset` → Range windows), `grep` (literal content search over a bounded walk), `quota`                                          |
-| staging   | `stage` (any file → host staging root, sha256 + the `fsRoot`/`path` `fs.read` wants), `staging.clear`                                                |
-| write \*  | `edit` (read-modify-write in one call), `put`, `putStaged` (binary up), `mkdir`, `move`, `copy`, `delete`                                            |
-| nextcloud | `trash.list`/`restore`/`purge`, `versions.list`/`restore` — only for accounts marked `nextcloud: true`                                               |
+| group    | ops                                                                                                                                                    |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| read     | `list` (depth 1; `offset`/`nextOffset` page it, `sort`, `kind`, `exclude` globs), `stat` (the etag writes need), `find` (bounded parallel name walk)     |
+| read     | `get` (`maxBytes` + `offset` → Range windows), `grep` (literal content search over a bounded walk), `quota`                                             |
+| staging  | `stage` (any file → host staging root, sha256 + the `fsRoot`/`path` `fs.read` wants), `staging.clear`                                                  |
+| write \* | `edit` (read-modify-write in one call), `put`, `putStaged` (binary up), `mkdir`, `move`, `copy`, `delete`                                               |
+| nextcloud | `trash.list`/`restore`/`purge`, `versions.list`/`restore` — only for accounts marked `nextcloud: true`                                                  |
 
-`*` approval-tier. **Create-only by default**: `put`/`putStaged` send `If-None-Match: *` unless
-given `overwrite: true` or the `ifMatch` etag from `stat`/`get`; `move`/`copy` send `Overwrite: F`;
-`delete` needs `recursive: true` for a directory and is never covered by a grant. `dav.edit` writes
-with the etag of the read it just made, so a concurrent change is a 412 rather than a lost update.
+`*` approval-tier. **Create-only by default**: `put`/`putStaged` send `If-None-Match: *` unless given
+`overwrite: true` or the `ifMatch` etag from `stat`/`get`; `move`/`copy` send `Overwrite: F`; `delete`
+needs `recursive: true` for a directory and is never covered by a grant. `dav.edit` writes with the
+etag of the read it just made, so a concurrent change is a 412 rather than a lost update.
 
 ```yaml
 connectors:
   dav:
     enabled: true
-    stagingRoot: /home/freebox/denops-stage/dav # inside a configured fs root
+    stagingRoot: /home/freebox/denops-stage/dav   # inside a configured fs root
     accounts:
       - id: work
         origin: https://cloud.example.org
         shareRoot: /remote.php/dav/files/alice
         user: alice
-        auth: basic # basic = app password; bearer = token
-        writable: false # false ⇒ every mutating op is refused before approval
-        nextcloud: true # adds the trashbin + versions trees (Nextcloud only)
+        auth: basic            # basic = app password; bearer = token
+        writable: false        # false ⇒ every mutating op is refused before approval
+        nextcloud: true        # adds the trashbin + versions trees (Nextcloud only)
         # password lives in secrets.json as dav.work.password
 ```
 
@@ -408,9 +407,9 @@ text is flagged (`encodingIssue`) instead of being silently mangled, and `edit` 
 ### fs (10 ops) — local filesystem, root-allowlisted
 
 Read/write/glob/exec against **named, allowlisted root directories**. The model addresses roots by
-name (`root: "denops-stage"`), never by absolute path; every path is resolved with symlink
-resolution and rejected if it escapes the root (`..`, absolute paths, symlink escapes — a
-`secrets.json` symlink inside a root is refused).
+name (`root: "denops-stage"`), never by absolute path; every path is resolved with symlink resolution
+and rejected if it escapes the root (`..`, absolute paths, symlink escapes — a `secrets.json`
+symlink inside a root is refused).
 
 ```yaml
 connectors:
@@ -461,11 +460,11 @@ Development happens on the laptop, not on the server: edit there, run the local 
 (`deno task check && deno task test`), push `origin main`. There is no agent-writable code checkout
 on the server and no op that runs arbitrary argv; the promote op is the only path to production.
 
-| op                           | tier     | does                                                                                                                                                            |
-| ---------------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `deploy.status`              | open     | live/desired/last-good shas, `origin/main` after a best-effort fetch, pending commits, restart pending, recent audit                                            |
+| op                           | tier     | does                                                                                                        |
+| ---------------------------- | -------- | ----------------------------------------------------------------------------------------------------------- |
+| `deploy.status`              | open     | live/desired/last-good shas, `origin/main` after a best-effort fetch, pending commits, restart pending, recent audit |
 | `deploy.promote`             | approval | fetches `origin/main`, refuses a non-fast-forward, runs the test suite in a throwaway worktree under the data dir, records `desired-commit`, requests a restart |
-| `deploy.rollback({commit?})` | approval | same, to `last-good` or an explicit sha from the audit log                                                                                                      |
+| `deploy.rollback({commit?})` | approval | same, to `last-good` or an explicit sha from the audit log                                                  |
 
 `deploy` never runs the server; the supervisor does.
 
@@ -501,8 +500,8 @@ reason (`checkout`, `deno-cache`, `startup`, `crash`). Crashes _after_ the soak 
 commit with backoff; too many consecutive failures exit so systemd backs off.
 
 `main` is advanced to a commit **only after it passes the soak** (and only if it descends from
-`main`), so a failed promotion never lands on the branch a later promotion fast-forwards from. The
-live checkout runs detached and is never pulled or edited by hand: production code arrives
+`main`), so a failed promotion never lands on the branch a later promotion fast-forwards from.
+The live checkout runs detached and is never pulled or edited by hand: production code arrives
 exclusively through `deploy.promote`, which fetches `origin/main`.
 
 Rehearsed on the live deployment: healthy promote (soak → last-good → main advanced), a commit that
@@ -518,8 +517,7 @@ instead of trusting bash to reload it cleanly.
 
 ## Agent workflow (dev on laptop, prod on homelab)
 
-1. On the laptop checkout: edit code + tests, then the gate:
-   `deno fmt --check src/ tests/ && deno
+1. On the laptop checkout: edit code + tests, then the gate: `deno fmt --check src/ tests/ && deno
    lint && deno task check && deno task test`.
 2. Commit to `main` and `git push origin main`.
 3. Via the denops MCP (whose session predates the push is fine): `deploy.status` to see
@@ -578,8 +576,8 @@ compact JSON fields you selected, not raw upstream dumps.
 ```
 
 Adjust the families and example calls to the accounts this deployment actually configures
-(`denops.skill` documents them at runtime, so the model will self-correct from the live sheet even
-if the snippet is stale).
+(`denops.skill` documents them at runtime, so the model will self-correct from the live sheet
+even if the snippet is stale).
 
 ---
 
