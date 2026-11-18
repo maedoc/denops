@@ -1,5 +1,3 @@
-import { resolve, sep } from "node:path";
-
 // Deno permission derivation for the live launcher (scripts/start.ts). One place,
 // on purpose: a hand-copied flag list drifts, and the server's --allow-* flags are
 // the outer boundary of every connector. `derivePermissions` derives from the

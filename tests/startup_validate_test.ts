@@ -1,4 +1,4 @@
-import { assert, assertEquals, assertRejects } from "jsr:@std/assert@1";
+import { assert, assertEquals, assertRejects, assertStringIncludes } from "jsr:@std/assert@1";
 import { normalize } from "../src/config.ts";
 import { Registry } from "../src/harness/registry.ts";
 import type { Connector } from "../src/harness/types.ts";
@@ -78,4 +78,62 @@ Deno.test("startup validation: a connector's own startup log lines are collected
   });
   assertEquals(failures, []);
   assertEquals(lines.length, 1);
+});
+
+// Regression for 2026-11-18: the hang variant of the same bug. gitlab.ebrains.eu accepted
+// TCP and never finished the TLS handshake, so the forge startup probe never settled,
+// buildApp never returned, and the supervisor restart-looped a healthy commit for hours.
+// A probe that never settles must degrade like a refused one, within a deadline.
+
+const hung: Connector = {
+  id: "hung",
+  ops: [],
+  client: () => ({}),
+  validateStartup: () => new Promise(() => {}),
+};
+
+Deno.test("startup validation: a probe that never settles degrades within its deadline", async () => {
+  const registry = new Registry();
+  registry.register(fine);
+  registry.register(hung);
+  const failures = await validateConnectors(registry, {
+    config: config(false),
+    secrets: {},
+    log: () => {},
+    probeTimeoutMs: 25,
+  });
+  assertEquals(failures.map((f) => f.connector), ["hung"]);
+  assertStringIncludes(failures[0].error, "hung startup probe timed out after 25ms");
+});
+
+Deno.test("startup validation: hung probes settle concurrently, within one deadline", async () => {
+  const registry = new Registry();
+  registry.register({ ...hung, id: "hung-a" });
+  registry.register({ ...hung, id: "hung-b" });
+  const started = Date.now();
+  const failures = await validateConnectors(registry, {
+    config: config(false),
+    secrets: {},
+    log: () => {},
+    probeTimeoutMs: 200,
+  });
+  // sequentially awaited probes would take 2 x 200ms; concurrent ones one deadline
+  assert(Date.now() - started < 400);
+  assertEquals(failures.map((f) => f.connector), ["hung-a", "hung-b"]);
+});
+
+Deno.test("startup validation: failFast treats a hang as a validation failure", async () => {
+  const registry = new Registry();
+  registry.register(hung);
+  await assertRejects(
+    () =>
+      validateConnectors(registry, {
+        config: config(true),
+        secrets: {},
+        log: () => {},
+        probeTimeoutMs: 25,
+      }),
+    Error,
+    "connector hung: startup validation failed",
+  );
 });

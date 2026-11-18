@@ -8,6 +8,22 @@ actually talking to instead of probing behaviour.
 Format: `## <version> — <YYYY-MM-DD>`, newest first, then a short bullet list. Keep bullets about
 the API surface; implementation notes belong in the commit message.
 
+## 0.13.8 — 2026-11-18
+
+- **Startup validation can no longer hang the boot.** Every startup probe now carries a
+  deadline (10 s per connector, 5 s per forge account) and the probes run concurrently, so
+  validation costs at most one deadline however many dependencies misbehave. An endpoint that
+  accepts TCP and then black-holes the TLS handshake (gitlab.ebrains.eu did exactly this on
+  2026-11-18) is treated like any other reachability failure: the connector is reported
+  degraded with a "timed out after Nms" reason — `/health` and `denops.about` semantics are
+  unchanged, and `startup.failFast` still refuses on a failure.
+- **One flaky forge account no longer stirs the whole family at boot.** The per-account probes
+  are concurrent and individually bounded: a hung account costs one warn line in its own
+  `[startup]` log, and the accounts that answer stay fully servable — `forge.*` is not
+  degraded while any configured account is reachable.
+- No new ops, args, tiers or config keys; the two probe-deadline constants are code, not
+  configuration, because they protect the boot contract rather than describe a deployment.
+
 ## 0.13.7 — 2026-11-13
 
 - **The `dev` connector is removed** (was `dev.roots`, `dev.run`, `dev.git`, `dev.sync`, `dev.try`).

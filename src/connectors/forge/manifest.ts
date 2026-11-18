@@ -9,6 +9,7 @@ import {
 } from "../../harness/args.ts";
 import type { Connector, HostContext, JsonValue, OpSpec } from "../../harness/types.ts";
 import { checkShapeArgs, wrapClient } from "../shape.ts";
+import { withDeadline } from "../../harness/timeout.ts";
 import { ForgeHttp } from "./client.ts";
 import { gitlabPort } from "./flavors/gitlab.ts";
 import { forgejoPort } from "./flavors/forgejo.ts";
@@ -29,10 +30,16 @@ import { type ForgeAccount, type ForgePort, parseRepoRef, repoRefString } from "
 //  - Anything that cannot succeed is rejected in argSchema/precheck, never after the
 //    human approves.
 
+// Deadline for one account's startup probe; must stay under the 10s budget the server
+// gives a whole connector so the per-account warn wins over the central degradation.
+const FORGE_PROBE_TIMEOUT_MS = 5_000;
+
 export interface ForgeConnectorOptions {
   accounts: ForgeAccount[];
   /** Injectable for tests; defaults to the real adapters. */
   buildPort?: (account: ForgeAccount) => ForgePort;
+  /** Probe deadline per account, injectable for tests. */
+  probeTimeoutMs?: number;
 }
 
 export function forgeConnector(opts: ForgeConnectorOptions): Connector {
@@ -695,24 +702,38 @@ export function forgeConnector(opts: ForgeConnectorOptions): Connector {
       // One cheap authenticated call per account. A failure is logged per account rather
       // than thrown: throwing marks the whole connector degraded, which would disable the
       // accounts that are fine. Throwing is reserved for "no account could be built".
+      // Probes carry their own deadline: a forge whose endpoint accepts TCP and then
+      // black-holes the handshake (gitlab.ebrains.eu once did, for hours) resolves
+      // never, and an unbounded await would hang the whole server boot on one flaky
+      // account. They run concurrently, so all probes cost at most one deadline.
       for (const [id, reason] of broken) {
         ctx.log({ level: "warn", msg: `forge account ${id} unusable: ${reason}` });
       }
-      for (const account of opts.accounts) {
-        const port = ports.get(account.id);
-        if (!port) continue;
-        try {
-          await port.currentUser();
-          await port.validate?.();
-        } catch (err) {
-          ctx.log({
-            level: "warn",
-            msg: `forge account ${account.id} (${account.flavor}) failed its startup probe: ${
-              (err as Error).message
-            }`,
-          });
-        }
-      }
+      const probeMs = opts.probeTimeoutMs ?? FORGE_PROBE_TIMEOUT_MS;
+      const outcomes = await Promise.allSettled(
+        opts.accounts.map((account) => {
+          const port = ports.get(account.id);
+          if (!port) return Promise.resolve();
+          return withDeadline(
+            (async () => {
+              await port.currentUser();
+              await port.validate?.();
+            })(),
+            probeMs,
+            `${account.id} startup probe`,
+          );
+        }),
+      );
+      opts.accounts.forEach((account, i) => {
+        const outcome = outcomes[i];
+        if (outcome.status !== "rejected") return;
+        ctx.log({
+          level: "warn",
+          msg: `forge account ${account.id} (${account.flavor}) failed its startup probe: ${
+            (outcome.reason as Error).message
+          }`,
+        });
+      });
       if (ports.size === 0) throw new Error("forge: no usable account (see the warnings above)");
     },
   };

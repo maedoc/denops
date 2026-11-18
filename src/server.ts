@@ -6,6 +6,7 @@ import { PendingStore } from "./harness/pendingStore.ts";
 import { describe, search } from "./harness/discover.ts";
 import { isManifest, isOpEntry, RunLog } from "./harness/log.ts";
 import { Registry } from "./harness/registry.ts";
+import { withDeadline } from "./harness/timeout.ts";
 import type { Budgets, Connector, JsonValue } from "./harness/types.ts";
 import { Harness, summarizeOp } from "./harness/worker.ts";
 import { type Config, loadConfig, loadSecrets } from "./config.ts";
@@ -14,7 +15,7 @@ import { agentGuide } from "./guide.ts";
 import { davConnector } from "./connectors/dav/manifest.ts";
 import { deployConfigFrom, deployConnector } from "./connectors/deploy/manifest.ts";
 import { webConnector, webOptionsFromConfig } from "./connectors/web/manifest.ts";
-import { derivePermissions, serverPlan } from "./permissions.ts";
+import { serverPlan } from "./permissions.ts";
 import { mistralTierOverride } from "./connectors/mistral/tiers.ts";
 import { denopsConnector } from "./connectors/denops/manifest.ts";
 import { handleOAuthRoute, newOAuthState, type OAuthConfig } from "./security/oauth.ts";
@@ -70,34 +71,55 @@ export interface AppContext {
  * connector is reported back as degraded, stays registered, and its own ops fail when
  * called. `startup.failFast: true` restores the all-or-nothing contract.
  *
+ * A probe that never settles is the same failure class as one that refuses: an
+ * endpoint that accepts TCP and then black-holes the TLS handshake resolves never, so
+ * a bare await would hang the boot. Every probe is bounded by a deadline, and probes
+ * run concurrently, so validation costs at most one deadline however many connectors
+ * are down — well inside the supervisor's 25s startup window.
+ *
  * Config sanity is a different thing and stays fatal: missing secrets or an impossible
  * connector config throws while the connectors are being built, before this runs.
  */
+const VALIDATE_PROBE_TIMEOUT_MS = 10_000;
+
 export async function validateConnectors(
   registry: Registry,
   ctx: {
     config: Config;
     secrets: Record<string, unknown>;
     log: (entry: Record<string, unknown>) => void;
+    /** Shrunk by tests; production runs the default deadline. */
+    probeTimeoutMs?: number;
   },
 ): Promise<StartupFailure[]> {
   const failures: StartupFailure[] = [];
   if (ctx.config.startup.validate !== "full") return failures;
-  for (const c of registry.list()) {
-    if (!c.validateStartup) continue;
-    try {
-      await c.validateStartup({
-        config: ctx.config.connectors[c.id] as unknown as Record<string, unknown>,
-        secrets: ctx.secrets,
-        log: ctx.log,
-      });
-    } catch (e) {
-      const error = e instanceof Error ? e.message : String(e);
-      if (ctx.config.startup.failFast) {
-        throw new Error(`connector ${c.id}: startup validation failed: ${error}`);
-      }
-      failures.push({ connector: c.id, error });
+  const probeMs = ctx.probeTimeoutMs ?? VALIDATE_PROBE_TIMEOUT_MS;
+  const probes = registry.list().filter((c) => c.validateStartup);
+  const outcomes = await Promise.allSettled(
+    probes.map((c) =>
+      withDeadline(
+        Promise.resolve(
+          c.validateStartup!({
+            config: ctx.config.connectors[c.id] as unknown as Record<string, unknown>,
+            secrets: ctx.secrets,
+            log: ctx.log,
+          }),
+        ),
+        probeMs,
+        `${c.id} startup probe`,
+      )
+    ),
+  );
+  for (let i = 0; i < probes.length; i++) {
+    const outcome = outcomes[i];
+    if (outcome.status === "fulfilled") continue;
+    const reason = outcome.reason;
+    const error = reason instanceof Error ? reason.message : String(reason);
+    if (ctx.config.startup.failFast) {
+      throw new Error(`connector ${probes[i].id}: startup validation failed: ${error}`);
     }
+    failures.push({ connector: probes[i].id, error });
   }
   return failures;
 }
@@ -273,7 +295,7 @@ export async function buildApp(configPath: string, secretsPath: string): Promise
       skillPath: "SKILL.md",
       // Keep in step with deno.json and the CHANGELOG head; tests/version_test.ts fails
       // when they drift, because denops.version is how a run learns what it is talking to.
-      version: "0.13.7",
+      version: "0.13.8",
       // the supervisor exports the commit it checked out
       // The env-reading child (dev_try) runs with no --allow-env; the commit is
       // informational, so an inaccessible DENOPS_COMMIT is just "unknown" there.
