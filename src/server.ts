@@ -295,7 +295,7 @@ export async function buildApp(configPath: string, secretsPath: string): Promise
       skillPath: "SKILL.md",
       // Keep in step with deno.json and the CHANGELOG head; tests/version_test.ts fails
       // when they drift, because denops.version is how a run learns what it is talking to.
-      version: "0.13.10",
+      version: "0.13.11",
       // the supervisor exports the commit it checked out
       // The commit is informational, so an inaccessible DENOPS_COMMIT ("unknown"
       // outside a supervisor run) is not an error.
@@ -829,8 +829,10 @@ export function createHttpHandler(
     ? newOAuthState({ clientsFile: s.oauth?.clientsFile ?? "data/oauth-clients.json" })
     : newOAuthState();
   console.error(
+    // The banner must not under-describe the surface: "client_credentials enabled"
+    // once read as "no inbound authorization flow", which was never true.
     oauth
-      ? `[denops] oauth: client_credentials enabled (client_id=${oauth.clientId}, secret=bearer token)`
+      ? `[denops] oauth: authorization_code+PKCE (with DCR) and client_credentials enabled; discovery at /.well-known/oauth-authorization-server[/mcp] (client_id=${oauth.clientId}, secret=bearer token)`
       : "[denops] oauth: disabled",
   );
   return createHandler({
@@ -853,8 +855,10 @@ export function createHttpHandler(
       ? {
         oauthHandler: (req: Request, url: URL, body: string) =>
           handleOAuthRoute(req, url, body, oauthFor(req), oauthState),
+        // RFC 9728 pointer in the 401 challenge: the /mcp-suffixed spelling, which
+        // is where spec-strict clients look first for a resource at /mcp.
         resourceMetadata: (req: Request) =>
-          `${publicUrlFor(req)}/.well-known/oauth-protected-resource`,
+          `${publicUrlFor(req)}/.well-known/oauth-protected-resource/mcp`,
       }
       : {}),
     mcpHandler: async (req) => {

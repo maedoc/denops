@@ -478,7 +478,7 @@ function makeHandler(overrides: Partial<HandlerOptions> = {}) {
     mcpHandler: () => Promise.resolve(Response.json({ ok: true })),
     healthHandler: () => Response.json({ ok: true }),
     oauthHandler: (req, url, body) => handleOAuthRoute(req, url, body, cfg, state),
-    resourceMetadata: () => "https://mcp.example.com/.well-known/oauth-protected-resource",
+    resourceMetadata: () => "https://mcp.example.com/.well-known/oauth-protected-resource/mcp",
     ...overrides,
   });
   const info = {
@@ -492,7 +492,9 @@ Deno.test("oauth: end to end — discovery, token, then /mcp", async () => {
   for (
     const path of [
       "/.well-known/oauth-protected-resource",
+      "/.well-known/oauth-protected-resource/mcp",
       "/.well-known/oauth-authorization-server",
+      "/.well-known/oauth-authorization-server/mcp",
       "/.well-known/openid-configuration",
       "/.well-known/jwks.json",
     ]
@@ -531,9 +533,34 @@ Deno.test("oauth: 401 challenge advertises resource metadata", async () => {
     info,
   );
   assertEquals(res.status, 401);
+  // the /mcp-suffixed spelling per RFC 9728: where spec-strict clients look first
   assertStringIncludes(
     res.headers.get("www-authenticate") ?? "",
-    'resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource"',
+    'resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource/mcp"',
+  );
+});
+
+// Regression for the Gemini reconnect loop of 2026-11-18: a 2025-06-18-spec client
+// derives discovery URLs with the resource path as a suffix; the root-only paths
+// read as "no authorization server", so it retried bearer auth forever and its
+// egress /24s collected 24h bans.
+Deno.test("oauth: /mcp-suffixed discovery serves the same documents as the root paths", async () => {
+  const state = newOAuthState();
+  const fetchDoc = async (path: string) =>
+    (await handleOAuthRoute(
+      new Request(`https://mcp.example.com${path}`),
+      new URL(`https://mcp.example.com${path}`),
+      "",
+      cfg,
+      state,
+    ))!.json();
+  assertEquals(
+    await fetchDoc("/.well-known/oauth-authorization-server/mcp"),
+    await fetchDoc("/.well-known/oauth-authorization-server"),
+  );
+  assertEquals(
+    await fetchDoc("/.well-known/oauth-protected-resource/mcp"),
+    await fetchDoc("/.well-known/oauth-protected-resource"),
   );
 });
 

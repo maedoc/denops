@@ -24,6 +24,11 @@ Ops are namespaced globals (`forge.*`, `mail.*`, `mistral.*`, `fs.*`, `web.*`, `
 there is no `tools` object. Credentials never enter the sandbox: ops are the only egress, and there
 is no `fetch`, `WebSocket`, filesystem or `Deno` API (use `web.fetch` for URLs).
 
+This is server-level context, not an op, but for completeness: MCP clients authenticate per the
+MCP OAuth spec — `authorization_code` + PKCE via dynamic client registration (an interactive
+consent gates issuance) or `client_credentials`, with discovery at
+`/.well-known/oauth-authorization-server[/mcp]` and the token endpoint at `/oauth/token`.
+
 ## 2. Discovery (do this first, cheaply)
 
 | call                                  | gives you                                       |

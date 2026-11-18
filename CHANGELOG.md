@@ -8,6 +8,19 @@ actually talking to instead of probing behaviour.
 Format: `## <version> — <YYYY-MM-DD>`, newest first, then a short bullet list. Keep bullets about
 the API surface; implementation notes belong in the commit message.
 
+## 0.13.11 — 2026-11-18
+
+- **OAuth discovery now serves the `/mcp`-suffixed paths** (`/.well-known/oauth-authorization-server/mcp`
+  and `/.well-known/oauth-protected-resource/mcp`), same documents as the root paths, and the
+  `/mcp` 401 challenge's `resource_metadata` points at the suffixed protected-resource URL per
+  RFC 9728. The 2025-06-18 MCP auth revision derives these suffixed URLs from the resource path,
+  and spec-strict clients (Gemini's MCP client observed live, 2026-11-18) treat their 404 as
+  "no authorization server" — then loop on bearer auth until the /24 brute-force bans catch them.
+  The inbound flow itself (authorization_code + PKCE + DCR + consent, client_credentials) is
+  unchanged; root-level discovery stays for older clients.
+- Startup banner fixed: it said `oauth: client_credentials enabled (...)` for every enabled
+  server regardless of the surface, which read as "no inbound authorization flow".
+
 ## 0.13.10 — 2026-11-18
 
 - **`mail.drafts.save` takes an optional `from`**: the draft's From is no longer pinned to the

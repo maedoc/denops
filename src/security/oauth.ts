@@ -618,10 +618,20 @@ export async function handleOAuthRoute(
   state: OAuthState,
 ): Promise<Response | null> {
   const p = url.pathname;
-  if (p === "/.well-known/oauth-protected-resource") {
+  // Both spellings of the discovery paths: the 2025-06-18 MCP auth revision derives
+  // them per RFC 8414/9728 with the resource path as a suffix, and clients (Gemini in
+  // particular) probe the /mcp-suffixed form first — a 404 there reads as "no
+  // authorization server", which is how Gemini ended up looping on bare 401s.
+  if (
+    p === "/.well-known/oauth-protected-resource" ||
+    p === "/.well-known/oauth-protected-resource/mcp"
+  ) {
     return Response.json(protectedResourceMetadata(cfg));
   }
-  if (p === "/.well-known/oauth-authorization-server") {
+  if (
+    p === "/.well-known/oauth-authorization-server" ||
+    p === "/.well-known/oauth-authorization-server/mcp"
+  ) {
     return Response.json(authorizationServerMetadata(cfg));
   }
   if (p === "/.well-known/openid-configuration") {
