@@ -24,10 +24,9 @@ Ops are namespaced globals (`forge.*`, `mail.*`, `mistral.*`, `fs.*`, `web.*`, `
 there is no `tools` object. Credentials never enter the sandbox: ops are the only egress, and there
 is no `fetch`, `WebSocket`, filesystem or `Deno` API (use `web.fetch` for URLs).
 
-This is server-level context, not an op, but for completeness: MCP clients authenticate per the
-MCP OAuth spec — `authorization_code` + PKCE via dynamic client registration (an interactive
-consent gates issuance) or `client_credentials`, with discovery at
-`/.well-known/oauth-authorization-server[/mcp]` and the token endpoint at `/oauth/token`.
+Client auth (server-level context, not an op): MCP OAuth — `authorization_code` + PKCE
+via dynamic client registration (a consent page gates issuance) or `client_credentials`;
+discovery at `/.well-known/oauth-authorization-server[/mcp]`, token endpoint `/oauth/token`.
 
 ## 2. Discovery (do this first, cheaply)
 
@@ -74,10 +73,10 @@ truncated?}` — e.g. Forgejo Actions job logs, `GET /repos/o/r/actions/jobs/<id
 lookups. Adapters: **gitlab**, **forgejo**, **github** (paging is a `Link` cursor there, file reads
 use the raw media type, and search has its own smaller rate limit). The old
 `gitlab.*` family is **gone** as of 0.8.0 — `forge.*` with `account: "ebrains"` is its replacement,
-and results are now normalized, so `p.fullName` replaces `p.path_with_namespace`. Long tail:
-`forge.api.get` (open) and `forge.mutate` (approval; POST/PUT/**PATCH**/DELETE) reach any
-endpoint under that account's API root (both content-type aware); credential-bearing paths (`variables`, `*_tokens`,
-`secure_files`) are refused before an approval is created.
+and results are now normalized, so `p.fullName` replaces `p.path_with_namespace`.
+`forge.mutate` (approval; POST/PUT/**PATCH**/DELETE) reaches any endpoint under the account's
+API root; credential-bearing paths (`variables`, `*_tokens`, `secure_files`) are refused
+before an approval is created.
 
 **mail** (10 ops) — `mailboxes.list`, `messages.list`, `messages.search` (server-side IMAP;
 `mailboxes: string[]` searches a folder tree in one call, each hit carrying its `mailbox`),
@@ -86,9 +85,9 @@ and `messages.move` (approval). No SMTP. `messages.get` splits headers from body
 `messageId`, `inReplyTo`, `references[]`, `contentType`, `headers`), so threading is inspectable
 without the raw source. `drafts.save({account, body, replyTo:{mailbox,uid}, …})` writes a **threaded
 reply** — `Message-ID`/`In-Reply-To`/`References`/`Date`, `Re: <subject>`, quoted parent, APPEND
-with `\Draft`; never compose those headers yourself. Optional `from` sets the draft's From:
-allow-listed to the account's own address (default) or a config `aliases` entry — anything else is
-an invalid-args error, and unknown arg names are errors too (not silently dropped).
+with `\Draft`; never compose those headers yourself. Optional `from` must be the account's own
+address (the default) or a config `aliases` entry — anything else is
+an invalid-args error, and unknown arg names error rather than drop.
 
 **mistral** (17 ops) — libraries and documents, metadata first: `libraries.list` → `documents.list`
 (rows carry `size`, `mime_type`, `process_status`) → then `documents.read` for small text (inline,
@@ -97,8 +96,9 @@ else `truncated: true`), `documents.get({fields:["summary"]})` for the extracted
 `fs.grep`/`fs.read`. Writing is text-first: `documents.put` creates, `documents.replace` replaces by
 name (refuses if several share it — pass `documentId`), `documents.upload` takes base64,
 `staging.clear({olderThanHours?})` prunes. Writes/deletes are approval-tier for libraries that
-already existed; one created in the same run can be written and cleaned up freely. **fs** (10 ops) —
-named roots only (`fs.roots` lists them): `glob`, `list`, `read` (line windows with `hasMore`),
+already existed; one created in the same run can be written and cleaned up freely.
+
+**fs** (10 ops) — named roots only (`fs.roots` lists them): `glob`, `list`, `read` (line windows with `hasMore`),
 `grep` (regex, capped), `write`, `edit`/`editRegex`, `rm`, `exec`.
 
 - **Capabilities are enforced before approval**: a write to a `write: false` root (or exec on
@@ -106,13 +106,17 @@ named roots only (`fs.roots` lists them): `glob`, `list`, `read` (line windows w
   root.
 - **Grants are levelled**: approving the first op on a root records `fs:<root>:read` or
   `fs:<root>:write` (implies read); `fs.rm`/`fs.exec` are never grant-covered.
-  `grants({action, key})`. **denops** (6 ops) — `denops.skill` (this document; `{ section }`
-  filters), `denops.about` (version, skill freshness, connector families, `degraded` + why),
-  `denops.version` (version, commit, CHANGELOG head — check this, do not probe whether a fix
-  deployed), `denops.budget` (wall clock and ops left in THIS run — call it before a long loop),
-  `denops.oplog` (redacted run log: statuses and counts plus each run's `codeBytes` — the received
-  code's byte size — no args or bodies). A non-empty
-  `about().degraded` means that family failed its startup probe: only its ops fail, the server is up.
+  `grants({action, key})`.
+
+**denops** (6 ops) — `denops.skill` (this document; `{ section }`
+filters), `denops.about` (version, skill freshness, connector families, `degraded` + why),
+`denops.version` (version, commit, CHANGELOG head — check this, do not probe whether a fix
+deployed), `denops.budget` (wall clock and ops left in THIS run — call it before a long loop),
+`denops.logs` (redacted server-stderr tail, `{lines, grep}` — read it when a promotion fails
+to start or a connector misbehaves; server-side context, not run state),
+`denops.oplog` (redacted run log: statuses and counts plus each run's `codeBytes` — the received
+code's byte size, no args or bodies). A non-empty
+`about().degraded` means that family failed its startup probe: only its ops fail, the server is up.
 
 **calendar** (8 ops) — CalDAV (iCloud, Nextcloud). `calendar.accounts`, `calendar.calendars.list`
 (says which collections hold VEVENT vs VTODO — event ops are VEVENT-only and refuse a VTODO one
@@ -151,7 +155,8 @@ re-validated. A refused host is a config question for the operator, not somethin
 server: edit there, run the gate (`deno task gate`), push `origin main`. Then
 `deploy.status` (open: live commit, desired, last-good, origin/main, pending commits,
 restart-pending), `deploy.promote` (approval: fetches origin/main, refuses a non-fast-forward,
-runs the test suite in a throwaway worktree under the service's data dir, records intent),
+runs the gate — fmt/lint/check/test — in a throwaway worktree under the service's data dir,
+records intent),
 `deploy.rollback({commit?})` (approval: last-good or an explicit sha). The supervisor — not the
 op — checks out the commit, probes `/health`, soaks 60 s, advances `main`, and auto-reverts on
 failure. There is no agent-writable code checkout on the server and no op that runs arbitrary
@@ -162,6 +167,7 @@ argv.
 - `capability_denied:` — immutable config says no; don't retry, don't ask for approval.
 - `invalid args for <op>: <field>: …` — the boundary rejected you; fix the argument, no approval.
 - `unknown or unavailable op` — use `api.search`; the op may belong to a disabled connector.
+- Errors above not enough? `denops.logs` is the server's own (redacted) stderr.
 - Approval summaries are written by the connector (commit subject + diffstat for deployments,
   mailbox/uids for moves). Quote them: they are the human's only view.
 
